@@ -4,7 +4,7 @@ How to run SyncBot locally (Dev Container, Docker Compose, native Python) and ma
 
 ## Branching (upstream vs downstream)
 
-The **upstream** repository ([F3Nation-Community/syncbot](https://github.com/F3Nation-Community/syncbot)) is the shared codebase. Each deployment maintains its own **fork**:
+The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/syncbot)) is the shared codebase. Each deployment maintains its own **fork**:
 
 | Branch | Role |
 |--------|------|
