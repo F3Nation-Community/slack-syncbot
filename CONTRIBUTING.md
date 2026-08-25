@@ -4,7 +4,7 @@ Thanks for helping to improve SyncBot!
 
 ## Branching (upstream vs downstream)
 
-The **upstream** repository ([F3Nation-Community/syncbot](https://github.com/F3Nation-Community/syncbot)) is the shared codebase. Each deployment maintains its own **fork**:
+The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/syncbot)) is the shared codebase. Each deployment maintains its own **fork**:
 
 | Branch | Role |
 |--------|------|
@@ -47,4 +47,4 @@ Rules:
 
 ## Questions
 
-Use [GitHub Issues](https://github.com/F3Nation-Community/syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.
+Use [GitHub Issues](https://github.com/sprocktech/syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.
