@@ -103,7 +103,7 @@ def _capture_slack_retry_num(req, resp, next):
     vals = headers.get("x-slack-retry-num")
     if vals:
         try:
-            v = vals[0] if isinstance(vals, (list, tuple)) else vals
+            v = vals[0] if isinstance(vals, list | tuple) else vals
             req.context["slack_retry_num"] = int(v)
         except (ValueError, TypeError, IndexError):
             pass
