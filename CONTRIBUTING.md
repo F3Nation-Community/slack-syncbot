@@ -13,6 +13,8 @@ The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/
 
 Typical flow: develop a fix or new feature on a branch in your repo → test and deploy to your infra → open a PR to **`upstream/main`**.
 
+**Upstream PRs:** python-semantic-release, Dependabot auto-merge, and `pr-title.yml` run on **sprocktech/syncbot** only (see [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) Fork Compatibility Policy). Forks should pull `main` and deploy `test`/`prod` themselves — do not run a second semantic-release on the fork.
+
 ### Branch Naming Conventions
 
 Format: `<type>/<description>` or `<type>/<ticket>-<description>`
@@ -39,12 +41,31 @@ Rules:
 2. Open a **pull request** targeting **`main`** on the upstream repo (or the repo you were asked to contribute to).
 3. Keep application code **provider-neutral**: put cloud-specific logic only under `infra/<provider>/` and in `deploy-<provider>.yml` workflows. See [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) (Fork Compatibility Policy).
 
+## Commit messages (Conventional Commits)
+
+This repository uses [Conventional Commits](https://www.conventionalcommits.org/) for clarity and automated versioning on **`main`**.
+
+- Use imperative mood and a type prefix, for example: `feat: add channel mute toggle`, `fix: handle missing OAuth state`, `docs: clarify deploy env vars`, `chore: bump checkout action`.
+- Allowed types commonly used here: `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `chore`, `ci`, `test`, `style`.
+- **Patch** bump: `fix:`, `perf:` (and similar non-breaking fixes).
+- **Minor** bump: `feat:` (user-visible additions).
+- **Major** bump: add `BREAKING CHANGE:` in the commit body/footer, or use a `feat!:` / `fix!:` subject line per Conventional Commits.
+- **Squash merges**: the PR title becomes the merge commit message — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`).
+
+Also install the commit-msg hook so local commits are checked:
+
+```bash
+pre-commit install --hook-type commit-msg
+```
+
 ## Before you submit
 
-- Run **`pre-commit run --all-files`** (install with `pip install pre-commit && pre-commit install` if needed).
-- Ensure **CI passes**: requirements export check, SAM template lint, and tests (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+- Run **`pre-commit run --all-files`** (install with `pip install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg` if needed).
+- Ensure **CI passes**: requirements export check, SAM template lint, ruff, pip-audit, and tests (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
 - If you change dependencies in `pyproject.toml`, refresh the lockfile and `syncbot/requirements.txt` as described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Questions
 
 Use [GitHub Issues](https://github.com/sprocktech/syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.
+
+**AI / coding agents:** see [docs/AI_AGENTS.md](docs/AI_AGENTS.md) and root [AGENTS.md](AGENTS.md).

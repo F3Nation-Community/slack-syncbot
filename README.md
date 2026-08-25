@@ -26,7 +26,7 @@ From the **repo root**, run the deploy script once for **`test`** and once for *
 | macOS / Linux | `./deploy.sh` |
 | Windows (PowerShell) | `.\deploy.ps1` |
 
-You can also fork the repo, set GitHub variables/secrets, and push to **`test`** or **`prod`** to trigger CI — see [DEPLOY.md](docs/DEPLOY.md).
+You can also fork the repo, set GitHub variables/secrets, and push to **`test`** or **`prod`** to trigger deploy workflows — see [DEPLOY.md](docs/DEPLOY.md). Canonical code and releases live on [sprocktech/syncbot](https://github.com/sprocktech/syncbot); open PRs against that `main`.
 
 ### Prerequisites
 
@@ -60,8 +60,9 @@ See **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** for Dev Container, Docker Com
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Sync flow, AWS reference architecture |
 | [BACKUP_AND_MIGRATION.md](docs/BACKUP_AND_MIGRATION.md) | Backup/restore and federation migration |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | HTTP routes and Slack events |
-| [CHANGELOG.md](CHANGELOG.md) | Release history |
+| [CHANGELOG.md](CHANGELOG.md) | Release history (updated by python-semantic-release on sprocktech `main`) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
+| [AI_AGENTS.md](docs/AI_AGENTS.md) | AI/coding-agent workflow and CI guardrails |
 
 ## License
 

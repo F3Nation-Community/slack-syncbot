@@ -524,7 +524,7 @@ Resources:
       DBInstanceClass: !Ref DatabaseInstanceClass
       Engine: mysql
       # Minor version must match cfn-lint / RDS allowed list (major-only "8.0" fails E3691)
-      EngineVersion: "8.0.40"
+      EngineVersion: "8.0.46"
       MasterUsername: !Sub "sbadmin_${Stage}"
       MasterUserPassword: !Ref DatabaseAdminPassword
       DBName: !Ref DatabaseSchema
@@ -562,7 +562,7 @@ Resources:
       DBInstanceIdentifier: !Sub "syncbot-${Stage}-pg"
       DBInstanceClass: !Ref DatabaseInstanceClass
       Engine: postgres
-      EngineVersion: "16.6"
+      EngineVersion: "16.14"
       MasterUsername: !Sub "sbadmin_${Stage}"
       MasterUserPassword: !Ref DatabaseAdminPassword
       DBName: !Ref DatabaseSchema

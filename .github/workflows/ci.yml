@@ -11,6 +11,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python-deps: ${{ steps.set.outputs.python-deps }}
+      sam: ${{ steps.set.outputs.sam }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v3
+        if: github.event_name == 'pull_request'
+        id: filter
+        with:
+          filters: |
+            python-deps:
+              - 'pyproject.toml'
+              - 'poetry.lock'
+              - '**/*requirements.txt'
+            sam:
+              - 'infra/aws/**'
+              - '.cfnlintrc.yaml'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/deploy-aws.yml'
+      - id: set
+        run: |
+          if [ "${{ github.event_name }}" != "pull_request" ]; then
+            echo "python-deps=true" >> "$GITHUB_OUTPUT"
+            echo "sam=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "python-deps=${{ steps.filter.outputs.python-deps }}" >> "$GITHUB_OUTPUT"
+            echo "sam=${{ steps.filter.outputs.sam }}" >> "$GITHUB_OUTPUT"
+          fi
+
   requirements-sync:
     runs-on: ubuntu-latest
     permissions:
@@ -21,6 +52,7 @@ jobs:
           ref: ${{ github.head_ref || github.ref_name }}
           repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
           fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -30,6 +62,7 @@ jobs:
           pip install poetry
           poetry self add poetry-plugin-export
       - name: Sync requirements.txt with poetry.lock
+        id: sync
         env:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
@@ -37,43 +70,183 @@ jobs:
           echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > infra/aws/db_setup/requirements.txt
           grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> infra/aws/db_setup/requirements.txt
           if git diff --quiet syncbot/requirements.txt infra/aws/db_setup/requirements.txt; then
+            echo "needs_commit=false" >> "$GITHUB_OUTPUT"
             echo "requirements.txt files are already in sync."
           elif [[ -n "${PR_HEAD_REPO}" && "${PR_HEAD_REPO}" != "${GITHUB_REPOSITORY}" ]]; then
             echo "::error::Requirements files are out of sync with poetry.lock. Commit with pre-commit installed (sync-requirements hook) or follow docs/DEVELOPMENT.md."
             exit 1
           else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add syncbot/requirements.txt infra/aws/db_setup/requirements.txt
-            git commit -m "chore: sync requirements.txt files with poetry.lock"
-            git push
-            echo "::notice::requirements.txt files were out of sync and have been auto-fixed."
+            echo "needs_commit=true" >> "$GITHUB_OUTPUT"
           fi
 
-  sam-lint:
+      - name: Commit requirements sync via GitHub API
+        if: steps.sync.outputs.needs_commit == 'true'
+        uses: actions/github-script@v7
+        env:
+          BRANCH: ${{ github.head_ref || github.ref_name }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const branch = process.env.BRANCH;
+            const r1 = fs.readFileSync('syncbot/requirements.txt', 'utf8');
+            const r2 = fs.readFileSync('infra/aws/db_setup/requirements.txt', 'utf8');
+
+            const { data: ref } = await github.rest.git.getRef({
+              owner,
+              repo,
+              ref: `heads/${branch}`,
+            });
+            const parentSha = ref.object.sha;
+
+            const { data: parentCommit } = await github.rest.git.getCommit({
+              owner,
+              repo,
+              commit_sha: parentSha,
+            });
+
+            const { data: tree } = await github.rest.git.createTree({
+              owner,
+              repo,
+              base_tree: parentCommit.tree.sha,
+              tree: [
+                { path: 'syncbot/requirements.txt', mode: '100644', type: 'blob', content: r1 },
+                { path: 'infra/aws/db_setup/requirements.txt', mode: '100644', type: 'blob', content: r2 },
+              ],
+            });
+
+            const message = [
+              'chore: sync requirements.txt files with poetry.lock [skip ci]',
+              '',
+              'Automated export from poetry.lock.',
+            ].join('\n');
+
+            const { data: commit } = await github.rest.git.createCommit({
+              owner,
+              repo,
+              message,
+              tree: tree.sha,
+              parents: [parentSha],
+            });
+
+            await github.rest.git.updateRef({
+              owner,
+              repo,
+              ref: `heads/${branch}`,
+              sha: commit.sha,
+            });
+
+            core.notice('requirements.txt files were out of sync and have been auto-fixed via GitHub API.');
+
+  forbidden-edits:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Fail if forbidden files were edited
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          set -euo pipefail
+          git fetch origin "${BASE_REF}" --depth=1
+          CHANGED="$(git diff --name-only "origin/${BASE_REF}"...HEAD)"
+          echo "Changed files vs origin/${BASE_REF}:"
+          echo "${CHANGED}"
+
+          if echo "${CHANGED}" | grep -qx 'CHANGELOG.md'; then
+            EXTRA="$(git diff "origin/${BASE_REF}"...HEAD -- CHANGELOG.md \
+              | grep -E '^[+-]' \
+              | grep -Ev '^[+-]{3} ' \
+              | grep -Ev '^[+-][[:space:]]*<!-- version list -->[[:space:]]*$' \
+              | grep -Ev '^[+-][[:space:]]*$' \
+              || true)"
+            if [ -n "${EXTRA}" ]; then
+              echo "::error::CHANGELOG.md must not be edited in PRs except adding the <!-- version list --> insertion marker; releases update it via python-semantic-release on main."
+              echo "${EXTRA}"
+              exit 1
+            fi
+          fi
+
+          if echo "${CHANGED}" | grep -E '(^|/)requirements\.txt$' | grep -q .; then
+            if ! echo "${CHANGED}" | grep -Eq '^(poetry\.lock|pyproject\.toml)$'; then
+              echo "::error::Do not edit requirements.txt without changing poetry.lock or pyproject.toml; export from the lockfile (pre-commit or poetry export)."
+              exit 1
+            fi
+          fi
+
+          if echo "${CHANGED}" | grep -qx 'pyproject.toml'; then
+            if git diff "origin/${BASE_REF}"...HEAD -- pyproject.toml | grep -E '^[+-][[:space:]]*version[[:space:]]*=' | grep -q .; then
+              echo "::error::Do not bump version in pyproject.toml in PRs; releases bump it via python-semantic-release."
+              exit 1
+            fi
+          fi
+
+  forbidden-imports:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: aws-actions/setup-sam@v2
-        with:
-          use-installer: true
-      - name: sam validate --lint
+      - name: Block cloud SDK imports in application package
         run: |
-          sam validate -t infra/aws/template.yaml --lint
-          sam validate -t infra/aws/template.bootstrap.yaml --lint
+          set -euo pipefail
+          if grep -R -n -E '^import boto3|^from boto3|^import google\.cloud|^from google\.cloud' --include='*.py' syncbot/ 2>/dev/null | grep -q .; then
+            grep -R -n -E '^import boto3|^from boto3|^import google\.cloud|^from google\.cloud' --include='*.py' syncbot/ || true
+            echo "::error::Cloud SDK imports are not allowed under syncbot/ (keep provider code in infra/)."
+            exit 1
+          fi
 
-  pip-audit:
+  ruff:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - name: Security audit Python dependencies
+      - name: Install ruff
+        run: python -m pip install --upgrade pip 'ruff==0.8.6'
+      - name: ruff check
+        run: ruff check .
+      - name: ruff format
+        run: ruff format --check .
+
+  sam-lint:
+    needs: changes
+    if: needs.changes.outputs.sam == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: aws-actions/setup-sam@v2
+        with:
+          use-installer: true
+          version: "1.165.0"
+      - name: sam validate --lint
         run: |
-          python -m pip install --upgrade pip pip-audit
-          pip-audit -r syncbot/requirements.txt
-          pip-audit -r infra/aws/db_setup/requirements.txt
+          sam validate -t infra/aws/template.yaml --lint
+          sam validate -t infra/aws/template.bootstrap.yaml --lint
+
+  pip-audit:
+    needs: changes
+    if: needs.changes.outputs.python-deps == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install Poetry, export plugin, and pip-audit
+        run: |
+          python -m pip install --upgrade pip poetry pip-audit
+          poetry self add poetry-plugin-export
+      - name: Audit dependencies from poetry.lock (export in-job)
+        run: |
+          poetry export -f requirements.txt --without-hashes -o /tmp/syncbot-requirements.txt
+          echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > /tmp/db-setup-requirements.txt
+          grep -E "^(pymysql|psycopg2-binary|cryptography)==" /tmp/syncbot-requirements.txt >> /tmp/db-setup-requirements.txt
+          pip-audit -r /tmp/syncbot-requirements.txt
+          pip-audit -r /tmp/db-setup-requirements.txt
 
   test:
     runs-on: ubuntu-latest
@@ -87,5 +260,33 @@ jobs:
           python -m pip install --upgrade pip
           pip install poetry
           poetry install --with dev
-      - name: pytest (infra & deploy scripts)
-        run: poetry run pytest -q tests/test_deploy_script_syntax.py infra/aws/tests infra/gcp/tests
+      - name: pytest (full suite)
+        run: poetry run pytest -q tests/ infra/aws/tests infra/gcp/tests
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - changes
+      - requirements-sync
+      - forbidden-edits
+      - forbidden-imports
+      - ruff
+      - sam-lint
+      - pip-audit
+      - test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require non-failed jobs (skipped is OK)
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os, sys
+          needs = json.loads(os.environ["RESULTS"])
+          failed = [name for name, data in needs.items() if data.get("result") in ("failure", "cancelled")]
+          if failed:
+              print("Failed jobs:", ", ".join(failed))
+              sys.exit(1)
+          print("ci-gate: all jobs succeeded or skipped")
+          PY

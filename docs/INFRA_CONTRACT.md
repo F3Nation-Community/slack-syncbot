@@ -73,24 +73,24 @@ The application reads configuration from environment variables. Providers must i
 
 The provider must deliver:
 
-1. **Public HTTPS endpoint**  
+1. **Public HTTPS endpoint**
    Slack sends events and interactivity to a single base URL. The app expects:
    - `POST /slack/events` — events and actions
    - `GET /slack/install` — OAuth start
    - `GET /slack/oauth_redirect` — OAuth callback
-   - `GET /health` — liveness (JSON `{"status":"ok"}`) for keep-warm probes  
+   - `GET /health` — liveness (JSON `{"status":"ok"}`) for keep-warm probes
    Any path under `/api/federation` is used for federation when enabled.
 
-2. **Secret injection**  
+2. **Secret injection**
    Slack and DB credentials must be available as environment variables (or equivalent) at process start. No assumption of a specific secret store; provider chooses (e.g. Lambda env, Secret Manager, Parameter Store).
 
-3. **Database**  
+3. **Database**
    **PostgreSQL / MySQL:** In non–local environments the app uses TLS by default; allow outbound TCP to the DB host (typically **5432** for PostgreSQL, **3306** for MySQL). **SQLite:** No network; the app uses a local file. Single-writer; ensure backups and file durability for production use.
 
-4. **Keep-warm / scheduled ping (optional but recommended)**  
+4. **Keep-warm / scheduled ping (optional but recommended)**
    To avoid cold-start latency, the app supports a periodic HTTP GET to a configurable path. The provider should support a scheduled job (e.g. CloudWatch Events, Cloud Scheduler) that hits the service on an interval (e.g. 5 minutes). **AWS (SAM):** EventBridge Scheduler invokes the Lambda directly on a schedule; the Lambda handler returns a small JSON success for `source` `aws.scheduler` / `aws.events` without treating the payload as a Slack request.
 
-5. **Stateless execution**  
+5. **Stateless execution**
    The app is stateless; state lives in the configured database (PostgreSQL, MySQL, or SQLite). Horizontal scaling is supported with PostgreSQL/MySQL as long as all instances share the same DB and env; SQLite is single-writer.
 
 ## CI Auth Model
@@ -134,3 +134,4 @@ To keep forks easy to rebase and upstream contributions easy to merge:
 2. Do not couple `syncbot/` application code to a cloud provider (AWS/GCP/Azure-specific SDK calls, metadata assumptions, or IAM wiring).
 3. Treat this file as the source of truth for runtime env contract; if a fork adds infra behavior, map it back to this contract.
 4. Upstream PRs should include only provider-neutral app changes unless a provider-specific file is explicitly being updated.
+5. The following files are **canonical-upstream automation** on [sprocktech/syncbot](https://github.com/sprocktech/syncbot), not a per-fork runtime contract: `.github/workflows/release.yml`, `.github/workflows/dependabot-auto-merge.yml`, `.github/workflows/pr-title.yml`, `.github/dependabot.yml`, `.github/CODEOWNERS`. Forks should pull `main` and deploy with their own Environments; they must **not** run a second python-semantic-release. See [AI_AGENTS.md](AI_AGENTS.md) and [DEVELOPMENT.md](DEVELOPMENT.md).

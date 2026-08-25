@@ -37,9 +37,9 @@ def cfn_create_event():
             "Host": "db.example.com",
             "AdminUser": "admin",
             "AdminPassword": "adminpw",
+            "AppPassword": "apppw",
             "Schema": "syncbot_test",
             "Stage": "test",
-            "SecretArn": "arn:aws:secretsmanager:us-east-1:123:secret:x",
             "DatabaseEngine": "mysql",
         },
     }
@@ -49,7 +49,6 @@ def test_handler_calls_mysql_setup(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send") as mock_send,
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql") as mock_pg,
@@ -83,7 +82,6 @@ def test_handler_calls_postgresql_setup(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send") as mock_send,
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql") as mock_pg,
@@ -110,7 +108,6 @@ def test_handler_username_prefix_with_dot(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send"),
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql"),
@@ -125,7 +122,6 @@ def test_handler_username_prefix_without_dot(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send"),
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql"),
@@ -141,7 +137,6 @@ def test_handler_username_prefix_applied_to_bare_root_admin(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send"),
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql"),
@@ -157,7 +152,6 @@ def test_handler_app_username_override_bypasses_prefix_and_default(cfn_create_ev
     handler = _fresh_handler()
     with (
         patch.object(handler, "send"),
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql"),
@@ -172,7 +166,6 @@ def test_handler_custom_port_passed_to_tcp_and_mysql(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send"),
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable") as mock_tcp,
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql"),
@@ -187,7 +180,6 @@ def test_handler_mysql_create_schema_false(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send"),
-        patch.object(handler, "get_secret_value", return_value="apppw"),
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql"),
@@ -196,26 +188,20 @@ def test_handler_mysql_create_schema_false(cfn_create_event):
     assert mock_mysql.call_args[1]["create_schema"] is False
 
 
-def test_handler_put_secret_when_no_app_user(cfn_create_event):
+def test_handler_success_when_no_app_user_still_runs_schema_paths(cfn_create_event):
+    """CreateAppUser=false uses admin identity for CFN output; DB setup may still run for schema."""
     cfn_create_event["ResourceProperties"]["CreateAppUser"] = "false"
     handler = _fresh_handler()
     with (
         patch.object(handler, "send") as mock_send,
-        patch.object(handler, "get_secret_value") as mock_get,
         patch.object(handler, "_assert_tcp_reachable"),
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql") as mock_pg,
-        patch.object(handler, "put_secret_string") as mock_put,
     ):
         handler._handler_impl(cfn_create_event, MagicMock())
-    mock_get.assert_not_called()
     mock_mysql.assert_called_once()
     assert mock_mysql.call_args[1]["create_app_user"] is False
     mock_pg.assert_not_called()
-    mock_put.assert_called_once_with(
-        cfn_create_event["ResourceProperties"]["SecretArn"],
-        "adminpw",
-    )
     assert mock_send.call_args[0][2] == "SUCCESS"
     assert mock_send.call_args[0][3] == {"Username": "admin"}
 
@@ -226,20 +212,13 @@ def test_handler_skip_both_no_db_client(cfn_create_event):
     handler = _fresh_handler()
     with (
         patch.object(handler, "send") as mock_send,
-        patch.object(handler, "get_secret_value") as mock_get,
         patch.object(handler, "_assert_tcp_reachable") as mock_tcp,
         patch.object(handler, "setup_database_mysql") as mock_mysql,
         patch.object(handler, "setup_database_postgresql") as mock_pg,
-        patch.object(handler, "put_secret_string") as mock_put,
     ):
         handler._handler_impl(cfn_create_event, MagicMock())
-    mock_get.assert_not_called()
     mock_mysql.assert_not_called()
     mock_pg.assert_not_called()
     mock_tcp.assert_called_once_with("db.example.com", 3306)
-    mock_put.assert_called_once_with(
-        cfn_create_event["ResourceProperties"]["SecretArn"],
-        "adminpw",
-    )
     assert mock_send.call_args[0][2] == "SUCCESS"
     assert mock_send.call_args[0][3] == {"Username": "admin"}

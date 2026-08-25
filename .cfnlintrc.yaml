@@ -1,0 +1,8 @@
+# SAM `validate --lint` treats cfn-lint warnings as failure.
+# W1030/W1033 fire on dummy/empty VPC parameter defaults (external DB path).
+# W3691 fires when optional in-template RDS engine pins age out of "new instance" lists.
+# Template Metadata ignore_checks is not applied reliably by current SAM CLI.
+ignore_checks:
+  - W1030
+  - W1033
+  - W3691

@@ -64,7 +64,7 @@ syncbot/
 
 After `poetry add` / `poetry update`, keep `poetry.lock` and the pinned requirements files aligned:
 
-- **Recommended:** Install [pre-commit](https://pre-commit.com) (`pip install pre-commit && pre-commit install`). When you commit a change to `poetry.lock`, the **`sync-requirements`** hook runs `poetry export` and refreshes **`syncbot/requirements.txt`** and **`infra/aws/db_setup/requirements.txt`** (the DbSetup Lambda subset) automatically.
+- **Recommended:** Install [pre-commit](https://pre-commit.com) (`pip install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg`). When you commit a change to `poetry.lock`, the **`sync-requirements`** hook runs `poetry export` and refreshes **`syncbot/requirements.txt`** and **`infra/aws/db_setup/requirements.txt`** (the DbSetup Lambda subset) automatically.
 
 - **Without pre-commit:** Run the export yourself (Poetry 2.x needs the export plugin once: `poetry self add poetry-plugin-export`):
 
@@ -76,4 +76,25 @@ grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> 
 
 The root **`./deploy.sh`** dependency-sync menu may run `poetry update` and regenerate both requirements files when Poetry is on your `PATH` (see [DEPLOY.md](DEPLOY.md)).
 
-The AWS deploy workflow runs **`pip-audit`** on `syncbot/requirements.txt` and `infra/aws/db_setup/requirements.txt` (see [.github/workflows/deploy-aws.yml](../.github/workflows/deploy-aws.yml)). CI verifies both files match `poetry.lock` (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)).
+CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)). The requirements-sync job keeps committed `*requirements.txt` aligned with the lockfile.
+
+## Releases & Versioning
+
+- **Conventional Commits** are required for squash-merged PR titles (see [CONTRIBUTING.md](../CONTRIBUTING.md)); [.github/workflows/pr-title.yml](../.github/workflows/pr-title.yml) enforces the format (Dependabot uses `.github/dependabot.yml` prefixes).
+- On **[sprocktech/syncbot](https://github.com/sprocktech/syncbot)** only, pushes to **`main`** run [.github/workflows/release.yml](../.github/workflows/release.yml) (**python-semantic-release**). It bumps `[tool.poetry] version` in `pyproject.toml`, updates `CHANGELOG.md` (inserting above `<!-- version list -->`), creates a **GitHub Release**, and tags the repo with `X.Y.Z` (no `v` prefix), matching existing tags. Forks should **not** run a second release stream.
+- Release commits and requirements auto-fix commits are created via the **GitHub git API** so they show as **Verified** (GitHub `web-flow` signing) without storing a bot GPG key in CI.
+- Forks pull `main` and deploy **`test`** / **`prod`** themselves (see [DEPLOY.md](DEPLOY.md)). There is no automated `main` → `test` promote PR from upstream.
+
+## Required GitHub settings (manual)
+
+These cannot be set from a PR — configure once on **sprocktech/syncbot** under **Settings**:
+
+- **Allow auto-merge**; default merge method **Squash** (use the PR title as the squash commit subject).
+- **Branch protection / ruleset** on `main`: require a pull request; required checks **`ci-gate`** and **`PR title / conventional`**. Do **not** require Code Owners or resolved conversations. Prefer not requiring “branch must be up to date” until Dependabot rebase is confirmed.
+- **Bypass** for GitHub Actions (`github-actions[bot]`) on `main` so `release.yml` and `requirements-sync` can update the branch (PSR uses `git.updateRef`, which is a direct push).
+- Dependabot **version updates** (from `.github/dependabot.yml`) and **security updates** enabled. Disable Dependabot on deploy forks (e.g. `f3-tulsa/syncbot`) so they do not open a second pile of PRs.
+- **Secrets / variables** for deploy environments live on the **fork**, not on sprocktech — see [DEPLOY.md](DEPLOY.md).
+
+## Commit signing (local)
+
+Maintainers using **GPG-signed commits** should keep `commit.gpgsign` enabled locally; automated release commits use GitHub’s API signatures instead. See [AGENTS.md](../AGENTS.md) and [AI_AGENTS.md](AI_AGENTS.md).

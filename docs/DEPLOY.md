@@ -87,7 +87,7 @@ See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and ou
 
 ## Fork-First model (recommended for forks)
 
-**Branch roles** (see [CONTRIBUTING.md](../CONTRIBUTING.md)): use **`main`** to track upstream and merge contributions; on your fork, use **`test`** and **`prod`** for automated deploys (CI runs on push to those branches).
+**Branch roles** (see [CONTRIBUTING.md](../CONTRIBUTING.md)): use **`main`** to track [sprocktech/syncbot](https://github.com/sprocktech/syncbot) and merge contributions; on your fork, use **`test`** and **`prod`** for automated deploys (workflows run on push to those branches). Canonical releases are produced on sprocktech `main` only — do not run a second semantic-release on the fork.
 
 1. Keep `syncbot/` provider-neutral; use only env vars from [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 2. Put provider code in `infra/<provider>/` and `.github/workflows/deploy-<provider>.yml`.

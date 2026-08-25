@@ -1,0 +1,10 @@
+# Review hints for GitHub UI. Do not enable "Require review from Code Owners"
+# on sprocktech/syncbot without a Dependabot bypass — that would block auto-merge.
+# Forks: replace @sprocktech-dev with your maintainers before turning that setting on.
+# See docs/INFRA_CONTRACT.md (Fork Compatibility Policy) and docs/AI_AGENTS.md.
+
+/infra/ @sprocktech-dev
+/.github/workflows/ @sprocktech-dev
+/pyproject.toml @sprocktech-dev
+/AGENTS.md @sprocktech-dev
+/docs/ @sprocktech-dev

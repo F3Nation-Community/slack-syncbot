@@ -1,0 +1,54 @@
+# Enable squash auto-merge for Dependabot patch/minor version updates and
+# security updates (including semver-major when an advisory requires it).
+# Version-only majors are closed. sprocktech/syncbot only.
+name: Dependabot auto-merge
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  automerge:
+    if: github.repository == 'sprocktech/syncbot' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dependabot/fetch-metadata@v2
+        id: meta
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Skip when hold label is present
+        if: contains(github.event.pull_request.labels.*.name, 'hold')
+        run: echo "hold label set; leaving auto-merge disabled."
+
+      - name: Close version-only major updates
+        if: >-
+          !contains(github.event.pull_request.labels.*.name, 'hold') &&
+          steps.meta.outputs.update-type == 'version-update:semver-major' &&
+          steps.meta.outputs.alert-state == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr close "$PR_URL" --comment "$(cat <<'EOF'
+          Closing this version-only **major** update. Dependabot is configured to ignore majors unless a **security** advisory requires the bump (see `.github/dependabot.yml`).
+
+          Open a human PR when a runtime or Actions major is intentional (for example Python 3.14).
+          EOF
+          )"
+
+      - name: Enable squash auto-merge
+        if: >-
+          !contains(github.event.pull_request.labels.*.name, 'hold') &&
+          (
+            steps.meta.outputs.update-type != 'version-update:semver-major' ||
+            steps.meta.outputs.alert-state != ''
+          )
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: gh pr merge --auto --squash "$PR_URL"
