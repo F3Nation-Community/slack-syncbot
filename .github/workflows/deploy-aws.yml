@@ -34,7 +34,7 @@ jobs:
     if: vars.DEPLOY_TARGET != 'gcp'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -68,7 +68,7 @@ jobs:
     environment: test
     needs: sam-build
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: aws-actions/configure-aws-credentials@v6
         with:
@@ -188,7 +188,7 @@ jobs:
     environment: prod
     needs: sam-build
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - uses: aws-actions/configure-aws-credentials@v6
         with:
