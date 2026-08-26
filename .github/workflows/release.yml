@@ -37,7 +37,7 @@ jobs:
           persist-credentials: false
 
       - id: psr
-        uses: python-semantic-release/python-semantic-release@v9.21.1
+        uses: python-semantic-release/python-semantic-release@v9.21.2
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           commit: "false"
