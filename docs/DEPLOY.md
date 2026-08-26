@@ -228,7 +228,7 @@ The interactive deploy script can set these via `gh` when you opt in. Use `--set
 
 **Bootstrap sync in CI:** The deploy workflow includes a conditional step that syncs the bootstrap CloudFormation stack (`template.bootstrap.yaml`) when the template has changed since the last deploy. The step compares template hashes and skips if unchanged. First-time bootstrap must be done locally with `./deploy.sh --env <stage> --bootstrap aws`.
 
-**Dependency hygiene:** The CI workflow runs `pip-audit` on `syncbot/requirements.txt` and `infra/aws/db_setup/requirements.txt`. After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates both requirements files when `poetry.lock` changes. If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md).
+**Dependency hygiene:** CI **`pip-audit`** exports from `poetry.lock` in the job (it does not read the committed `*requirements.txt` files). After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates **`syncbot/requirements.txt`** and **`infra/aws/db_setup/requirements.txt`** when `poetry.lock` changes (`sam build` installs from those files). If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md). Same-repo CI may commit the export onto the PR if the files are stale.
 
 ### 4. Ongoing local deploys (least privilege)
 
