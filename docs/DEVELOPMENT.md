@@ -76,7 +76,7 @@ grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> 
 
 The root **`./deploy.sh`** dependency-sync menu may run `poetry update` and regenerate both requirements files when Poetry is on your `PATH` (see [DEPLOY.md](DEPLOY.md)).
 
-CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)). The requirements-sync job keeps committed `*requirements.txt` aligned with the lockfile.
+CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)); it does not audit the committed `*requirements.txt` files. On **same-repo** PRs, **`requirements-sync`** may commit an export onto the branch **without** `[skip ci]` so required checks run on HEAD (Dependabot auto-merge needs that). Fork PRs fail if the files are stale — run the pre-commit hook. On **push** to `main` / `test` / `prod`, a leftover mismatch still tries a `[skip ci]` commit; that push can be rejected if `github-actions[bot]` cannot bypass the ruleset (acceptable when the squash already included the export).
 
 ## Releases & Versioning
 
@@ -90,8 +90,8 @@ CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows
 These cannot be set from a PR — configure once on **sprocktech/syncbot** under **Settings**:
 
 - **Allow auto-merge**; default merge method **Squash** (use the PR title as the squash commit subject).
-- **Branch protection / ruleset** on `main`: require a pull request; required checks **`ci-gate`** and **`PR title / conventional`**. Do **not** require Code Owners or resolved conversations. Prefer not requiring “branch must be up to date” until Dependabot rebase is confirmed.
-- **Bypass** for GitHub Actions (`github-actions[bot]`) on `main` so `release.yml` and `requirements-sync` can update the branch (PSR uses `git.updateRef`, which is a direct push).
+- **Branch protection / ruleset** on `main`: require a pull request; required checks **`ci-gate`** and **`conventional`** (the job name from [pr-title.yml](../.github/workflows/pr-title.yml), not “PR title / conventional”). Do **not** require Code Owners or resolved conversations. Prefer not requiring “branch must be up to date” until Dependabot rebase is confirmed.
+- **Bypass list:** keep **Organization admin** only. Do **not** add Dependabot, Write, or Maintain — Dependabot auto-merge already merges *through the PR* when checks pass; a Dependabot bypass would allow pushing to `main` without a PR. The built-in `github-actions[bot]` does **not** appear in the bypass picker (it is not an installable App). Direct `updateRef` from Actions (`release.yml` / a post-merge requirements-sync) will fail until a **custom GitHub App** is installed and added to the bypass list, or an org-admin PAT is used for those jobs.
 - Dependabot **version updates** (from `.github/dependabot.yml`) and **security updates** enabled. Disable Dependabot on deploy forks (e.g. `f3-tulsa/syncbot`) so they do not open a second pile of PRs.
 - **Secrets / variables** for deploy environments live on the **fork**, not on sprocktech — see [DEPLOY.md](DEPLOY.md).
 

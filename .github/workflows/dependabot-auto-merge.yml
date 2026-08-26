@@ -7,13 +7,18 @@ on:
   pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
 
+concurrency:
+  group: dependabot-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
   automerge:
-    if: github.repository == 'sprocktech/syncbot' && github.actor == 'dependabot[bot]'
+    # PR author, not github.actor: requirements-sync commits as github-actions[bot].
+    if: github.repository == 'sprocktech/syncbot' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: dependabot/fetch-metadata@v2

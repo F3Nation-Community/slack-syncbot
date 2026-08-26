@@ -22,8 +22,9 @@ On pull requests, [.github/workflows/ci.yml](../.github/workflows/ci.yml) includ
 - **`sam-lint`** — `sam validate --lint` (runs when AWS templates / SAM workflow pins change).
 - **`test`** — `pytest` over `tests/` and infra tests (same as local command in [AGENTS.md](../AGENTS.md)).
 - **`ci-gate`** — aggregator; the check to require on `main`. Skipped path-filtered jobs count as success.
+- **`requirements-sync`** — on same-repo PRs, may commit `*requirements.txt` from `poetry.lock` **without** `[skip ci]` so `ci-gate` / `conventional` run on HEAD. Forks must export themselves.
 
-Release automation and signed bot commits are described in [DEVELOPMENT.md](DEVELOPMENT.md) — Releases & Versioning.
+Release automation and signed bot commits are described in [DEVELOPMENT.md](DEVELOPMENT.md) — Releases & Versioning. `python-semantic-release` still uses `GITHUB_TOKEN` / `git.updateRef`; that push is blocked until a custom GitHub App (or org-admin PAT) can bypass the `main` ruleset. Dependabot auto-merge does not need that.
 
 ## Filing an AI-friendly issue
 
@@ -44,9 +45,9 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 Configure in GitHub **Settings → Rulesets / Branches** for `main`:
 
 - Require a pull request before merging
-- Required checks: **`ci-gate`**, **`PR title / conventional`**
-- Do **not** require review from Code Owners (blocks Dependabot auto-merge) unless Dependabot is on a bypass list
-- Allow GitHub Actions to bypass so release and requirements-sync commits can update `main`
+- Required checks: **`ci-gate`**, **`conventional`**
+- Do **not** require review from Code Owners (that would block Dependabot auto-merge)
+- Do **not** add Dependabot, Write, or Maintain to the ruleset bypass list; `github-actions[bot]` cannot be added here. Organization admin bypass is enough for humans. Releases that `updateRef` `main` need a later custom GitHub App or PAT.
 - Allow auto-merge; squash only; do not require conversation resolution
 
 Exact job names come from `.github/workflows/ci.yml` and `pr-title.yml`.
