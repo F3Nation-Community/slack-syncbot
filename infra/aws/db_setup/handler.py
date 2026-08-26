@@ -210,7 +210,6 @@ def _assert_tcp_reachable(host: str, port: int) -> None:
     raise RuntimeError(f"Cannot reach {host}:{port} over TCP after {DB_CONNECT_ATTEMPTS} attempts: {last_exc}")
 
 
-
 def setup_database_mysql(
     *,
     host: str,
@@ -364,6 +363,5 @@ def setup_database_postgresql(
             last_exc = exc
             time.sleep(db_connect_retry_seconds)
     raise RuntimeError(
-        f"Failed connecting to database '{schema}' after "
-        f"{max_db_connect_attempts} attempts: {last_exc}"
+        f"Failed connecting to database '{schema}' after " f"{max_db_connect_attempts} attempts: {last_exc}"
     )

@@ -68,12 +68,12 @@ class TestFederationMessageInbound:
             patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=mapping),
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-test"),
             patch.object(federation_api, "WebClient", MagicMock()),
-            patch.object(federation_api.helpers, "get_user_info", return_value=("Local Nacho", "https://local.example/n.png")),
+            patch.object(
+                federation_api.helpers, "get_user_info", return_value=("Local Nacho", "https://local.example/n.png")
+            ),
             patch.object(federation_api, "_resolve_mentions_for_federated", side_effect=lambda t, *_: t),
             patch.object(federation_api.helpers, "resolve_channel_references", side_effect=lambda t, *a, **k: t),
-            patch.object(
-                federation_api.helpers, "post_message", return_value={"ts": "99.000001"}
-            ) as post_message_mock,
+            patch.object(federation_api.helpers, "post_message", return_value={"ts": "99.000001"}) as post_message_mock,
         ):
             status, resp = federation_api.handle_message(body, fed_ws)
 
@@ -310,7 +310,9 @@ class TestFederationReactionFallback:
             patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=mapping),
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-test"),
             patch.object(federation_api, "WebClient", return_value=ws_client),
-            patch.object(federation_api.helpers, "get_user_info", return_value=("Local Nacho", "https://local.example/n.png")),
+            patch.object(
+                federation_api.helpers, "get_user_info", return_value=("Local Nacho", "https://local.example/n.png")
+            ),
             patch.object(
                 federation_api.helpers, "post_message", return_value={"ts": "200.000001"}
             ) as post_message_mock,

@@ -5,12 +5,54 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    rebase-strategy: auto
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+    groups:
+      github-actions:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
 
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 10
+    rebase-strategy: auto
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     ignore:
       - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
+    groups:
+      docker-patch:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 10
+    rebase-strategy: auto
+    versioning-strategy: increase-if-necessary
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    ignore:
+      - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+    groups:
+      python-patch-minor:
+        applies-to: version-updates
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

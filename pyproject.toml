@@ -16,7 +16,7 @@ slack-bolt = "^1.27.0"
 sqlalchemy = "^2.0"
 pymysql = "^1.1.2"
 psycopg2-binary = "^2.9"
-cryptography = "^46.0.0"
+cryptography = "^50.0.0"
 requests = "^2.32.0"
 
 
@@ -64,3 +64,27 @@ indent-style = "space"
 [build-system]
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:tool.poetry.version"]
+commit_message = "chore(release): {version} [skip ci]"
+tag_format = "{version}"
+major_on_zero = false
+build_command = ""
+
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.changelog]
+mode = "update"
+insertion_flag = "<!-- version list -->"
+exclude_commit_patterns = ["^chore\\(release\\):", "^Merge ", "^chore: sync requirements"]
+
+[tool.semantic_release.changelog.default_templates]
+changelog_file = "CHANGELOG.md"
+
+[tool.semantic_release.commit_parser_options]
+allowed_tags = ["feat", "fix", "perf", "refactor", "docs", "build", "chore", "ci", "test", "style"]
+minor_tags = ["feat"]
+patch_tags = ["fix", "perf"]
