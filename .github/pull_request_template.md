@@ -18,6 +18,6 @@
 
 - [ ] PR title is a valid **Conventional Commit** (see [CONTRIBUTING.md](../CONTRIBUTING.md))
 - [ ] No manual edits to `CHANGELOG.md`, `pyproject.toml` `version`, or `*requirements.txt` (releases / poetry export own these)
-- [ ] CI passes (`ci-gate`: requirements sync, forbidden path checks, ruff, SAM lint when infra changes, pip-audit when deps change, tests)
+- [ ] CI passes (`ci-gate`: requirements sync, forbidden path checks, ruff, SAM lint / terraform-validate / docker-build-gcp when those paths change, pip-audit when deps change, tests)
 - [ ] Docs updated if behavior or deploy steps changed
 - [ ] No new cloud-provider-specific code under `syncbot/` (keep infra in `infra/` and workflows)

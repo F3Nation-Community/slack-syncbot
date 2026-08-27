@@ -152,12 +152,20 @@ ensure_gh_authenticated() {
   return 1
 }
 
-cloud_sql_instance_exists() {
-  local project_id="$1"
-  local instance_name="$2"
-  gcloud sql instances describe "$instance_name" \
-    --project "$project_id" \
-    --format='value(name)' >/dev/null 2>&1
+resolve_gcp_database_mode() {
+  # Do not infer from DATABASE_HOST — .env.deploy.example always has a TiDB host.
+  local mode="${GCP_DATABASE_MODE:-}"
+  if [[ "${DATABASE_ENGINE:-}" == "sqlite" ]]; then
+    mode="sqlite"
+  fi
+  mode="${mode:-sqlite}"
+  case "$mode" in
+    sqlite|existing) echo "$mode" ;;
+    *)
+      echo "Error: GCP_DATABASE_MODE must be sqlite or existing (got '$mode')." >&2
+      return 1
+      ;;
+  esac
 }
 
 cloud_run_env_value() {
@@ -391,7 +399,10 @@ write_deploy_receipt() {
 
 ## Configuration
 - GCP_PROJECT_ID=$PROJECT_ID
-- CLOUD_RUN_IMAGE=${CLOUD_IMAGE:-}
+- GCP_DATABASE_MODE=${GCP_DATABASE_MODE:-sqlite}
+- GCP_CLOUD_RUN_MIN_INSTANCES=${GCP_CLOUD_RUN_MIN_INSTANCES:-0}
+- ENABLE_KEEP_WARM=${ENABLE_KEEP_WARM:-true}
+- GCP_CLOUD_RUN_IMAGE=${CLOUD_IMAGE:-}
 - DATABASE_ENGINE=${DATABASE_ENGINE:-}
 - DATABASE_SCHEMA=${DATABASE_SCHEMA:-}
 - DATABASE_HOST=${DATABASE_HOST:-}
@@ -480,7 +491,7 @@ configure_github_actions_gcp() {
     echo "  GCP_REGION       = $gcp_region"
     echo "  GCP_SERVICE_ACCOUNT = $deploy_sa_email"
     echo "  DEPLOY_TARGET    = gcp"
-    echo "Also set GCP_WORKLOAD_IDENTITY_PROVIDER for deploy-gcp.yml."
+    echo "Also set GCP_WORKLOAD_IDENTITY_PROVIDER from terraform output workload_identity_provider."
     return 0
   fi
 
@@ -494,9 +505,13 @@ configure_github_actions_gcp() {
     gh variable set GCP_PROJECT_ID --body "$gcp_project_id" -R "$repo"
     gh variable set GCP_REGION --body "$gcp_region" -R "$repo"
     [[ -n "$deploy_sa_email" ]] && gh variable set GCP_SERVICE_ACCOUNT --body "$deploy_sa_email" -R "$repo"
+    wif="$(cd "$terraform_dir" && terraform output -raw workload_identity_provider 2>/dev/null || true)"
+    [[ -n "$wif" ]] && gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$wif" -R "$repo"
     gh variable set DEPLOY_TARGET --body "gcp" -R "$repo"
     echo "GitHub repository variables updated."
-    echo "Remember to set GCP_WORKLOAD_IDENTITY_PROVIDER."
+    if [[ -z "$wif" ]]; then
+      echo "GCP_WORKLOAD_IDENTITY_PROVIDER is empty — re-apply Terraform with GITHUB_REPO=owner/repo (this GitHub repo)."
+    fi
   fi
 
   if prompt_yn "Set environment variable STAGE_NAME for '$env_name' now?" "y"; then
@@ -505,7 +520,8 @@ configure_github_actions_gcp() {
     echo "Environment variable STAGE_NAME updated for '$env_name'."
   fi
 
-  if prompt_yn "Set environment secrets for '$env_name' now (Slack secrets, DATA_ENCRYPTION_KEY, DATABASE_PASSWORD)?" "n"; then
+  echo "Image-only CI does not need Slack secrets in GitHub (they stay on Cloud Run from terraform apply)."
+  if prompt_yn "Set environment secrets for '$env_name' now anyway (optional)?" "n"; then
     if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
       SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
     fi
@@ -514,8 +530,10 @@ configure_github_actions_gcp() {
     fi
     gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
     gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
-    gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
-    gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
+    gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "${DATA_ENCRYPTION_KEY:-}" -R "$repo"
+    if [[ "${GCP_DATABASE_MODE:-sqlite}" == "existing" && -n "${DATABASE_PASSWORD:-}" ]]; then
+      gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
+    fi
     [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$env_name" --body "$DATABASE_USER" -R "$repo"
     echo "GitHub environment secrets updated for '$env_name'."
     echo "See docs/DEPLOY.md for full list of required variables and secrets."
@@ -533,7 +551,11 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   PROJECT_ID="${GCP_PROJECT_ID:?GCP_PROJECT_ID required in env file}"
   REGION="${GCP_REGION:-us-central1}"
   STAGE="${STAGE:?STAGE required}"
-  CLOUD_IMAGE="${CLOUD_RUN_IMAGE:?CLOUD_RUN_IMAGE required in env file}"
+  CLOUD_IMAGE="${GCP_CLOUD_RUN_IMAGE:-${CLOUD_RUN_IMAGE:-}}"
+  GCP_DATABASE_MODE="$(resolve_gcp_database_mode)"
+  GCP_CLOUD_RUN_MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+  ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
+  GITHUB_REPO="${GITHUB_REPO:-}"
 
   ensure_gcloud_authenticated
   ensure_gcloud_adc_authenticated
@@ -549,7 +571,11 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
   DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
   USE_EXISTING="false"
-  [[ -n "$DATABASE_HOST" ]] && USE_EXISTING="true"
+  [[ "$GCP_DATABASE_MODE" == "existing" ]] && USE_EXISTING="true"
+
+  if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+    update_env_file "$ENV_FILE_PATH" "GCP_DATABASE_MODE" "$GCP_DATABASE_MODE"
+  fi
 
   # Auto-generate DATA_ENCRYPTION_KEY if empty
   if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
@@ -562,8 +588,13 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     fi
   fi
 
+  if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+    update_env_file "$ENV_FILE_PATH" "GCP_CLOUD_RUN_MIN_INSTANCES" "$GCP_CLOUD_RUN_MIN_INSTANCES"
+    update_env_file "$ENV_FILE_PATH" "ENABLE_KEEP_WARM" "$ENABLE_KEEP_WARM"
+  fi
+
   # Auto-generate DATABASE_PASSWORD + derive DATABASE_USER when using existing DB with admin setup
-  if [[ -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_PASSWORD:-}" ]]; then
+  if [[ "$USE_EXISTING" == "true" && -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_PASSWORD:-}" ]]; then
     DATABASE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
     echo "Generated DATABASE_PASSWORD=$DATABASE_PASSWORD"
     if [[ -n "${ENV_FILE_PATH:-}" ]]; then
@@ -571,7 +602,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       echo "  (saved to $ENV_FILE_PATH)"
     fi
   fi
-  if [[ -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_USER:-}" ]]; then
+  if [[ "$USE_EXISTING" == "true" && -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_USER:-}" ]]; then
     DATABASE_USER="${DATABASE_USERNAME_PREFIX:+${DATABASE_USERNAME_PREFIX}.}sbapp_${STAGE}"
     DATABASE_USER="${DATABASE_USER//-/_}"
     echo "Derived DATABASE_USER=$DATABASE_USER"
@@ -589,7 +620,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "-var=project_id=$PROJECT_ID"
     "-var=region=$REGION"
     "-var=stage=$STAGE"
-    "-var=cloud_run_image=$CLOUD_IMAGE"
     "-var=log_level=${LOG_LEVEL:-INFO}"
     "-var=require_admin=${REQUIRE_ADMIN:-true}"
     "-var=soft_delete_retention_days=${SOFT_DELETE_RETENTION_DAYS:-30}"
@@ -598,10 +628,14 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "-var=slack_client_id=${SLACK_CLIENT_ID:?SLACK_CLIENT_ID required}"
     "-var=slack_client_secret=${SLACK_CLIENT_SECRET:?SLACK_CLIENT_SECRET required}"
     "-var=data_encryption_key=${DATA_ENCRYPTION_KEY:?DATA_ENCRYPTION_KEY required}"
-    "-var=database_password=${DATABASE_PASSWORD:?DATABASE_PASSWORD required}"
-    "-var=database_backend=${DATABASE_ENGINE:-mysql}"
+    "-var=database_mode=$GCP_DATABASE_MODE"
+    "-var=cloud_run_min_instances=${GCP_CLOUD_RUN_MIN_INSTANCES}"
+    "-var=enable_keep_warm=${ENABLE_KEEP_WARM}"
+    "-var=github_repo=${GITHUB_REPO}"
+    "-var=database_backend=$([[ "$GCP_DATABASE_MODE" == "sqlite" ]] && echo sqlite || echo "${DATABASE_ENGINE:-mysql}")"
     "-var=database_port=${DATABASE_PORT:-3306}"
   )
+  [[ -n "$CLOUD_IMAGE" ]] && VARS+=("-var=cloud_run_image=$CLOUD_IMAGE")
   [[ -n "${DATABASE_USER:-}" ]] && VARS+=("-var=database_user=$DATABASE_USER")
   [[ -n "${SYNCBOT_INSTANCE_ID:-}" ]] && VARS+=("-var=syncbot_instance_id=$SYNCBOT_INSTANCE_ID")
   [[ -n "${SYNCBOT_PUBLIC_URL:-}" ]] && VARS+=("-var=syncbot_public_url_override=$SYNCBOT_PUBLIC_URL")
@@ -611,7 +645,15 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   [[ -n "${DATABASE_SSL_CA_PATH:-}" ]] && VARS+=("-var=database_ssl_ca_path=$DATABASE_SSL_CA_PATH")
 
   if [[ "$USE_EXISTING" == "true" ]]; then
-    VARS+=("-var=use_existing_database=true")
+    if [[ -z "${DATABASE_HOST:-}" ]]; then
+      echo "Error: DATABASE_HOST is required when GCP_DATABASE_MODE=existing." >&2
+      exit 1
+    fi
+    if [[ -z "${DATABASE_PASSWORD:-}" ]]; then
+      echo "Error: DATABASE_PASSWORD is required when GCP_DATABASE_MODE=existing." >&2
+      exit 1
+    fi
+    VARS+=("-var=database_password=$DATABASE_PASSWORD")
     VARS+=("-var=existing_db_host=$DATABASE_HOST")
     VARS+=("-var=existing_db_schema=${DATABASE_SCHEMA:-syncbot}")
     [[ -n "${DATABASE_USERNAME_PREFIX:-}" ]] && VARS+=("-var=existing_db_username_prefix=$DATABASE_USERNAME_PREFIX")
@@ -644,19 +686,19 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     else
       ENV_NAME="$STAGE"
       DEPLOY_SA="$(terraform output -raw deploy_service_account_email 2>/dev/null || true)"
+      WIF_PROVIDER="$(terraform output -raw workload_identity_provider 2>/dev/null || true)"
       gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null 2>&1 || true
       gh variable set GCP_PROJECT_ID --body "$PROJECT_ID" -R "$REPO" 2>/dev/null || true
       gh variable set GCP_REGION --body "$REGION" -R "$REPO" 2>/dev/null || true
       gh variable set DEPLOY_TARGET --body "gcp" -R "$REPO" 2>/dev/null || true
       [[ -n "$DEPLOY_SA" ]] && gh variable set GCP_SERVICE_ACCOUNT --body "$DEPLOY_SA" -R "$REPO" 2>/dev/null || true
+      [[ -n "$WIF_PROVIDER" ]] && gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$WIF_PROVIDER" -R "$REPO" 2>/dev/null || true
       gh variable set STAGE_NAME --env "$ENV_NAME" --body "$STAGE" -R "$REPO" 2>/dev/null || true
       gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO" 2>/dev/null || true
-      gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
-      gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
-      gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
-      gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
-      [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
-      echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
+      echo "GitHub repository variables updated (image-only CI; Slack secrets stay on Cloud Run from terraform apply)."
+      if [[ "$USE_EXISTING" == "true" && -n "${DATABASE_PASSWORD:-}" ]]; then
+        gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
+      fi
     fi
   fi
 
@@ -712,6 +754,12 @@ if [[ "$STAGE" != "test" && "$STAGE" != "prod" ]]; then
   echo "Error: stage must be 'test' or 'prod'." >&2
   exit 1
 fi
+GCP_DATABASE_MODE="${GCP_DATABASE_MODE:-sqlite}"
+GCP_CLOUD_RUN_MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
+CLOUD_IMAGE="${GCP_CLOUD_RUN_IMAGE:-${CLOUD_RUN_IMAGE:-}}"
+USE_EXISTING="false"
+VARS=()
 SERVICE_NAME="syncbot-${STAGE}"
 EXISTING_SERVICE_URL="$(gcloud run services describe "$SERVICE_NAME" \
   --project "$PROJECT_ID" \
@@ -744,23 +792,33 @@ echo "=== Configuration ==="
 DB_PORT="3306"
 DB_CREATE_APP_USER="true"
 DB_CREATE_SCHEMA="true"
-echo "=== Database Source ==="
-# USE_EXISTING=true: point Terraform at an external DB only (use_existing_database); skip creating Cloud SQL.
-# USE_EXISTING_DEFAULT: y/n default for the prompt when redeploying without a managed instance for this stage.
+echo "=== Database ==="
+echo "SQLite + Litestream (default): free at low usage; DB file on Cloud Run, replica in GCS."
+echo "Existing host: TiDB Cloud or other MySQL. Cloud SQL is not created."
+GCP_DATABASE_MODE="sqlite"
 USE_EXISTING="false"
-USE_EXISTING_DEFAULT="n"
-DB_INSTANCE_NAME="${SERVICE_NAME}-db"
-if [[ -n "$EXISTING_SERVICE_URL" ]]; then
-  if cloud_sql_instance_exists "$PROJECT_ID" "$DB_INSTANCE_NAME"; then
-    USE_EXISTING_DEFAULT="n"
-    echo "Detected managed Cloud SQL instance: $DB_INSTANCE_NAME"
-  else
-    USE_EXISTING_DEFAULT="y"
-    echo "No managed Cloud SQL instance found for stage; defaulting to existing DB mode."
-  fi
-fi
-if prompt_yn "Use existing database host (skip Cloud SQL creation)?" "$USE_EXISTING_DEFAULT"; then
+if prompt_yn "Use an existing database host (TiDB or other MySQL) instead of SQLite + Litestream?" "n"; then
+  GCP_DATABASE_MODE="existing"
   USE_EXISTING="true"
+fi
+
+echo
+echo "=== Cloud Run warmth ==="
+echo "min_instances=0 (default) is free. Cold starts are best-effort: Slack events are queued/retried"
+echo "(sometimes slower). Interactivity may need a second click after a long idle."
+echo "min_instances=1 is the only paid knob (~always-on Cloud Run) and guarantees Slack's 3s budget."
+GCP_CLOUD_RUN_MIN_INSTANCES=0
+if prompt_yn "Keep one Cloud Run instance always on (paid)?" "n"; then
+  GCP_CLOUD_RUN_MIN_INSTANCES=1
+fi
+ENABLE_KEEP_WARM="true"
+if ! prompt_yn "Enable keep-warm Scheduler ping of /health every 5 minutes (free, recommended)?" "y"; then
+  ENABLE_KEEP_WARM="false"
+fi
+
+GITHUB_REPO="${GITHUB_REPO:-}"
+if [[ "$TASK_CICD" == "true" && -z "$GITHUB_REPO" ]]; then
+  GITHUB_REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
 fi
 
 EXISTING_HOST=""
@@ -769,13 +827,14 @@ EXISTING_USER=""
 DETECTED_EXISTING_HOST=""
 DETECTED_EXISTING_SCHEMA=""
 DETECTED_EXISTING_USER=""
+DB_USERNAME_PREFIX=""
+DB_APP_USERNAME=""
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
   DETECTED_EXISTING_HOST="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_HOST")"
   DETECTED_EXISTING_SCHEMA="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_SCHEMA")"
   DETECTED_EXISTING_USER="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_USER")"
 fi
 if [[ "$USE_EXISTING" == "true" ]]; then
-  DB_APP_USERNAME=""
   EXISTING_HOST="$(prompt_line "Existing DB host" "$DETECTED_EXISTING_HOST")"
   EXISTING_SCHEMA="$(prompt_line "Database schema name" "${DETECTED_EXISTING_SCHEMA:-syncbot}")"
   DB_USERNAME_PREFIX="$(prompt_line "DB username prefix (optional; e.g. TiDB Cloud abc123; blank = enter full DB user next)" "")"
@@ -827,11 +886,8 @@ if [[ -n "$EXISTING_SERVICE_URL" ]]; then
 fi
 echo
 echo "=== Container Image ==="
-CLOUD_IMAGE="$(prompt_line "cloud_run_image (required)" "$DETECTED_CLOUD_IMAGE")"
-if [[ -z "$CLOUD_IMAGE" ]]; then
-  echo "Error: cloud_run_image is required. Build and push the SyncBot image first, then rerun." >&2
-  exit 1
-fi
+echo "Blank uses the public hello placeholder. CI replaces the live image (terraform ignores image changes)."
+CLOUD_IMAGE="$(prompt_line "GCP_CLOUD_RUN_IMAGE (or CLOUD_RUN_IMAGE)" "${GCP_CLOUD_RUN_IMAGE:-${CLOUD_RUN_IMAGE:-$DETECTED_CLOUD_IMAGE}}")"
 
 DETECTED_LOG_LEVEL=""
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
@@ -917,10 +973,10 @@ SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "Slac
 SLACK_CLIENT_ID="$(required_from_env_or_prompt "SLACK_CLIENT_ID" "SlackClientID")"
 SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
 DATA_ENCRYPTION_KEY="$(required_from_env_or_prompt "DATA_ENCRYPTION_KEY" "DataEncryptionKey" "secret")"
-DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
-
+DATABASE_PASSWORD=""
 DATABASE_USER=""
 if [[ "$USE_EXISTING" == "true" ]]; then
+  DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
   DATABASE_USER="$(required_from_env_or_prompt "DATABASE_USER" "DatabaseUser (pre-existing app DB user)")"
 fi
 
@@ -946,18 +1002,21 @@ VARS=(
   "-var=enable_db_reset=${ENABLE_DB_RESET_VAR:-}"
   "-var=database_tls_enabled=${DB_TLS_VAR:-}"
   "-var=database_ssl_ca_path=${DB_SSL_CA_VAR:-}"
-  "-var=database_backend=${DB_BACKEND:-mysql}"
+  "-var=database_mode=$GCP_DATABASE_MODE"
+  "-var=cloud_run_min_instances=$GCP_CLOUD_RUN_MIN_INSTANCES"
+  "-var=enable_keep_warm=$ENABLE_KEEP_WARM"
+  "-var=github_repo=${GITHUB_REPO:-}"
+  "-var=database_backend=$([[ "$GCP_DATABASE_MODE" == "sqlite" ]] && echo sqlite || echo "${DB_BACKEND:-mysql}")"
   "-var=database_port=${DB_PORT:-3306}"
   "-var=slack_signing_secret=$SLACK_SIGNING_SECRET"
   "-var=slack_client_id=$SLACK_CLIENT_ID"
   "-var=slack_client_secret=$SLACK_CLIENT_SECRET"
   "-var=data_encryption_key=$DATA_ENCRYPTION_KEY"
-  "-var=database_password=$DATABASE_PASSWORD"
 )
+[[ -n "$CLOUD_IMAGE" ]] && VARS+=("-var=cloud_run_image=$CLOUD_IMAGE")
 [[ -n "$DATABASE_USER" ]] && VARS+=("-var=database_user=$DATABASE_USER")
-
 if [[ "$USE_EXISTING" == "true" ]]; then
-  VARS+=("-var=use_existing_database=true")
+  VARS+=("-var=database_password=$DATABASE_PASSWORD")
   VARS+=("-var=existing_db_host=$EXISTING_HOST")
   VARS+=("-var=existing_db_schema=$EXISTING_SCHEMA")
   VARS+=("-var=existing_db_user=$EXISTING_USER")
@@ -965,13 +1024,7 @@ if [[ "$USE_EXISTING" == "true" ]]; then
   VARS+=("-var=existing_db_app_username=$DB_APP_USERNAME")
   VARS+=("-var=existing_db_create_app_user=$DB_CREATE_APP_USER")
   VARS+=("-var=existing_db_create_schema=$DB_CREATE_SCHEMA")
-else
-  VARS+=("-var=use_existing_database=false")
-  VARS+=("-var=existing_db_username_prefix=")
-  VARS+=("-var=existing_db_app_username=")
 fi
-
-VARS+=("-var=cloud_run_image=$CLOUD_IMAGE")
 
 echo
 echo "Require admin:    $REQUIRE_ADMIN_DEFAULT"
@@ -1035,7 +1088,7 @@ fi
 if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
   echo
   echo "Next:"
-  echo "  1) Build and push container image; update cloud_run_image and re-apply when image changes."
+  echo "  1) Push to test/prod after setting DEPLOY_TARGET=gcp so CI builds infra/gcp/Dockerfile."
   echo "  2) Run: ./infra/gcp/scripts/print-bootstrap-outputs.sh"
   bash "$SCRIPT_DIR/print-bootstrap-outputs.sh" || true
 fi
@@ -1046,28 +1099,33 @@ fi
 
 # --- Save config to env file ---
 echo
-if prompt_yn "Save config to .env.deploy.${STAGE} for future deploys?" "y"; then
+if [[ "$TASK_BUILD_DEPLOY" == "true" ]] && prompt_yn "Save config to .env.deploy.${STAGE} for future deploys?" "y"; then
   ENV_SAVE_FILE="$REPO_ROOT/.env.deploy.${STAGE}"
   {
     echo "# Generated by deploy.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "CLOUD_PROVIDER=gcp"
     echo "GCP_PROJECT_ID=$PROJECT_ID"
     echo "GCP_REGION=$REGION"
-    echo "CLOUD_RUN_IMAGE=$CLOUD_IMAGE"
+    echo "GCP_DATABASE_MODE=${GCP_DATABASE_MODE:-sqlite}"
+    echo "GCP_CLOUD_RUN_MIN_INSTANCES=${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+    echo "ENABLE_KEEP_WARM=${ENABLE_KEEP_WARM:-true}"
+    [[ -n "${GITHUB_REPO:-}" ]] && echo "GITHUB_REPO=$GITHUB_REPO"
+    echo "GCP_CLOUD_RUN_IMAGE=${CLOUD_IMAGE:-}"
     echo ""
-    echo "SLACK_SIGNING_SECRET=$SLACK_SIGNING_SECRET"
-    echo "SLACK_CLIENT_SECRET=$SLACK_CLIENT_SECRET"
-    echo "SLACK_CLIENT_ID=$SLACK_CLIENT_ID"
+    echo "SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET:-}"
+    echo "SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}"
+    echo "SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}"
     echo ""
-    echo "DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
+    echo "DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:-}"
     echo ""
-    echo "DATABASE_HOST=${DATABASE_HOST:-}"
-    [[ -n "${DATABASE_PORT:-}" ]] && echo "DATABASE_PORT=$DATABASE_PORT"
-    echo "DATABASE_USER=${DATABASE_USER:-}"
-    echo "DATABASE_PASSWORD=$DATABASE_PASSWORD"
-    echo "DATABASE_SCHEMA=${DATABASE_SCHEMA:-syncbot}"
-    echo "DATABASE_ENGINE=${DATABASE_ENGINE:-mysql}"
-    [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && echo "DATABASE_TLS_ENABLED=$DATABASE_TLS_ENABLED"
+    if [[ "${USE_EXISTING:-false}" == "true" ]]; then
+      echo "DATABASE_HOST=${EXISTING_HOST:-${DATABASE_HOST:-}}"
+      echo "DATABASE_PORT=${DB_PORT:-3306}"
+      echo "DATABASE_USER=${DATABASE_USER:-}"
+      echo "DATABASE_PASSWORD=${DATABASE_PASSWORD:-}"
+      echo "DATABASE_SCHEMA=${EXISTING_SCHEMA:-${DATABASE_SCHEMA:-syncbot}}"
+      echo "DATABASE_ENGINE=${DB_BACKEND:-mysql}"
+    fi
   } > "$ENV_SAVE_FILE"
   chmod 600 "$ENV_SAVE_FILE"
   echo "Saved to $ENV_SAVE_FILE"
@@ -1086,20 +1144,16 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "${TASK_CICD:-}" != "true" ]]; then
   REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
   ENV_NAME="$STAGE"
   DEPLOY_SA="$(terraform output -raw deploy_service_account_email 2>/dev/null || true)"
+  WIF_PROVIDER="$(terraform output -raw workload_identity_provider 2>/dev/null || true)"
 
   gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null 2>&1 || true
   gh variable set GCP_PROJECT_ID --body "$PROJECT_ID" -R "$REPO" 2>/dev/null || true
   gh variable set GCP_REGION --body "$REGION" -R "$REPO" 2>/dev/null || true
   gh variable set DEPLOY_TARGET --body "gcp" -R "$REPO" 2>/dev/null || true
   [[ -n "$DEPLOY_SA" ]] && gh variable set GCP_SERVICE_ACCOUNT --body "$DEPLOY_SA" -R "$REPO" 2>/dev/null || true
+  [[ -n "$WIF_PROVIDER" ]] && gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER --body "$WIF_PROVIDER" -R "$REPO" 2>/dev/null || true
   gh variable set STAGE_NAME --env "$ENV_NAME" --body "$STAGE" -R "$REPO" 2>/dev/null || true
-  gh variable set SLACK_CLIENT_ID --env "$ENV_NAME" --body "$SLACK_CLIENT_ID" -R "$REPO" 2>/dev/null || true
-  gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
-  gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
-  gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
-  gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
-  [[ -n "${DATABASE_USER:-}" ]] && gh secret set DATABASE_USER --env "$ENV_NAME" --body "$DATABASE_USER" -R "$REPO"
-  echo "GitHub environment '$ENV_NAME' configured for repo $REPO."
+  echo "GitHub environment '$ENV_NAME' configured for repo $REPO (image-only CI)."
 fi
 
 echo
@@ -1116,4 +1170,3 @@ echo "Install URL: ${SYNCBOT_INSTALL_URL:-n/a}"
 if [[ -n "${SYNCBOT_API_URL:-}" ]]; then
   echo "OAuth URL:   ${SYNCBOT_API_URL%/slack/events}/slack/oauth_redirect"
 fi
-

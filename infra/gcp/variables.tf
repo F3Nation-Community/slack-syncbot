@@ -1,7 +1,7 @@
 # GCP Terraform variables for SyncBot (see docs/INFRA_CONTRACT.md)
 #
-# Sections: project / region / stage → database mode → Cloud Run → keep-warm →
-# sensitive app secrets → runtime plain env.
+# Sections: project / region / stage → database_mode → Cloud Run → keep-warm →
+# GitHub WIF → sensitive app secrets → runtime plain env.
 
 variable "project_id" {
   type        = string
@@ -11,41 +11,51 @@ variable "project_id" {
 variable "region" {
   type        = string
   default     = "us-central1"
-  description = "Primary region for Cloud Run and optional Cloud SQL"
+  description = "Primary region for Cloud Run and optional GCS Litestream replica"
 }
 
 variable "stage" {
   type        = string
   default     = "test"
-  description = "Stage name (e.g. test, prod); used for resource naming"
+  description = "Stage name (test or prod); used for resource naming"
+
+  validation {
+    condition     = contains(["test", "prod"], var.stage)
+    error_message = "stage must be test or prod."
+  }
 }
 
 # ---------------------------------------------------------------------------
-# Database: use existing or create Cloud SQL
+# Database: sqlite (default, Litestream + GCS) or existing MySQL / TiDB
 # ---------------------------------------------------------------------------
 
-variable "use_existing_database" {
-  type        = bool
-  default     = false
-  description = "If true, do not create Cloud SQL; app uses existing_db_host/schema/user/password"
+variable "database_mode" {
+  type        = string
+  default     = "sqlite"
+  description = "sqlite = Cloud Run local DB + Litestream to GCS. existing = TiDB Cloud or other MySQL (no Cloud SQL)."
+
+  validation {
+    condition     = contains(["sqlite", "existing"], var.database_mode)
+    error_message = "database_mode must be sqlite or existing."
+  }
 }
 
 variable "existing_db_host" {
   type        = string
   default     = ""
-  description = "Existing MySQL host (required when use_existing_database = true)"
+  description = "Existing MySQL host (required when database_mode = existing)"
 }
 
 variable "existing_db_schema" {
   type        = string
   default     = "syncbot"
-  description = "Existing MySQL schema name (when use_existing_database = true)"
+  description = "Existing MySQL schema name (when database_mode = existing)"
 }
 
 variable "existing_db_user" {
   type        = string
   default     = ""
-  description = "Existing MySQL user (when use_existing_database = true). Ignored when existing_db_app_username or existing_db_username_prefix is set."
+  description = "Existing MySQL user (when database_mode = existing). Ignored when existing_db_app_username or existing_db_username_prefix is set."
 }
 
 variable "existing_db_username_prefix" {
@@ -57,19 +67,19 @@ variable "existing_db_username_prefix" {
 variable "existing_db_app_username" {
   type        = string
   default     = ""
-  description = "Optional full DATABASE_USER override when use_existing_database (bypasses prefix + sbapp_{stage} and existing_db_user)."
+  description = "Optional full DATABASE_USER override when database_mode = existing (bypasses prefix + sbapp_{stage} and existing_db_user)."
 }
 
 variable "existing_db_create_app_user" {
   type        = bool
   default     = true
-  description = "When use_existing_database: operator note — whether a dedicated app DB user exists (no Cloud SQL user resource; app uses existing_db_user / secret)."
+  description = "When database_mode = existing: operator note — whether a dedicated app DB user exists (Terraform does not create the user)."
 }
 
 variable "existing_db_create_schema" {
   type        = bool
   default     = true
-  description = "When use_existing_database: operator note — whether DatabaseSchema was created manually (Terraform does not create schema for existing host)."
+  description = "When database_mode = existing: operator note — whether the schema was created manually (Terraform does not create schema for existing host)."
 }
 
 # ---------------------------------------------------------------------------
@@ -78,13 +88,8 @@ variable "existing_db_create_schema" {
 
 variable "cloud_run_image" {
   type        = string
-  default     = ""
-  description = "Container image URL for Cloud Run (e.g. gcr.io/PROJECT/syncbot:latest). Set after first build or by CI."
-
-  validation {
-    condition     = trimspace(var.cloud_run_image) != ""
-    error_message = "cloud_run_image is required. Build/push the SyncBot image and pass -var=cloud_run_image=<image>."
-  }
+  default     = "gcr.io/cloudrun/hello"
+  description = "Container image URL. Bootstrap default is a public hello image; CI updates the live service (Terraform ignores image changes after apply)."
 }
 
 variable "cloud_run_cpu" {
@@ -102,13 +107,18 @@ variable "cloud_run_memory" {
 variable "cloud_run_min_instances" {
   type        = number
   default     = 0
-  description = "Minimum number of instances (0 allows scale-to-zero)"
+  description = "Minimum instances. 0 = free/best-effort scale-to-zero (default). 1 = paid always-on (Slack 3s guarantee)."
+
+  validation {
+    condition     = contains([0, 1], var.cloud_run_min_instances)
+    error_message = "cloud_run_min_instances must be 0 or 1."
+  }
 }
 
 variable "cloud_run_max_instances" {
   type        = number
   default     = 10
-  description = "Maximum number of Cloud Run instances"
+  description = "Maximum Cloud Run instances (sqlite mode always forces 1)."
 }
 
 variable "log_level" {
@@ -129,13 +139,28 @@ variable "log_level" {
 variable "enable_keep_warm" {
   type        = bool
   default     = true
-  description = "Create a Cloud Scheduler job that pings the service periodically"
+  description = "Create a Cloud Scheduler job that pings GET /health periodically (free-tier friendly)"
 }
 
 variable "keep_warm_interval_minutes" {
   type        = number
   default     = 5
   description = "Interval in minutes for keep-warm ping"
+}
+
+# ---------------------------------------------------------------------------
+# GitHub Actions OIDC (Workload Identity Federation)
+# ---------------------------------------------------------------------------
+
+variable "github_repo" {
+  type        = string
+  default     = ""
+  description = "GitHub repo in owner/repo format for WIF (must be the deploying repo, e.g. your fork). Empty skips WIF."
+
+  validation {
+    condition     = var.github_repo == "" || can(regex("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$", var.github_repo))
+    error_message = "github_repo must be empty or 'owner/repo'."
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -180,7 +205,8 @@ variable "data_encryption_key" {
 variable "database_password" {
   type        = string
   sensitive   = true
-  description = "DATABASE_PASSWORD for the app DB user"
+  default     = ""
+  description = "DATABASE_PASSWORD for the app DB user. Required when database_mode = existing; unused for sqlite."
 }
 
 variable "database_user" {
@@ -196,18 +222,18 @@ variable "database_user" {
 variable "database_backend" {
   type        = string
   default     = "mysql"
-  description = "DATABASE_BACKEND; Cloud SQL in this stack is MySQL 8."
+  description = "DATABASE_BACKEND for existing mode (mysql or postgresql). sqlite mode always injects sqlite."
 
   validation {
-    condition     = contains(["mysql", "postgresql"], var.database_backend)
-    error_message = "database_backend must be mysql or postgresql."
+    condition     = contains(["mysql", "postgresql", "sqlite"], var.database_backend)
+    error_message = "database_backend must be mysql, postgresql, or sqlite."
   }
 }
 
 variable "database_port" {
   type        = string
   default     = "3306"
-  description = "DATABASE_PORT for MySQL (default 3306)."
+  description = "DATABASE_PORT for existing MySQL (default 3306; TiDB Cloud is 4000)."
 }
 
 variable "require_admin" {

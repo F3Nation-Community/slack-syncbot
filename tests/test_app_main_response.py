@@ -4,6 +4,8 @@ import json
 import os
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 os.environ.setdefault("DATABASE_HOST", "localhost")
 os.environ.setdefault("DATABASE_USER", "root")
 os.environ.setdefault("DATABASE_PASSWORD", "test")
@@ -152,3 +154,10 @@ class TestLambdaHandler:
             app_module.handler({"httpMethod": "POST", "path": "/slack/events", "body": "{}"}, {})
         mock_srh_class.assert_called_once_with(app=app_module.app)
         mock_handle.assert_called_once()
+
+    def test_handler_raises_when_lambda_adapter_missing(self):
+        with (
+            patch.object(app_module, "SlackRequestHandler", None),
+            pytest.raises(RuntimeError, match="Lambda adapter is unavailable"),
+        ):
+            app_module.handler({"httpMethod": "POST", "path": "/slack/events", "body": "{}"}, {})

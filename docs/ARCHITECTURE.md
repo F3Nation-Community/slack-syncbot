@@ -121,6 +121,45 @@ All infrastructure is defined in `infra/aws/template.yaml` (AWS SAM). Dashed lin
 
 **Lambda cold start vs Slack acks:** The main function uses **256 MB** memory (faster init than 128 MB). Alembic migrations run only when the function is invoked with `{"action":"migrate"}` (post-deploy in CI), not on every cold start, so the first Slack interaction after deploy can ack within Slack’s time limit. EventBridge keep-warm ScheduleV2 invokes are handled in `app.handler` with a trivial JSON response instead of the Slack Bolt adapter.
 
+## GCP Infrastructure
+
+How to deploy this stack (guided script, Terraform, GitHub Actions) is documented in **[DEPLOY.md](DEPLOY.md)** and **[infra/gcp/README.md](../infra/gcp/README.md)**. The diagram reflects the reference Terraform module (`infra/gcp`). Default **`database_mode=sqlite`**: Cloud Run (scale-to-zero, `min_instances=0`) with a local SQLite file and Litestream replica in GCS. **`existing`** is TiDB / other MySQL (no GCS bucket). Cloud SQL is not created.
+
+```mermaid
+flowchart TB
+    subgraph Slack["Slack Platform"]
+        WA["Workspace A"]
+        WB["Workspace B"]
+    end
+
+    subgraph GCP["GCP project"]
+        subgraph CR["Cloud Run syncbot-stage"]
+            EP["/slack/events<br>/slack/install<br>/slack/oauth_redirect<br>/api/federation/*<br>/health"]
+            APP["app.py → routing.py"]
+            DATA["/data/syncbot.db<br>sqlite mode only"]
+        end
+
+        Lite["Litestream restore + replicate"]
+        GCS["GCS litestream bucket"]
+        AR["Artifact Registry<br>syncbot-stage-images"]
+        Sched["Cloud Scheduler<br>GET /health every 5 min"]
+        WIF["Workload Identity Federation<br>GitHub → deploy SA"]
+        TiDB["Existing MySQL / TiDB<br>optional"]
+    end
+
+    WA & WB <-->|Events and API calls| EP
+    EP --> APP
+    APP --> DATA
+    Lite --> DATA
+    Lite --> GCS
+    Sched --> EP
+    WIF -->|"image-only CI"| AR
+    AR -->|"gcloud run services update --image"| CR
+    APP -.->|existing mode| TiDB
+```
+
+GitHub Actions never runs `terraform apply`. Image updates are CI-only; Terraform `lifecycle.ignore_changes` on the container image. SQLite mode forces `max_instances=1` and concurrency 1. Keep-warm uses request-based billing (`cpu_idle=true`). See the GCP README for the `min_instances=0` caveat.
+
 ## Security & Hardening
 
 | Layer | Protection |

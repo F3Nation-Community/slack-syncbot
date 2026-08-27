@@ -77,8 +77,8 @@ Runs from repo root (or `./deploy.sh` → **gcp**). It:
 2. Guides **auth** (`gcloud auth login` plus `gcloud auth application-default login`; quota project as needed).
 3. **Project / stage / existing service** — Prompts for project, region, stage; can detect existing Cloud Run for defaults.
 4. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Build/Deploy** (full Terraform flow), **CI/CD**, **Slack API**. Skipping **Build/Deploy** requires existing Terraform state/outputs for tasks that need them.
-5. **Secrets** (if Build/Deploy selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER`. Passed as sensitive Terraform variables (no GCP Secret Manager dependency).
-6. **Terraform** (if Build/Deploy selected) — Prompts for DB mode, `cloud_run_image` (required), log level, etc.; `terraform init` / `plan` / `apply` in `infra/gcp` (no separate y/n gates on plan/apply).
+5. **Secrets** (if Build/Deploy selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, `DATA_ENCRYPTION_KEY`. `DATABASE_PASSWORD` / `DATABASE_USER` only when using an existing MySQL/TiDB host. Passed as sensitive Terraform variables (no GCP Secret Manager dependency). Image-only GitHub Actions does not need these in GitHub secrets.
+6. **Terraform** (if Build/Deploy selected) — Database mode (**SQLite + Litestream** default, or existing host), Cloud Run warmth (`GCP_CLOUD_RUN_MIN_INSTANCES` default **0**, keep-warm default on), optional `GCP_CLOUD_RUN_IMAGE` (blank = hello placeholder; CI replaces it), log level; `terraform init` / `plan` / `apply` in `infra/gcp`. Confirm the plan does **not** create Cloud SQL.
 7. **Post-deploy** — According to selected tasks: manifest, Slack API, deploy receipt, **`gh`**, `print-bootstrap-outputs.sh`. The receipt includes all configuration, secrets, and Slack URLs. Use `--verbose` to also include the full Terraform variables array and inline Slack manifest.
 
 See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and outputs.
@@ -109,9 +109,10 @@ See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and ou
 
 ## Database backends
 
-The app supports **MySQL** (default), **PostgreSQL**, and **SQLite**. Schema changes use Alembic (`alembic upgrade head`). **AWS Lambda:** Applied after each deploy via a workflow step that invokes the function with `{"action":"migrate"}` (not on every cold start). **Cloud Run / local:** Applied at process startup before serving HTTP.
+The app supports **MySQL** (default on AWS), **PostgreSQL**, and **SQLite**. Schema changes use Alembic (`alembic upgrade head`). **AWS Lambda:** Applied after each deploy via a workflow step that invokes the function with `{"action":"migrate"}` (not on every cold start). **Cloud Run / local:** Applied at process startup before serving HTTP.
 
 - **AWS:** Choose engine in the deploy script or pass `DatabaseEngine=mysql` / `postgresql` to `sam deploy`.
+- **GCP:** `GCP_DATABASE_MODE=sqlite` (default) uses Cloud Run local SQLite + Litestream → GCS. `existing` is TiDB Cloud or other MySQL (same host/user/password/prefix contract as AWS). **Do not infer mode from `DATABASE_HOST`** — `.env.deploy.example` always has a TiDB host. `DATABASE_ENGINE=sqlite` is a synonym for sqlite mode. Cloud SQL is not created.
 - **Contract:** [INFRA_CONTRACT.md](INFRA_CONTRACT.md) — `DATABASE_BACKEND`, `DATABASE_URL` or host/user/password/schema.
 
 ---
@@ -236,37 +237,84 @@ Assume the bootstrap **GitHubDeployRole** (or equivalent) and run `sam build` / 
 
 ---
 
+## GCP — operator checklist
+
+SQLite + Litestream is the free default (`GCP_CLOUD_RUN_MIN_INSTANCES=0`). Details and the min=0 caveat (queued/retried events, rare drops until a later idempotency change, `cpu_idle` vs min=1) are in [infra/gcp/README.md](../infra/gcp/README.md).
+
+1. Copy `.env.deploy.example` → `.env.deploy.test`. Set `CLOUD_PROVIDER=gcp`, `GCP_PROJECT_ID`, Slack secrets. `GCP_DATABASE_MODE` defaults to `sqlite` (do **not** treat `DATABASE_HOST` as selecting TiDB). `GCP_CLOUD_RUN_MIN_INSTANCES` defaults to `0`; set `1` for guaranteed Slack 3s (paid).
+2. `gcloud auth login` plus Application Default Credentials. Enable billing on the project.
+3. `./deploy.sh --env test gcp` (or interactive `./deploy.sh gcp`): terraform apply. A placeholder image (`gcr.io/cloudrun/hello`) is allowed for the first apply. Confirm the plan **does not** create Cloud SQL. Confirm WIF output if `GITHUB_REPO` is set to **this** GitHub repo (`owner/repo` of the fork that has `test`/`prod`).
+4. `./infra/gcp/scripts/print-bootstrap-outputs.sh` → GitHub **repository or environment** vars: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_SERVICE_ACCOUNT`, `GCP_WORKLOAD_IDENTITY_PROVIDER`. Set `DEPLOY_TARGET=gcp`.
+5. Slack manifest URLs from `service_url`. Install the app.
+6. Confirm Deploy (AWS) jobs skip (`DEPLOY_TARGET=gcp`).
+7. Push `test`. Deploy (GCP) builds `infra/gcp/Dockerfile` from the **repo root**, pushes, `gcloud run services update --image`. Later `terraform apply` must **not** revert the image (`lifecycle.ignore_changes`).
+8. Repeat for `prod` with a separate state/stage (`-var=stage=prod`). This repo does not use Terraform workspaces.
+
+Terraform state is **local** (`infra/gcp/terraform.tfstate`) unless you add a remote backend later. GitHub Actions never runs `terraform apply` — do not lose that file.
+
+### GCP deploy / CI variable names
+
+GCP-only knobs use a `GCP_` prefix. Shared contract names and portable deploy switches do not.
+
+| Name | Where | Notes |
+|------|--------|--------|
+| `GCP_PROJECT_ID` | `.env.deploy.*`, GitHub vars | Required |
+| `GCP_REGION` | `.env.deploy.*`, GitHub vars | Default `us-central1` |
+| `GCP_SERVICE_ACCOUNT` | GitHub vars (CI) | Deploy SA email from Terraform |
+| `GCP_WORKLOAD_IDENTITY_PROVIDER` | GitHub vars (CI) | Full WIF provider resource name |
+| `GCP_CLOUD_RUN_IMAGE` | `.env.deploy.*` | Preferred image URL; blank = hello placeholder |
+| `CLOUD_RUN_IMAGE` | `.env.deploy.*` | Fallback if `GCP_CLOUD_RUN_IMAGE` is unset |
+| `GCP_DATABASE_MODE` | `.env.deploy.*` | `sqlite` (default) or `existing` |
+| `GCP_CLOUD_RUN_MIN_INSTANCES` | `.env.deploy.*` | `0` (default, free) or `1` (paid always-on) |
+| `ENABLE_KEEP_WARM` | `.env.deploy.*` | Portable name, default `true`. **This PR wires it on GCP only**; AWS still always creates EventBridge keep-warm |
+| `DEPLOY_TARGET` | GitHub vars | `gcp` to run Deploy (GCP) and skip Deploy (AWS) |
+| `CLOUD_PROVIDER` | `.env.deploy.*` | `aws` / `gcp` |
+| `GITHUB_REPO` | `.env.deploy.*` | `owner/repo` of **this** deploying repo (for WIF) |
+| `DATABASE_*`, `SLACK_*`, `DATA_ENCRYPTION_KEY`, `LOG_LEVEL`, … | App contract | Not GCP-specific |
+
+### Upgrading GCP (Cloud SQL removal)
+
+If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database. Tulsa/sprocktech GCP was unused in production; forks that did apply Cloud SQL must backup before upgrading.
+
+---
+
 ## GCP — manual steps
 
-### 1. Terraform bootstrap
+### 1. Terraform apply
 
-From `infra/gcp` (or repo root with paths adjusted):
+From `infra/gcp` (or repo root with paths adjusted). Pass secrets as sensitive Terraform variables. First apply may use the public hello image; CI replaces it and Terraform ignores later image changes.
 
 ```bash
 terraform init
-terraform plan -var="project_id=YOUR_PROJECT_ID" -var="stage=test"
-terraform apply -var="project_id=YOUR_PROJECT_ID" -var="stage=test"
+terraform plan -var="project_id=YOUR_PROJECT_ID" -var="stage=test" -var="github_repo=owner/repo"
+terraform apply -var="project_id=YOUR_PROJECT_ID" -var="stage=test" -var="github_repo=owner/repo"
 ```
 
-Pass secrets as sensitive Terraform variables (`-var="slack_signing_secret=..."`, `-var="data_encryption_key=..."`, etc.). Set **`cloud_run_image`** after building and pushing the container. Capture outputs: service URL, region, project, Artifact Registry, deploy service account.
+Default `database_mode` is `sqlite`. For TiDB / existing MySQL, pass `-var=database_mode=existing` plus host, password, and (for TiDB) port `4000` / username prefix. Capture outputs:
 
 ```bash
 ./infra/gcp/scripts/print-bootstrap-outputs.sh
 ```
 
+Build the Cloud Run image from the **repository root** (not `infra/gcp/`):
+
+```bash
+docker build -f infra/gcp/Dockerfile --platform linux/amd64 .
+```
+
 ### 2. GitHub Actions (GCP)
 
-1. Configure [Workload Identity Federation](https://cloud.google.com/iam/docs/workload-identity-federation) for GitHub → deploy service account.
-2. Set **`DEPLOY_TARGET=gcp`** at repo level so `deploy-gcp.yml` runs and `deploy-aws.yml` is skipped.
-3. Set variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`, etc.
+1. `github_repo` in Terraform must equal `owner/repo` of **this** GitHub repository (the one with `test`/`prod`), not `sprocktech/syncbot` if you deploy from a fork. WIF is created in the same apply when that variable is set.
+2. Set **`DEPLOY_TARGET=gcp`** at repo level so `deploy-gcp.yml` runs and `deploy-aws.yml` is skipped. Unset `DEPLOY_TARGET` skips Deploy (GCP) (AWS-only forks stay green).
+3. Set variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`.
 
    The interactive `infra/gcp/scripts/deploy.sh` uses the same GitHub `owner/repo` selection as the AWS script (based on git remotes when fork and upstream differ).
 
-**Note:** `.github/workflows/deploy-gcp.yml` is intentionally configured to fail until real CI steps are implemented (WIF auth, image build/push, deploy). Keep using `infra/gcp/scripts/deploy.sh` for interactive deploys until CI is fully wired.
+**CI is image-only:** Slack secrets and `DATA_ENCRYPTION_KEY` stay on the Cloud Run service from the last `terraform apply`. The workflow builds `infra/gcp/Dockerfile`, pushes to Artifact Registry (`syncbot-${stage}-images/syncbot:${sha}`), and runs `gcloud run services update --image`.
 
 ### 3. Ongoing deploys
 
-Build and push an image to Artifact Registry, then `gcloud run deploy` or `terraform apply` with updated `cloud_run_image`.
+Push `test` / `prod` (or `workflow_dispatch`) after Terraform exists. Do not pass a new image to later `terraform apply` expecting it to stick — image updates are CI-only.
 
 ---
 

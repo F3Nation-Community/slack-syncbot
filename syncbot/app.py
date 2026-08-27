@@ -34,10 +34,15 @@ load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 from slack_bolt import App
-from slack_bolt.adapter.aws_lambda import SlackRequestHandler
 from slack_bolt.request import BoltRequest
 from slack_bolt.response import BoltResponse
 from slack_bolt.util.utils import get_boot_message
+
+# Optional: Cloud Run / local images built from requirements.txt do not include boto3.
+try:
+    from slack_bolt.adapter.aws_lambda import SlackRequestHandler
+except ImportError:  # pragma: no cover - exercised in tests via subprocess
+    SlackRequestHandler = None
 
 from constants import (
     FEDERATION_ENABLED,
@@ -80,7 +85,8 @@ def _redact_sensitive(obj, _depth=0):
     return obj
 
 
-SlackRequestHandler.clear_all_log_handlers()
+if SlackRequestHandler is not None:
+    SlackRequestHandler.clear_all_log_handlers()
 configure_logging()
 
 validate_config()
@@ -138,6 +144,12 @@ def handler(event: dict, context: dict) -> dict:
     path = event.get("path", "") or event.get("rawPath", "")
     if path.startswith("/api/federation"):
         return _lambda_federation_handler(event)
+
+    if SlackRequestHandler is None:
+        raise RuntimeError(
+            "AWS Lambda adapter is unavailable (boto3 / slack_bolt.adapter.aws_lambda missing). "
+            "handler() is only for Lambda; use python app.py for Cloud Run."
+        )
 
     slack_request_handler = SlackRequestHandler(app=app)
     return slack_request_handler.handle(event, context)
