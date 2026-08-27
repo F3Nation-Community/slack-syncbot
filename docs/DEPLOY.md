@@ -239,7 +239,7 @@ Assume the bootstrap **GitHubDeployRole** (or equivalent) and run `sam build` / 
 
 ## GCP — operator checklist
 
-SQLite + Litestream is the free default (`GCP_CLOUD_RUN_MIN_INSTANCES=0`). Details and the min=0 caveat (queued/retried events, rare drops until a later idempotency change, `cpu_idle` vs min=1) are in [infra/gcp/README.md](../infra/gcp/README.md).
+SQLite + Litestream is the free default (`GCP_CLOUD_RUN_MIN_INSTANCES=0`). Details (`cpu_idle` vs min=1, queued/retried events) are in [infra/gcp/README.md](../infra/gcp/README.md). Message and reaction sync is idempotent on Slack `event_id`, so cold-start retries are safe.
 
 1. Copy `.env.deploy.example` → `.env.deploy.test`. Set `CLOUD_PROVIDER=gcp`, `GCP_PROJECT_ID`, Slack secrets. `GCP_DATABASE_MODE` defaults to `sqlite` (do **not** treat `DATABASE_HOST` as selecting TiDB). `GCP_CLOUD_RUN_MIN_INSTANCES` defaults to `0`; set `1` for guaranteed Slack 3s (paid).
 2. `gcloud auth login` plus Application Default Credentials. Enable billing on the project.

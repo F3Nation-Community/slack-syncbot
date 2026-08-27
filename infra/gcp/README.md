@@ -8,9 +8,8 @@ GitHub Actions never runs `terraform apply`. Keep `infra/gcp/terraform.tfstate` 
 
 `GCP_CLOUD_RUN_MIN_INSTANCES=0` is the **free default** (scale to zero; idle is not billed when `cpu_idle=true`). Combined with keep-warm (`GET /health` every 5 minutes, default on, free), the instance usually stays in Cloud Run’s idle window.
 
-- On a cold start, Slack **events** (messages, reactions) are **queued by Cloud Run and/or retried by Slack**, so sync still happens — sometimes a few seconds later. Interactivity (buttons, modals, slash commands) may need a second click until the instance is warm.
-- **Known rare instability:** the app currently mints a fresh post GUID per event and drops Slack retries to avoid duplicates. If the *first* delivery fails *before* sync work runs, the retry is not recovered and the event can be dropped. This is rare but real. A follow-up app change will make event handling idempotent; this caveat will be removed then.
-- **If you need guaranteed no-drop responsiveness today** (for example production), set `GCP_CLOUD_RUN_MIN_INSTANCES=1` (paid always-on). That is the only default-adjacent knob that costs money; everything else is designed to stay in always-free quotas at low usage.
+- On a cold start, Slack **events** (messages, reactions) are **queued by Cloud Run and/or retried by Slack**, so sync still happens — sometimes a few seconds later. Message and reaction handlers are idempotent on Slack envelope `event_id`, so retries recover a failed first delivery without double-posting. Interactivity (buttons, modals, slash commands) may need a second click until the instance is warm.
+- **If you need always-on 3s Slack interactivity** (for example production), set `GCP_CLOUD_RUN_MIN_INSTANCES=1` (paid always-on). That is the only default-adjacent knob that costs money; everything else is designed to stay in always-free quotas at low usage.
 - Keep `cpu_idle=true` (request-based billing). If you turn CPU always-on, keep-warm pings become approximately as expensive as min_instances=1.
 - Litestream streams WAL while CPU is allocated (during a request or keep-warm ping). A small RPO after the HTTP response is accepted for the free default. SIGTERM on the entrypoint flushes the replicator.
 

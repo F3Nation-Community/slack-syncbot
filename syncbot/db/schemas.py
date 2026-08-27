@@ -15,11 +15,13 @@ Tables:
 * **user_mappings** — Cross-workspace user match results (including
   confirmed matches, name-based matches, manual admin matches, and
   explicit "no match" records to avoid redundant lookups).
+* **processed_events** — Slack Events API ``event_id`` claims (at-least-once
+  dedup). Ephemeral; not included in full-instance backup.
 """
 
 from typing import Any
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.types import DECIMAL
 
@@ -223,3 +225,23 @@ class FederatedWorkspace(BaseClass, GetDBClass):
 
     def get_id():
         return FederatedWorkspace.id
+
+
+class ProcessedEvent(BaseClass, GetDBClass):
+    """Dedup record for Slack Events API at-least-once delivery.
+
+    Unique on ``(team_id, event_id)`` from the Slack envelope (not ``event.ts``).
+    """
+
+    __tablename__ = "processed_events"
+    __table_args__ = (UniqueConstraint("team_id", "event_id", name="uq_processed_events_team_event"),)
+
+    id = Column(Integer, primary_key=True)
+    team_id = Column(String(100), nullable=False)
+    event_id = Column(String(64), nullable=False)
+    status = Column(String(20), nullable=False, default="pending")
+    created_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+
+    def get_id():
+        return ProcessedEvent.id

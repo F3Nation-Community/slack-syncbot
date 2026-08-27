@@ -12,7 +12,7 @@ os.environ.setdefault("DATABASE_PASSWORD", "test")
 os.environ.setdefault("DATABASE_SCHEMA", "syncbot")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 
 from db import _MAX_RETRIES, _with_retry
@@ -192,6 +192,7 @@ class TestBackendParity:
             assert insp.has_table("workspaces")
             assert insp.has_table("alembic_version")
             assert insp.has_table("slack_bots")
+            assert insp.has_table("processed_events")
         finally:
             if db_mod.GLOBAL_ENGINE:
                 db_mod.GLOBAL_ENGINE.dispose()
@@ -200,6 +201,61 @@ class TestBackendParity:
             if "DATABASE_URL" in os.environ and "test_bootstrap" in os.environ["DATABASE_URL"]:
                 with contextlib.suppress(Exception):
                     (__import__("pathlib").Path("test_bootstrap.db")).unlink(missing_ok=True)
+
+    def test_alembic_002_creates_processed_events_when_missing(self, tmp_path):
+        """Existing 001 installs do not get the table from create_all; 002 must create it."""
+        from alembic import command
+
+        import db as db_mod
+        from db import _alembic_config, get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic002.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                with engine.begin() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS processed_events"))
+                    conn.execute(text("UPDATE alembic_version SET version_num = '001_baseline'"))
+                command.upgrade(_alembic_config(), "head")
+                assert inspect(engine).has_table("processed_events")
+                uniques = {u["name"] for u in inspect(engine).get_unique_constraints("processed_events")}
+                assert "uq_processed_events_team_event" in uniques
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
+
+    def test_alembic_002_skips_when_processed_events_already_exists(self, tmp_path):
+        """Fresh DBs already have the table from 001 create_all; 002 must be a no-op."""
+        from alembic import command
+
+        import db as db_mod
+        from db import _alembic_config, get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic002skip.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                with engine.begin() as conn:
+                    conn.execute(text("UPDATE alembic_version SET version_num = '001_baseline'"))
+                command.upgrade(_alembic_config(), "head")
+                assert inspect(engine).has_table("processed_events")
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
 
     def test_get_required_db_vars_mysql_without_url(self):
         with patch.dict(os.environ, {"DATABASE_BACKEND": "mysql"}, clear=False):
