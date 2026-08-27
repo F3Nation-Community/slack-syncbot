@@ -1,6 +1,8 @@
 # Enable squash auto-merge for Dependabot patch/minor version updates and
 # security updates (including semver-major when an advisory requires it).
 # Version-only majors are closed. sprocktech/syncbot only.
+# Uses sprocktech-automation (GitHub App) so merge retriggers workflows;
+# GITHUB_TOKEN merges do not. See docs/DEVELOPMENT.md.
 name: Dependabot auto-merge
 
 on:
@@ -17,10 +19,19 @@ permissions:
 
 jobs:
   automerge:
-    # PR author, not github.actor: requirements-sync commits as github-actions[bot].
+    # PR author, not github.actor: requirements-sync commits as sprocktech-automation[bot].
     if: github.repository == 'sprocktech/syncbot' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          owner: sprocktech
+          repositories: syncbot
+
       - uses: dependabot/fetch-metadata@v2
         id: meta
         with:
@@ -36,7 +47,7 @@ jobs:
           steps.meta.outputs.update-type == 'version-update:semver-major' &&
           steps.meta.outputs.alert-state == ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: |
           gh pr close "$PR_URL" --comment "$(cat <<'EOF'
@@ -54,6 +65,6 @@ jobs:
             steps.meta.outputs.alert-state != ''
           )
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
         run: gh pr merge --auto --squash "$PR_URL"

@@ -74,15 +74,15 @@ echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sa
 grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> infra/aws/db_setup/requirements.txt
 ```
 
-The root **`./deploy.sh`** dependency-sync menu may run `poetry update` and regenerate both requirements files when Poetry is on your `PATH` (see [DEPLOY.md](DEPLOY.md)).
+The root **`./deploy.sh`** does **not** run `poetry update`. If Poetry and `poetry-plugin-export` are on `PATH`, it may **warn** when committed `*requirements.txt` files differ from a lockfile export; it does not write those files or `poetry.lock`. Local and GitHub Actions deploys install the committed pins (same as `sam build`).
 
-CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)); it does not audit the committed `*requirements.txt` files. On **same-repo** PRs, **`requirements-sync`** may commit an export onto the branch **without** `[skip ci]` so required checks run on HEAD (Dependabot auto-merge needs that). Fork PRs fail if the files are stale — run the pre-commit hook. On **push** to `main` / `test` / `prod`, a leftover mismatch still tries a `[skip ci]` commit; that push can be rejected if `github-actions[bot]` cannot bypass the ruleset (acceptable when the squash already included the export).
+CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows/ci.yml](../.github/workflows/ci.yml)); it does not audit the committed `*requirements.txt` files. On **same-repo** PRs to **sprocktech/syncbot**, **`requirements-sync`** may commit an export as **`sprocktech-automation[bot]`** (GitHub App token) **without** `[skip ci]` so required checks re-run on HEAD. A `GITHUB_TOKEN` push would not retrigger workflows. Fork PRs fail if the files are stale — run the pre-commit hook. If that bot commit lands on a Dependabot branch, comment **`@dependabot recreate`** so Dependabot can rebase (it refuses branches edited by others). On **push** to `main` / `test` / `prod`, a leftover mismatch may still commit with `[skip ci]`; the App is on the `main` ruleset bypass list so that push can succeed.
 
 ## Releases & Versioning
 
 - **Conventional Commits** are required for squash-merged PR titles (see [CONTRIBUTING.md](../CONTRIBUTING.md)); [.github/workflows/pr-title.yml](../.github/workflows/pr-title.yml) enforces the format (Dependabot uses `.github/dependabot.yml` prefixes).
 - On **[sprocktech/syncbot](https://github.com/sprocktech/syncbot)** only, pushes to **`main`** run [.github/workflows/release.yml](../.github/workflows/release.yml) (**python-semantic-release** 9.21.2 via `pip`, with GitPython pinned below 3.1.60). GitPython 3.1.60 removed `Actor.name_email_regex`, which PSR 9.x still reads ([upstream #1476](https://github.com/python-semantic-release/python-semantic-release/issues/1476)); the official Docker action rebuilds dependencies at job time and cannot pin that package. The job bumps `[tool.poetry] version` in `pyproject.toml`, updates `CHANGELOG.md` (inserting above `<!-- version list -->`), creates a **GitHub Release**, and tags the repo with `X.Y.Z` (no `v` prefix), matching existing tags. Forks should **not** run a second release stream.
-- Release commits and requirements auto-fix commits are created via the **GitHub git API** so they show as **Verified** (GitHub `web-flow` signing) without storing a bot GPG key in CI.
+- Release commits, tags, and GitHub Releases are created via the **GitHub git API** as **`sprocktech-automation[bot]`** (GitHub App token) so they show as **Verified** and can bypass the `main` ruleset. `GITHUB_TOKEN` / `github-actions[bot]` cannot `updateRef` on a PR-required branch. After changing [release.yml](../.github/workflows/release.yml) or rotating the App, re-run **Actions → Release → Run workflow** if a computed release was skipped.
 - Forks pull `main` and deploy **`test`** / **`prod`** themselves (see [DEPLOY.md](DEPLOY.md)). There is no automated `main` → `test` promote PR from upstream.
 
 ## Required GitHub settings (manual)
@@ -91,10 +91,29 @@ These cannot be set from a PR — configure once on **sprocktech/syncbot** under
 
 - **Allow auto-merge**; default merge method **Squash** (use the PR title as the squash commit subject).
 - **Branch protection / ruleset** on `main`: require a pull request; required checks **`ci-gate`** and **`conventional`** (the job name from [pr-title.yml](../.github/workflows/pr-title.yml), not “PR title / conventional”). Do **not** require Code Owners or resolved conversations. Prefer not requiring “branch must be up to date” until Dependabot rebase is confirmed.
-- **Bypass list:** keep **Organization admin** only. Do **not** add Dependabot, Write, or Maintain — Dependabot auto-merge already merges *through the PR* when checks pass; a Dependabot bypass would allow pushing to `main` without a PR. The built-in `github-actions[bot]` does **not** appear in the bypass picker (it is not an installable App). Direct `updateRef` from Actions (`release.yml` / a post-merge requirements-sync) will fail until a **custom GitHub App** is installed and added to the bypass list, or an org-admin PAT is used for those jobs.
+- **Bypass list:** **Organization admin** (humans) and the GitHub App **`sprocktech-automation`** (see below). Do **not** add Dependabot, Write, or Maintain — Dependabot auto-merge already merges *through the PR* when checks pass; a Dependabot bypass would allow pushing to `main` without a PR. The built-in `github-actions[bot]` does **not** appear in the bypass picker (it is not an installable App).
 - Dependabot **version updates** (from `.github/dependabot.yml`) and **security updates** enabled. Disable Dependabot on deploy forks (e.g. `f3-tulsa/syncbot`) so they do not open a second pile of PRs.
 - **Secrets / variables** for deploy environments live on the **fork**, not on sprocktech — see [DEPLOY.md](DEPLOY.md).
 
+### Automation GitHub App (`sprocktech-automation`)
+
+This is the org’s **GitHub bot** (git push, PR merge, Release `updateRef`, ruleset bypass). It is **not** cloud deploy — AWS/GCP stay OIDC / WIF. Workflows that use it: [release.yml](../.github/workflows/release.yml), [ci.yml](../.github/workflows/ci.yml) (`requirements-sync`), [dependabot-auto-merge.yml](../.github/workflows/dependabot-auto-merge.yml). Reuse it for later bot jobs on this repo; do not widen permissions until a job needs them.
+
+Recreate from scratch:
+
+1. Org **sprocktech** → **Settings → Developer settings → GitHub Apps → New GitHub App**.
+2. Homepage URL: `https://github.com/sprocktech` (org page; the App is org-owned even though it is installed only on syncbot today). Callback URL: leave blank. **Webhook: uncheck Active** (no events).
+3. Repository permissions: **Contents** Read and write; **Pull requests** Read and write; **Issues** Read and write; **Metadata** Read. No org permissions. No user permissions.
+4. Where can this App be installed: **Only on this account**. Create.
+5. Note **App ID** (integer on the app settings page).
+6. **Generate a private key** → download the `.pem` (store in a password manager; do not commit).
+7. **Install App** → only **sprocktech/syncbot**.
+8. Repo **Settings → Secrets and variables → Actions → Repository secrets** (not Environment secrets, not org secrets): add `AUTOMATION_APP_ID` (the integer) and `AUTOMATION_APP_PRIVATE_KEY` (full PEM including `BEGIN`/`END` lines).
+9. Repo **Settings → Secrets and variables → Dependabot → Repository secrets**: **the same two names and values**. Dependabot-triggered workflows cannot read Actions secrets (`requirements-sync` and auto-merge run on Dependabot PRs).
+10. Repo **Settings → Rulesets → Rulesets** (the `main` ruleset): **Bypass list** → add GitHub App `sprocktech-automation`. Do **not** add Dependabot, Write, or Maintain. Keep Organization admin for humans.
+
+If you rotate the key or recreate the App: update **both** repository secret stores; re-add the **new** App on the ruleset (the old installation id will not match). Forks do not install this App and do not need these secrets.
+
 ## Commit signing (local)
 
-Maintainers using **GPG-signed commits** should keep `commit.gpgsign` enabled locally; automated release commits use GitHub’s API signatures instead. See [AGENTS.md](../AGENTS.md) and [AI_AGENTS.md](AI_AGENTS.md).
+Maintainers using **GPG-signed commits** should keep `commit.gpgsign` enabled locally; automated release and requirements-sync commits are signed as **`sprocktech-automation[bot]`** via the GitHub App. See [AGENTS.md](../AGENTS.md) and [AI_AGENTS.md](AI_AGENTS.md).

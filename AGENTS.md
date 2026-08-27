@@ -62,7 +62,7 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 - **SQLite vs MySQL/Postgres** — local SQLite behaves differently for locking and types; don’t assume parity without checking migration scripts.
 - **`ENABLE_DB_RESET`** — boolean (`true`/`1`/`yes`), gated by `PRIMARY_WORKSPACE`; don't treat as team-id string anymore.
 - **`DATABASE_*`** env naming — use current `DATABASE_*` vars per [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md); older `EXISTING_DATABASE_*` names are obsolete.
-- **Fork vs upstream** — `origin` may be your fork; open PRs against the repo you were asked to target (usually **sprocktech/syncbot** `main`). `release.yml` and Dependabot auto-merge run only on that canonical repository.
+- **Fork vs upstream** — `origin` may be your fork; open PRs against the repo you were asked to target (usually **sprocktech/syncbot** `main`). `release.yml` and Dependabot auto-merge run only on that canonical repository. Canonical GitHub bot identity is App **`sprocktech-automation`** (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)); forks do not install it.
 
 ## More detail
 
