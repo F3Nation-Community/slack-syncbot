@@ -36,15 +36,22 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - id: psr
-        uses: python-semantic-release/python-semantic-release@v9.21.2
+      # Run PSR on the runner so we can pin GitPython. The official Docker action
+      # rebuilds its image at job time and pulls GitPython 3.1.60, which removed
+      # Actor.name_email_regex (python-semantic-release/python-semantic-release#1476).
+      - uses: actions/setup-python@v6
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          commit: "false"
-          tag: "false"
-          push: "false"
-          vcs_release: "false"
-          changelog: "true"
+          python-version: "3.12"
+
+      - name: Install python-semantic-release
+        run: |
+          python -m pip install --upgrade pip
+          pip install "python-semantic-release==9.21.2" "gitpython>=3.0,<3.1.60"
+
+      - id: psr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: semantic-release version --no-commit --no-tag --no-push --no-vcs-release --changelog --skip-build
 
       - name: Commit, tag, and publish release (GitHub API)
         if: ${{ steps.psr.outputs.released == 'true' }}
