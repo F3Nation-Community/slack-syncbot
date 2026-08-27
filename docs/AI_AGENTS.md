@@ -20,6 +20,8 @@ On pull requests, [.github/workflows/ci.yml](../.github/workflows/ci.yml) includ
 - **`ruff`** — `ruff check` and `ruff format --check`.
 - **`pip-audit`** — exports from `poetry.lock` and audits (runs when Python dependency files change).
 - **`sam-lint`** — `sam validate --lint` (runs when AWS templates / SAM workflow pins change).
+- **`terraform-validate`** — `terraform init -backend=false`, `validate`, and `fmt -check` in `infra/gcp` (path-filtered; skipped is OK).
+- **`docker-build-gcp`** — `docker build -f infra/gcp/Dockerfile --platform linux/amd64 .` from the repo root, no push (path-filtered).
 - **`test`** — `pytest` over `tests/` and infra tests (same as local command in [AGENTS.md](../AGENTS.md)).
 - **`ci-gate`** — aggregator; the check to require on `main`. Skipped path-filtered jobs count as success.
 - **`requirements-sync`** — on same-repo PRs, may commit `*requirements.txt` from `poetry.lock` **without** `[skip ci]` so `ci-gate` / `conventional` run on HEAD. Forks must export themselves.

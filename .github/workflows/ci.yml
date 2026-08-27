@@ -16,6 +16,8 @@ jobs:
     outputs:
       python-deps: ${{ steps.set.outputs.python-deps }}
       sam: ${{ steps.set.outputs.sam }}
+      terraform: ${{ steps.set.outputs.terraform }}
+      gcp-docker: ${{ steps.set.outputs.gcp-docker }}
     steps:
       - uses: actions/checkout@v6
       - uses: dorny/paths-filter@v3
@@ -32,14 +34,27 @@ jobs:
               - '.cfnlintrc.yaml'
               - '.github/workflows/ci.yml'
               - '.github/workflows/deploy-aws.yml'
+            terraform:
+              - 'infra/gcp/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/deploy-gcp.yml'
+            gcp-docker:
+              - 'infra/gcp/Dockerfile'
+              - 'infra/gcp/entrypoint.sh'
+              - 'infra/gcp/litestream.yml'
+              - 'syncbot/requirements.txt'
       - id: set
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "python-deps=true" >> "$GITHUB_OUTPUT"
             echo "sam=true" >> "$GITHUB_OUTPUT"
+            echo "terraform=true" >> "$GITHUB_OUTPUT"
+            echo "gcp-docker=true" >> "$GITHUB_OUTPUT"
           else
             echo "python-deps=${{ steps.filter.outputs.python-deps }}" >> "$GITHUB_OUTPUT"
             echo "sam=${{ steps.filter.outputs.sam }}" >> "$GITHUB_OUTPUT"
+            echo "terraform=${{ steps.filter.outputs.terraform }}" >> "$GITHUB_OUTPUT"
+            echo "gcp-docker=${{ steps.filter.outputs.gcp-docker }}" >> "$GITHUB_OUTPUT"
           fi
 
   requirements-sync:
@@ -230,6 +245,32 @@ jobs:
           sam validate -t infra/aws/template.yaml --lint
           sam validate -t infra/aws/template.bootstrap.yaml --lint
 
+  terraform-validate:
+    needs: changes
+    if: needs.changes.outputs.terraform == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - name: Terraform init / validate / fmt
+        working-directory: infra/gcp
+        run: |
+          terraform init -backend=false -input=false
+          terraform validate
+          terraform fmt -check
+
+  docker-build-gcp:
+    needs: changes
+    if: needs.changes.outputs.gcp-docker == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Docker build Cloud Run image (no push)
+        run: docker build -f infra/gcp/Dockerfile --platform linux/amd64 .
+
   pip-audit:
     needs: changes
     if: needs.changes.outputs.python-deps == 'true'
@@ -276,6 +317,8 @@ jobs:
       - forbidden-imports
       - ruff
       - sam-lint
+      - terraform-validate
+      - docker-build-gcp
       - pip-audit
       - test
     runs-on: ubuntu-latest
