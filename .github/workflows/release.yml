@@ -69,7 +69,6 @@ jobs:
         uses: actions/github-script@v7
         env:
           VERSION: ${{ steps.psr.outputs.version }}
-          RELEASE_NOTES: ${{ steps.psr.outputs.release_notes }}
           TAG: ${{ steps.psr.outputs.tag }}
         with:
           github-token: ${{ steps.app-token.outputs.token }}
@@ -77,10 +76,6 @@ jobs:
             const fs = require('fs');
             const version = process.env.VERSION;
             const tag = process.env.TAG || version;
-            let notes = process.env.RELEASE_NOTES || '';
-            if (!notes.trim()) {
-              notes = `Release ${version}`;
-            }
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const branch = context.ref.replace('refs/heads/', '');
@@ -88,6 +83,26 @@ jobs:
 
             const pyproject = fs.readFileSync('pyproject.toml', 'utf8');
             const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
+
+            function notesFromChangelog(md, ver) {
+              const v = String(ver || '').replace(/^v/, '');
+              const prefixes = [`## [${v}]`, `## v${v}`, `## ${v} `];
+              const lines = md.split('\n');
+              let start = -1;
+              for (let i = 0; i < lines.length; i++) {
+                if (prefixes.some((p) => lines[i].startsWith(p))) { start = i; break; }
+              }
+              if (start < 0) return '';
+              let end = lines.length;
+              for (let i = start + 1; i < lines.length; i++) {
+                if (lines[i].startsWith('## ')) { end = i; break; }
+              }
+              return lines.slice(start + 1, end).join('\n').trim();
+            }
+            let notes = notesFromChangelog(changelog, version);
+            if (!notes) {
+              notes = `Release ${version}`;
+            }
 
             const { data: parentCommit } = await github.rest.git.getCommit({
               owner,

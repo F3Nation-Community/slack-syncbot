@@ -41,7 +41,7 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 ## Hard rules (guardrails)
 
 1. **Provider-neutral `syncbot/`** — do not add `boto3`, `google.cloud`, or other cloud SDK imports under `syncbot/`. Use `infra/<provider>/` and workflows for provider code. This is also enforced in CI (`forbidden-imports` job).
-2. **Version & changelog** — do not hand-edit `CHANGELOG.md` or bump `pyproject.toml`’s `version` in a **PR**. Releases on `main` are automated with **python-semantic-release**; use Conventional Commits (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+2. **Version & changelog** — do not bump `pyproject.toml`’s `version` or add a **new** CHANGELOG version heading in a feature PR. Releases on `main` are automated with **python-semantic-release**. Polishing notes under an already-released heading is OK (Keep a Changelog: Added / Changed / Fixed). Use Conventional Commits (see [CONTRIBUTING.md](CONTRIBUTING.md)).
 3. **Requirements files** — do not edit `syncbot/requirements.txt` or `infra/aws/db_setup/requirements.txt` by hand. Change dependencies in `pyproject.toml` and run the pre-commit `sync-requirements` hook or `poetry export` as in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 4. **Secrets** — never commit real `.env`, `.env.deploy.*` (only `*.example` templates), private keys, or large artifacts. Do not commit `.aws-sam/build` output.
 5. **Deployment branches** — on a **fork**, do not push to `test` or `prod` as a casual step; those branches deploy. Canonical releases run only on **sprocktech/syncbot** `main` (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). Forks pull `main` and promote to `test`/`prod` themselves.

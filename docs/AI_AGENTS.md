@@ -15,7 +15,7 @@ This repository is set up so coding agents (Cursor, GitHub Copilot, Codex, Claud
 
 On pull requests, [.github/workflows/ci.yml](../.github/workflows/ci.yml) includes:
 
-- **`forbidden-edits`** — blocks changelog edits (except the `<!-- version list -->` marker), hand bumps of `version` in `pyproject.toml`, and `*requirements.txt` changes that are not paired with `poetry.lock` / `pyproject.toml`.
+- **`forbidden-edits`** — blocks removing the CHANGELOG `<!-- version list -->` marker, hand bumps of `version` in `pyproject.toml`, and `*requirements.txt` changes that are not paired with `poetry.lock` / `pyproject.toml`.
 - **`forbidden-imports`** — blocks `boto3` / `google.cloud` imports under `syncbot/`.
 - **`ruff`** — `ruff check` and `ruff format --check`.
 - **`pip-audit`** — exports from `poetry.lock` and audits (runs when Python dependency files change).
