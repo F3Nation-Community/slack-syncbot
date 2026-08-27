@@ -104,7 +104,7 @@ app = App(
 
 @app.middleware
 def _capture_slack_retry_num(req, resp, next):
-    """Expose ``X-Slack-Retry-Num`` on context so message handlers can drop retries."""
+    """Expose ``X-Slack-Retry-Num`` on context (handlers dedup by ``event_id``, not retry num)."""
     headers = getattr(req, "headers", None) or {}
     vals = headers.get("x-slack-retry-num")
     if vals:

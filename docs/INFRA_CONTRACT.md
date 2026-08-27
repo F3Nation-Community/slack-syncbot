@@ -95,6 +95,9 @@ The provider must deliver:
 5. **Stateless execution**
    The app is stateless; state lives in the configured database (PostgreSQL, MySQL, or SQLite). Horizontal scaling is supported with PostgreSQL/MySQL as long as all instances share the same DB and env; SQLite is single-writer.
 
+6. **At-least-once Slack delivery**
+   The Events API may deliver the same envelope more than once (Slack retries, queued cold starts). Message and reaction sync is idempotent on envelope ``event_id`` + ``team_id`` (table ``processed_events``). Providers must not assume exactly-once HTTP delivery.
+
 ## CI Auth Model
 
 - **Preferred:** Short-lived federation (e.g. OIDC for AWS, Workload Identity Federation for GCP). No long-lived API keys in GitHub Secrets for deploy.
