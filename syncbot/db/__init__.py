@@ -156,47 +156,6 @@ def _is_network_sql_backend() -> bool:
     return constants.get_database_backend() in ("mysql", "postgresql")
 
 
-def _ensure_database_exists() -> None:
-    """Create the configured database/schema if missing (MySQL or PostgreSQL)."""
-    backend = constants.get_database_backend()
-    if backend not in ("mysql", "postgresql"):
-        return
-    if os.environ.get(constants.DATABASE_URL):
-        return  # URL already points at a database
-    schema = os.environ.get(constants.DATABASE_SCHEMA, "syncbot")
-    if backend == "mysql":
-        url_no_db, connect_args = _build_mysql_url(include_schema=False)
-        engine_no_db = create_engine(url_no_db, connect_args=connect_args, pool_pre_ping=True)
-        try:
-            with engine_no_db.begin() as conn:
-                conn.execute(text(f"CREATE DATABASE IF NOT EXISTS `{schema}` CHARACTER SET utf8mb4"))
-        finally:
-            engine_no_db.dispose()
-        return
-
-    # postgresql: connect to maintenance DB, CREATE DATABASE if needed
-    url_admin, connect_args = _build_postgresql_url(include_schema=False)
-    safe = "".join(c for c in schema if c.isalnum() or c == "_")
-    if not safe or safe != schema:
-        raise ValueError(f"Invalid DATABASE_SCHEMA for PostgreSQL (use letters, digits, underscore): {schema}")
-    engine_admin = create_engine(
-        url_admin,
-        connect_args=connect_args,
-        pool_pre_ping=True,
-        isolation_level="AUTOCOMMIT",
-    )
-    try:
-        with engine_admin.connect() as conn:
-            exists = conn.execute(
-                text("SELECT 1 FROM pg_database WHERE datname = :n"),
-                {"n": schema},
-            ).scalar()
-            if exists is None:
-                conn.execute(text(f'CREATE DATABASE "{safe}"'))
-    finally:
-        engine_admin.dispose()
-
-
 def _alembic_config():
     """Build Alembic config with script_location set to syncbot/db/alembic."""
     from alembic.config import Config  # pyright: ignore[reportMissingImports]
@@ -215,13 +174,13 @@ def _run_alembic_upgrade() -> None:
 
 
 def initialize_database() -> None:
-    """Ensure the database exists (MySQL/PostgreSQL) and apply Alembic migrations.
+    """Apply Alembic migrations. Does not ``CREATE DATABASE``.
 
-    Runs ``alembic upgrade head`` so the schema matches the current revision.
+    The operator must create the database and app user before first migrate
+    (see docs/DEPLOY.md). SQLite creates the file on connect.
     """
     for attempt in range(1, _DB_INIT_MAX_ATTEMPTS + 1):
         try:
-            _ensure_database_exists()
             _run_alembic_upgrade()
             return
         except Exception as exc:
@@ -230,6 +189,11 @@ def initialize_database() -> None:
                     "db_init_failed",
                     extra={"attempts": _DB_INIT_MAX_ATTEMPTS, "error": str(exc)},
                 )
+                if _is_network_sql_backend():
+                    raise RuntimeError(
+                        "Database init failed. Create the database and app user first "
+                        "(see docs/DEPLOY.md), then retry migrate."
+                    ) from exc
                 raise
             _logger.warning(
                 "db_init_retrying",

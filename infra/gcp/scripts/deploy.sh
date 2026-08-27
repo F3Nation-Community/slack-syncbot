@@ -424,7 +424,6 @@ write_deploy_receipt() {
 - SLACK_CLIENT_SECRET=${SLACK_CLIENT_SECRET:-}
 - DATA_ENCRYPTION_KEY=${DATA_ENCRYPTION_KEY:-}
 - DATABASE_PASSWORD=${DATABASE_PASSWORD:-}
-- DATABASE_ADMIN_PASSWORD=${DATABASE_ADMIN_PASSWORD:-}
 EOF
 
     if [[ "${VERBOSE:-}" == "true" ]]; then
@@ -563,12 +562,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
 
   # Backward-compatible aliases: new name primary, EXISTING_ as fallback
   DATABASE_HOST="${DATABASE_HOST:-${EXISTING_DATABASE_HOST:-}}"
-  DATABASE_ADMIN_USER="${DATABASE_ADMIN_USER:-${EXISTING_DATABASE_ADMIN_USER:-}}"
-  DATABASE_ADMIN_PASSWORD="${DATABASE_ADMIN_PASSWORD:-${EXISTING_DATABASE_ADMIN_PASSWORD:-}}"
-  DATABASE_USERNAME_PREFIX="${DATABASE_USERNAME_PREFIX:-${EXISTING_DATABASE_USERNAME_PREFIX:-}}"
-  DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-${EXISTING_DATABASE_APP_USERNAME:-}}"
-  DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-${EXISTING_DATABASE_CREATE_APP_USER:-true}}"
-  DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
   DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
   USE_EXISTING="false"
   [[ "$GCP_DATABASE_MODE" == "existing" ]] && USE_EXISTING="true"
@@ -591,25 +584,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   if [[ -n "${ENV_FILE_PATH:-}" ]]; then
     update_env_file "$ENV_FILE_PATH" "GCP_CLOUD_RUN_MIN_INSTANCES" "$GCP_CLOUD_RUN_MIN_INSTANCES"
     update_env_file "$ENV_FILE_PATH" "ENABLE_KEEP_WARM" "$ENABLE_KEEP_WARM"
-  fi
-
-  # Auto-generate DATABASE_PASSWORD + derive DATABASE_USER when using existing DB with admin setup
-  if [[ "$USE_EXISTING" == "true" && -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_PASSWORD:-}" ]]; then
-    DATABASE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(24))')"
-    echo "Generated DATABASE_PASSWORD=$DATABASE_PASSWORD"
-    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
-      update_env_file "$ENV_FILE_PATH" "DATABASE_PASSWORD" "$DATABASE_PASSWORD"
-      echo "  (saved to $ENV_FILE_PATH)"
-    fi
-  fi
-  if [[ "$USE_EXISTING" == "true" && -n "${DATABASE_ADMIN_USER:-}" && -z "${DATABASE_USER:-}" ]]; then
-    DATABASE_USER="${DATABASE_USERNAME_PREFIX:+${DATABASE_USERNAME_PREFIX}.}sbapp_${STAGE}"
-    DATABASE_USER="${DATABASE_USER//-/_}"
-    echo "Derived DATABASE_USER=$DATABASE_USER"
-    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
-      update_env_file "$ENV_FILE_PATH" "DATABASE_USER" "$DATABASE_USER"
-      echo "  (saved to $ENV_FILE_PATH)"
-    fi
   fi
 
   echo "=== Terraform Init ==="
@@ -653,13 +627,14 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       echo "Error: DATABASE_PASSWORD is required when GCP_DATABASE_MODE=existing." >&2
       exit 1
     fi
+    if [[ -z "${DATABASE_USER:-}" ]]; then
+      echo "Error: DATABASE_USER is required when GCP_DATABASE_MODE=existing." >&2
+      exit 1
+    fi
     VARS+=("-var=database_password=$DATABASE_PASSWORD")
     VARS+=("-var=existing_db_host=$DATABASE_HOST")
     VARS+=("-var=existing_db_schema=${DATABASE_SCHEMA:-syncbot}")
-    [[ -n "${DATABASE_USERNAME_PREFIX:-}" ]] && VARS+=("-var=existing_db_username_prefix=$DATABASE_USERNAME_PREFIX")
-    [[ -n "${DATABASE_APP_USERNAME:-}" ]] && VARS+=("-var=existing_db_app_username=$DATABASE_APP_USERNAME")
-    [[ -n "${DATABASE_CREATE_APP_USER:-}" ]] && VARS+=("-var=existing_db_create_app_user=$DATABASE_CREATE_APP_USER")
-    [[ -n "${DATABASE_CREATE_SCHEMA:-}" ]] && VARS+=("-var=existing_db_create_schema=$DATABASE_CREATE_SCHEMA")
+    VARS+=("-var=database_user=$DATABASE_USER")
   fi
 
   echo "=== Terraform Plan ==="
@@ -728,12 +703,6 @@ echo
 
 # Backward-compatible aliases: new name primary, EXISTING_ as fallback (same as non-interactive path)
 DATABASE_HOST="${DATABASE_HOST:-${EXISTING_DATABASE_HOST:-}}"
-DATABASE_ADMIN_USER="${DATABASE_ADMIN_USER:-${EXISTING_DATABASE_ADMIN_USER:-}}"
-DATABASE_ADMIN_PASSWORD="${DATABASE_ADMIN_PASSWORD:-${EXISTING_DATABASE_ADMIN_PASSWORD:-}}"
-DATABASE_USERNAME_PREFIX="${DATABASE_USERNAME_PREFIX:-${EXISTING_DATABASE_USERNAME_PREFIX:-}}"
-DATABASE_APP_USERNAME="${DATABASE_APP_USERNAME:-${EXISTING_DATABASE_APP_USERNAME:-}}"
-DATABASE_CREATE_APP_USER="${DATABASE_CREATE_APP_USER:-${EXISTING_DATABASE_CREATE_APP_USER:-true}}"
-DATABASE_CREATE_SCHEMA="${DATABASE_CREATE_SCHEMA:-${EXISTING_DATABASE_CREATE_SCHEMA:-true}}"
 DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
 
 echo "=== Project And Region ==="
@@ -790,8 +759,6 @@ if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
 echo
 echo "=== Configuration ==="
 DB_PORT="3306"
-DB_CREATE_APP_USER="true"
-DB_CREATE_SCHEMA="true"
 echo "=== Database ==="
 echo "SQLite + Litestream (default): free at low usage; DB file on Cloud Run, replica in GCS."
 echo "Existing host: TiDB Cloud or other MySQL. Cloud SQL is not created."
@@ -827,34 +794,26 @@ EXISTING_USER=""
 DETECTED_EXISTING_HOST=""
 DETECTED_EXISTING_SCHEMA=""
 DETECTED_EXISTING_USER=""
-DB_USERNAME_PREFIX=""
-DB_APP_USERNAME=""
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
   DETECTED_EXISTING_HOST="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_HOST")"
   DETECTED_EXISTING_SCHEMA="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_SCHEMA")"
   DETECTED_EXISTING_USER="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_USER")"
 fi
 if [[ "$USE_EXISTING" == "true" ]]; then
-  EXISTING_HOST="$(prompt_line "Existing DB host" "$DETECTED_EXISTING_HOST")"
+  EXISTING_HOST="$(prompt_line "Existing database host" "$DETECTED_EXISTING_HOST")"
   EXISTING_SCHEMA="$(prompt_line "Database schema name" "${DETECTED_EXISTING_SCHEMA:-syncbot}")"
-  DB_USERNAME_PREFIX="$(prompt_line "DB username prefix (optional; e.g. TiDB Cloud abc123; blank = enter full DB user next)" "")"
-  if [[ -n "$DB_USERNAME_PREFIX" ]]; then
-    EXISTING_USER=""
-  else
-    EXISTING_USER="$(prompt_line "Database user" "$DETECTED_EXISTING_USER")"
-  fi
-  DB_APP_USERNAME="$(prompt_line "Override DATABASE_USER (optional; full username e.g. TiDB-prefixed; blank = prefix+sbapp_{stage} or Database user above)" "")"
+  EXISTING_USER="$(prompt_line "Database user (full username, including any TiDB prefix)" "$DETECTED_EXISTING_USER")"
   if [[ -z "$EXISTING_HOST" ]]; then
-    echo "Error: Existing DB host is required when using existing database mode." >&2
+    echo "Error: Existing database host is required when using existing database mode." >&2
     exit 1
   fi
-  if [[ -z "$EXISTING_USER" && -z "$DB_USERNAME_PREFIX" && -z "$DB_APP_USERNAME" ]]; then
-    echo "Error: Database user, DB username prefix, or DATABASE_USER override is required when using existing database mode." >&2
+  if [[ -z "$EXISTING_USER" ]]; then
+    echo "Error: DATABASE_USER is required when using existing database mode." >&2
     exit 1
   fi
 
   echo
-  echo "=== Existing database port and setup (operator / external DB) ==="
+  echo "=== Existing database port ==="
   DEFAULT_DB_PORT="3306"
   if [[ -n "$EXISTING_SERVICE_URL" ]]; then
     DETECTED_DB_PORT_EARLY="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "DATABASE_PORT")"
@@ -864,19 +823,6 @@ if [[ "$USE_EXISTING" == "true" ]]; then
   if [[ -z "$DB_PORT" ]]; then
     echo "Error: Database TCP port is required when using existing database mode." >&2
     exit 1
-  fi
-
-  CREATE_APP_DEF="y"
-  CREATE_SCHEMA_DEF="y"
-  if prompt_yn "Create dedicated app DB user on the server (CREATE USER / grants)?" "$CREATE_APP_DEF"; then
-    DB_CREATE_APP_USER="true"
-  else
-    DB_CREATE_APP_USER="false"
-  fi
-  if prompt_yn "Run CREATE DATABASE IF NOT EXISTS for DatabaseSchema (you or a hook)?" "$CREATE_SCHEMA_DEF"; then
-    DB_CREATE_SCHEMA="true"
-  else
-    DB_CREATE_SCHEMA="false"
   fi
 fi
 
@@ -974,10 +920,13 @@ SLACK_CLIENT_ID="$(required_from_env_or_prompt "SLACK_CLIENT_ID" "SlackClientID"
 SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
 DATA_ENCRYPTION_KEY="$(required_from_env_or_prompt "DATA_ENCRYPTION_KEY" "DataEncryptionKey" "secret")"
 DATABASE_PASSWORD=""
-DATABASE_USER=""
+DATABASE_USER="${DATABASE_USER:-}"
 if [[ "$USE_EXISTING" == "true" ]]; then
   DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
-  DATABASE_USER="$(required_from_env_or_prompt "DATABASE_USER" "DatabaseUser (pre-existing app DB user)")"
+  DATABASE_USER="${DATABASE_USER:-$EXISTING_USER}"
+  if [[ -z "$DATABASE_USER" ]]; then
+    DATABASE_USER="$(required_from_env_or_prompt "DATABASE_USER" "DatabaseUser (full username, including any TiDB prefix)")"
+  fi
 fi
 
 echo
@@ -1020,10 +969,6 @@ if [[ "$USE_EXISTING" == "true" ]]; then
   VARS+=("-var=existing_db_host=$EXISTING_HOST")
   VARS+=("-var=existing_db_schema=$EXISTING_SCHEMA")
   VARS+=("-var=existing_db_user=$EXISTING_USER")
-  VARS+=("-var=existing_db_username_prefix=$DB_USERNAME_PREFIX")
-  VARS+=("-var=existing_db_app_username=$DB_APP_USERNAME")
-  VARS+=("-var=existing_db_create_app_user=$DB_CREATE_APP_USER")
-  VARS+=("-var=existing_db_create_schema=$DB_CREATE_SCHEMA")
 fi
 
 echo

@@ -14,6 +14,89 @@ STACK_NAME="${AWS_STACK_NAME:?AWS_STACK_NAME is required}"
 REGION="${AWS_REGION:?AWS_REGION is required}"
 BUCKET="${AWS_S3_BUCKET:?AWS_S3_BUCKET is required}"
 
+abort_if_stack_managed_rds() {
+  local stack="$1" region="$2" ids
+  if [[ -z "$stack" || -z "$region" ]]; then
+    return 0
+  fi
+  ids="$(aws cloudformation list-stack-resources \
+    --stack-name "$stack" \
+    --region "$region" \
+    --query "StackResourceSummaries[?ResourceType=='AWS::RDS::DBInstance'].LogicalResourceId" \
+    --output text 2>/dev/null || true)"
+  if [[ -z "$ids" || "$ids" == "None" ]]; then
+    return 0
+  fi
+  cat >&2 <<EOF
+Error: CloudFormation stack '$stack' still contains stack-managed RDS ($ids).
+
+This template no longer creates or updates RDS. An in-place SAM update would try to
+destroy that database. Deploy is aborted.
+
+Do this instead (while the old stack is still serving Slack):
+
+  1. Backup from Slack Home → Backup/Restore (needs PRIMARY_WORKSPACE).
+     Keep the same DATA_ENCRYPTION_KEY on the new stack.
+     See docs/BACKUP_AND_MIGRATION.md and docs/DEPLOY.md.
+  2. Delete the CloudFormation app stack. RDS DeletionProtection may block
+     delete-stack until you disable protection or delete the instance in the
+     RDS console — do that manually after the backup.
+  3. Redeploy a fresh stack with AWS_DATABASE_MODE=existing (TiDB / your host)
+     or sqlite. Point Slack at the new Function URL / manifest.
+  4. Restore the backup JSON on the empty new database.
+
+There is no in-place migrate from stack RDS to TiDB or sqlite.
+EOF
+  exit 1
+}
+
+resolve_aws_database_mode() {
+  local mode="${AWS_DATABASE_MODE:-}"
+  if [[ "${DATABASE_ENGINE:-}" == "sqlite" ]]; then
+    mode="sqlite"
+  fi
+  mode="${mode:-existing}"
+  case "$mode" in
+    sqlite|existing) echo "$mode" ;;
+    *)
+      echo "Error: AWS_DATABASE_MODE must be sqlite or existing (got '$mode')." >&2
+      return 1
+      ;;
+  esac
+}
+
+sam_database_engine() {
+  case "${1:-mysql}" in
+    postgresql) echo postgresql ;;
+    *) echo mysql ;;
+  esac
+}
+
+AWS_DATABASE_MODE="$(resolve_aws_database_mode)"
+ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
+SAM_DATABASE_ENGINE="$(sam_database_engine "${DATABASE_ENGINE:-mysql}")"
+
+if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
+  if [[ -z "${DATABASE_HOST:-}" ]]; then
+    echo "Error: DATABASE_HOST is required when AWS_DATABASE_MODE=existing." >&2
+    exit 1
+  fi
+  if [[ -z "${DATABASE_USER:-}" ]]; then
+    echo "Error: DATABASE_USER is required when AWS_DATABASE_MODE=existing." >&2
+    exit 1
+  fi
+  if [[ -z "${DATABASE_PASSWORD:-}" ]]; then
+    echo "Error: DATABASE_PASSWORD is required when AWS_DATABASE_MODE=existing." >&2
+    exit 1
+  fi
+else
+  DATABASE_HOST=""
+  DATABASE_USER="${DATABASE_USER:-}"
+  DATABASE_PASSWORD="${DATABASE_PASSWORD:-}"
+fi
+
+abort_if_stack_managed_rds "$STACK_NAME" "$REGION"
+
 delete_failed_changesets() {
   local names cs
   names="$(aws cloudformation list-change-sets \
@@ -70,23 +153,17 @@ print(json.dumps(result))
 }
 
 # One Key=Value per line (full set for update-stack; sam deploy filters empties).
+# Keys must match remaining SAM parameters — do not pass removed RDS/admin/VPC params.
 emit_override_lines() {
   printf 'Stage=%s\n' "${STAGE_NAME}"
-  printf 'DatabaseEngine=%s\n' "${DATABASE_ENGINE:-mysql}"
+  printf 'DatabaseMode=%s\n' "${AWS_DATABASE_MODE}"
+  printf 'DatabaseEngine=%s\n' "${SAM_DATABASE_ENGINE}"
+  printf 'EnableKeepWarm=%s\n' "${ENABLE_KEEP_WARM}"
   printf 'DataEncryptionKey=%s\n' "${DATA_ENCRYPTION_KEY}"
-  printf 'DatabasePassword=%s\n' "${DATABASE_PASSWORD}"
-  printf 'DatabaseUser=%s\n' "${DATABASE_USER}"
+  printf 'DatabasePassword=%s\n' "${DATABASE_PASSWORD:-}"
+  printf 'DatabaseUser=%s\n' "${DATABASE_USER:-}"
   printf 'ExistingDatabaseHost=%s\n' "${DATABASE_HOST:-}"
-  printf 'ExistingDatabaseAdminUser=%s\n' "${DATABASE_ADMIN_USER:-}"
-  printf 'ExistingDatabaseAdminPassword=%s\n' "${DATABASE_ADMIN_PASSWORD:-}"
-  printf 'ExistingDatabaseNetworkMode=%s\n' "${DATABASE_NETWORK_MODE:-public}"
-  printf 'ExistingDatabaseSubnetIdsCsv=%s\n' "${DATABASE_SUBNET_IDS_CSV:-}"
-  printf 'ExistingDatabaseLambdaSecurityGroupId=%s\n' "${DATABASE_LAMBDA_SECURITY_GROUP_ID:-}"
   printf 'ExistingDatabasePort=%s\n' "${DATABASE_PORT:-}"
-  printf 'ExistingDatabaseCreateAppUser=%s\n' "${DATABASE_CREATE_APP_USER:-true}"
-  printf 'ExistingDatabaseCreateSchema=%s\n' "${DATABASE_CREATE_SCHEMA:-true}"
-  printf 'ExistingDatabaseUsernamePrefix=%s\n' "${DATABASE_USERNAME_PREFIX:-}"
-  printf 'ExistingDatabaseAppUsername=%s\n' "${DATABASE_APP_USERNAME:-}"
   printf 'DatabaseSchema=%s\n' "${DATABASE_SCHEMA}"
   printf 'LogLevel=%s\n' "${LOG_LEVEL:-INFO}"
   printf 'RequireAdmin=%s\n' "${REQUIRE_ADMIN:-true}"
@@ -99,16 +176,11 @@ emit_override_lines() {
   printf 'EnableXRay=%s\n' "${ENABLE_XRAY:-false}"
   printf 'DatabaseTlsEnabled=%s\n' "${DATABASE_TLS_ENABLED:-}"
   printf 'DatabaseSslCaPath=%s\n' "${DATABASE_SSL_CA_PATH:-}"
-  printf 'DatabaseAdminPassword=%s\n' "${DATABASE_ADMIN_PASSWORD:-}"
   printf 'SlackClientID=%s\n' "${SLACK_CLIENT_ID}"
   printf 'SlackClientSecret=%s\n' "${SLACK_CLIENT_SECRET}"
   printf 'SlackSigningSecret=%s\n' "${SLACK_SIGNING_SECRET}"
   printf 'SlackOauthBotScopes=%s\n' "${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
   printf 'SlackOauthUserScopes=%s\n' "${SLACK_USER_SCOPES:-chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
-  printf 'DatabaseInstanceClass=%s\n' "${DATABASE_INSTANCE_CLASS:-db.t4g.micro}"
-  printf 'DatabaseBackupRetentionDays=%s\n' "${DATABASE_BACKUP_RETENTION_DAYS:-0}"
-  printf 'AllowedDBCidr=%s\n' "${ALLOWED_DB_CIDR:-0.0.0.0/0}"
-  printf 'VpcCidr=%s\n' "${VPC_CIDR:-10.0.0.0/16}"
 }
 
 # Single line for sam deploy --parameter-overrides (omit Key= — sam rejects empty values).

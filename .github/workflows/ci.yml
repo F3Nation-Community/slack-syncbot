@@ -97,9 +97,7 @@ jobs:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
           poetry export -f requirements.txt --without-hashes -o syncbot/requirements.txt
-          echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > infra/aws/db_setup/requirements.txt
-          grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> infra/aws/db_setup/requirements.txt
-          if git diff --quiet syncbot/requirements.txt infra/aws/db_setup/requirements.txt; then
+          if git diff --quiet syncbot/requirements.txt; then
             echo "needs_commit=false" >> "$GITHUB_OUTPUT"
             echo "requirements.txt files are already in sync."
           else
@@ -125,7 +123,7 @@ jobs:
           set -euo pipefail
           git config user.name "sprocktech-automation[bot]"
           git config user.email "${APP_ID}+sprocktech-automation[bot]@users.noreply.github.com"
-          git add syncbot/requirements.txt infra/aws/db_setup/requirements.txt
+          git add syncbot/requirements.txt
           subject="chore: sync requirements.txt files with poetry.lock"
           if [ "${SKIP_CI}" = "true" ]; then
             subject="${subject} [skip ci]"
@@ -261,10 +259,7 @@ jobs:
       - name: Audit dependencies from poetry.lock (export in-job)
         run: |
           poetry export -f requirements.txt --without-hashes -o /tmp/syncbot-requirements.txt
-          echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > /tmp/db-setup-requirements.txt
-          grep -E "^(pymysql|psycopg2-binary|cryptography)==" /tmp/syncbot-requirements.txt >> /tmp/db-setup-requirements.txt
           pip-audit -r /tmp/syncbot-requirements.txt
-          pip-audit -r /tmp/db-setup-requirements.txt
 
   test:
     runs-on: ubuntu-latest

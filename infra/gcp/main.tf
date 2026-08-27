@@ -20,16 +20,8 @@ locals {
   name_prefix           = "syncbot-${var.stage}"
   is_sqlite             = var.database_mode == "sqlite"
   use_existing_database = var.database_mode == "existing"
-  stage_sbapp_user      = "sbapp_${replace(var.stage, "-", "_")}"
-  normalized_prefix = (
-    trimspace(var.existing_db_username_prefix) != ""
-    ? (endswith(trimspace(var.existing_db_username_prefix), ".") ? trimspace(var.existing_db_username_prefix) : "${trimspace(var.existing_db_username_prefix)}.")
-    : ""
-  )
   db_user = local.use_existing_database ? (
-    trimspace(var.existing_db_app_username) != "" ? trimspace(var.existing_db_app_username) : (
-      local.normalized_prefix != "" ? "${local.normalized_prefix}${local.stage_sbapp_user}" : var.existing_db_user
-    )
+    trimspace(var.database_user) != "" ? trimspace(var.database_user) : trimspace(var.existing_db_user)
   ) : ""
   db_schema  = local.use_existing_database ? var.existing_db_schema : ""
   db_backend = local.is_sqlite ? "sqlite" : var.database_backend
@@ -57,7 +49,7 @@ locals {
   existing_plain_env = merge(
     {
       DATABASE_HOST              = var.existing_db_host
-      DATABASE_USER              = var.database_user != "" ? var.database_user : local.db_user
+      DATABASE_USER              = local.db_user
       DATABASE_SCHEMA            = local.db_schema
       DATABASE_BACKEND           = local.db_backend
       DATABASE_PORT              = var.database_port
@@ -239,15 +231,9 @@ resource "google_cloud_run_v2_service" "syncbot" {
   location = var.region
   ingress  = "INGRESS_TRAFFIC_ALL"
 
-  labels = merge(
-    {
-      syncbot_database_mode = var.database_mode
-    },
-    local.use_existing_database ? {
-      syncbot_existing_db_create_app_user = var.existing_db_create_app_user ? "true" : "false"
-      syncbot_existing_db_create_schema   = var.existing_db_create_schema ? "true" : "false"
-    } : {},
-  )
+  labels = {
+    syncbot_database_mode = var.database_mode
+  }
 
   template {
     service_account = google_service_account.cloud_run.email
@@ -297,8 +283,8 @@ resource "google_cloud_run_v2_service" "syncbot" {
       template[0].containers[0].image,
     ]
     precondition {
-      condition     = var.database_mode != "existing" || (trimspace(var.existing_db_host) != "" && trimspace(var.database_password) != "")
-      error_message = "existing_db_host and database_password are required when database_mode is existing."
+      condition     = var.database_mode != "existing" || (trimspace(var.existing_db_host) != "" && trimspace(var.database_password) != "" && local.db_user != "")
+      error_message = "existing_db_host, database_password, and database_user (or existing_db_user) are required when database_mode is existing."
     }
   }
 

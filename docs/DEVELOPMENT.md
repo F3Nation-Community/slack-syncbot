@@ -52,7 +52,7 @@ syncbot/
 ├── syncbot/db/alembic/  # Migrations (bundled with app for Lambda)
 ├── tests/
 ├── docs/
-├── infra/aws/         # SAM, bootstrap stack
+├── infra/aws/         # SAM, bootstrap stack, Lambda wrapper (Litestream)
 ├── infra/gcp/         # Terraform
 ├── deploy.sh          # Root launcher (macOS / Linux / Git Bash)
 ├── deploy.ps1         # Windows launcher → Git Bash or WSL → infra/.../deploy.sh
@@ -64,14 +64,12 @@ syncbot/
 
 After `poetry add` / `poetry update`, keep `poetry.lock` and the pinned requirements files aligned:
 
-- **Recommended:** Install [pre-commit](https://pre-commit.com) (`pip install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg`). When you commit a change to `poetry.lock`, the **`sync-requirements`** hook runs `poetry export` and refreshes **`syncbot/requirements.txt`** and **`infra/aws/db_setup/requirements.txt`** (the DbSetup Lambda subset) automatically.
+- **Recommended:** Install [pre-commit](https://pre-commit.com) (`pip install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg`). When you commit a change to `poetry.lock`, the **`sync-requirements`** hook runs `poetry export` and refreshes **`syncbot/requirements.txt`** automatically.
 
 - **Without pre-commit:** Run the export yourself (Poetry 2.x needs the export plugin once: `poetry self add poetry-plugin-export`):
 
 ```bash
 poetry export -f requirements.txt --without-hashes -o syncbot/requirements.txt
-echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > infra/aws/db_setup/requirements.txt
-grep -E "^(pymysql|psycopg2-binary|cryptography)==" syncbot/requirements.txt >> infra/aws/db_setup/requirements.txt
 ```
 
 The root **`./deploy.sh`** does **not** run `poetry update`. If Poetry and `poetry-plugin-export` are on `PATH`, it may **warn** when committed `*requirements.txt` files differ from a lockfile export; it does not write those files or `poetry.lock`. Local and GitHub Actions deploys install the committed pins (same as `sam build`).

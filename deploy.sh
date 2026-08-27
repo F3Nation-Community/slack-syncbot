@@ -823,10 +823,7 @@ main() {
     echo "=== Check Python dependency export ==="
     _export_tmp="$(mktemp -d)"
     if poetry export -f requirements.txt --without-hashes -o "$_export_tmp/syncbot-requirements.txt"; then
-      echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > "$_export_tmp/db-setup-requirements.txt"
-      grep -E "^(pymysql|psycopg2-binary|cryptography)==" "$_export_tmp/syncbot-requirements.txt" >> "$_export_tmp/db-setup-requirements.txt" || true
-      if ! cmp -s "$_export_tmp/syncbot-requirements.txt" "$REPO_ROOT/syncbot/requirements.txt" \
-        || ! cmp -s "$_export_tmp/db-setup-requirements.txt" "$REPO_ROOT/infra/aws/db_setup/requirements.txt"; then
+      if ! cmp -s "$_export_tmp/syncbot-requirements.txt" "$REPO_ROOT/syncbot/requirements.txt"; then
         echo "Warning: committed *requirements.txt files differ from a poetry.lock export." >&2
         echo "Deploy uses the committed pins (same as GitHub Actions). Refresh with pre-commit or poetry export; see docs/DEVELOPMENT.md." >&2
       fi

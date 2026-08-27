@@ -25,7 +25,7 @@ data_encryption_key  = "replace-with-token-urlsafe-36"
 
 # Required only when database_mode = existing
 # existing_db_host     = "gateway.tidbcloud.com"
+# database_user        = "your_cluster.your_user"
 # database_password    = "replace-me"
 # database_port        = "4000"
 # database_backend     = "mysql"
-# existing_db_username_prefix = "abc123"

@@ -165,6 +165,9 @@ Resources:
               - lambda:RemovePermission
               - lambda:PublishVersion
               - lambda:InvokeFunction
+              - lambda:PutFunctionConcurrency
+              - lambda:DeleteFunctionConcurrency
+              - lambda:GetFunctionConcurrency
             Resource: !Sub "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:syncbot-*"
           - Sid: LambdaFunctionUrl
             Effect: Allow
@@ -182,53 +185,32 @@ Resources:
               - logs:DescribeLogGroups
               - logs:DeleteLogGroup
             Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/syncbot-*"
-          - Sid: EC2Networking
+          - Sid: LitestreamReplicaBucket
             Effect: Allow
             Action:
-              - ec2:CreateVpc
-              - ec2:DeleteVpc
-              - ec2:DescribeVpcs
-              - ec2:CreateSubnet
-              - ec2:DeleteSubnet
-              - ec2:DescribeSubnets
-              - ec2:CreateInternetGateway
-              - ec2:DeleteInternetGateway
-              - ec2:AttachInternetGateway
-              - ec2:DetachInternetGateway
-              - ec2:CreateRouteTable
-              - ec2:DeleteRouteTable
-              - ec2:CreateRoute
-              - ec2:DeleteRoute
-              - ec2:AssociateRouteTable
-              - ec2:DisassociateRouteTable
-              - ec2:CreateSecurityGroup
-              - ec2:DeleteSecurityGroup
-              - ec2:DescribeSecurityGroups
-              - ec2:DescribeRouteTables
-              - ec2:DescribeInternetGateways
-              - ec2:DescribeVpcAttribute
-              - ec2:ModifyVpcAttribute
-              - ec2:CreateTags
-              - ec2:DeleteTags
-              - ec2:DescribeTags
-            Resource: "*"
-          - Sid: RDS
-            Effect: Allow
-            Action:
-              - rds:CreateDBInstance
-              - rds:DeleteDBInstance
-              - rds:ModifyDBInstance
-              - rds:DescribeDBInstances
-              - rds:CreateDBSubnetGroup
-              - rds:DeleteDBSubnetGroup
-              - rds:DescribeDBSubnetGroups
-              - rds:CreateDBParameterGroup
-              - rds:DeleteDBParameterGroup
-              - rds:DescribeDBParameters
-              - rds:AddTagsToResource
-              - rds:RemoveTagsFromResource
-              - rds:ListTagsForResource
-            Resource: "*"
+              - s3:CreateBucket
+              - s3:DeleteBucket
+              - s3:GetBucketLocation
+              - s3:GetBucketPolicy
+              - s3:PutBucketPolicy
+              - s3:DeleteBucketPolicy
+              - s3:GetBucketVersioning
+              - s3:PutBucketVersioning
+              - s3:GetLifecycleConfiguration
+              - s3:PutLifecycleConfiguration
+              - s3:GetBucketPublicAccessBlock
+              - s3:PutBucketPublicAccessBlock
+              - s3:GetEncryptionConfiguration
+              - s3:PutEncryptionConfiguration
+              - s3:GetBucketTagging
+              - s3:PutBucketTagging
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - "arn:aws:s3:::syncbot-*-litestream-*"
+              - "arn:aws:s3:::syncbot-*-litestream-*/*"
           - Sid: CloudWatchAlarms
             Effect: Allow
             Action:
@@ -245,6 +227,17 @@ Resources:
               - events:RemoveTargets
               - events:DescribeRule
               - events:ListTargetsByRule
+            Resource: "*"
+          - Sid: Scheduler
+            Effect: Allow
+            Action:
+              - scheduler:CreateSchedule
+              - scheduler:UpdateSchedule
+              - scheduler:DeleteSchedule
+              - scheduler:GetSchedule
+              - scheduler:ListSchedules
+              - scheduler:CreateScheduleGroup
+              - scheduler:GetScheduleGroup
             Resource: "*"
           - Sid: IAMManageSyncBotPolicies
             Effect: Allow
