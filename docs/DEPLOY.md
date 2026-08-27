@@ -33,7 +33,7 @@ Set **`GITHUB_REPO=owner/repo`** in your local `.env.deploy.<stage>` (or export 
 
 **Force `update-stack` (AWS):** Set `UPDATE_STACK=true` in `.env.deploy.<stage>` or pass **`--update-stack`** on `./deploy.sh` to skip `sam deploy` and use direct CloudFormation `update-stack` (optional; the AWS script normally auto-retries after an `EarlyValidation::ResourceExistenceCheck` changeset failure).
 
-**Secret auto-generation:** If `DATA_ENCRYPTION_KEY` is empty, a secure key is generated automatically and saved back to the `.env.deploy` file. Similarly, when using `DbSetup` (admin credentials provided), `DATABASE_PASSWORD` and `DATABASE_USER` are auto-generated if empty.
+**Secret auto-generation:** If `DATA_ENCRYPTION_KEY` is empty, a secure key is generated automatically and saved back to the `.env.deploy` file. `DATABASE_USER` / `DATABASE_PASSWORD` are never auto-generated — create the SQL user first (see [Create the database and app user](#create-the-database-and-app-user-existing-mode)).
 
 **Interactive save:** After a successful interactive deploy, the script prompts to save all config to `.env.deploy.<stage>` for future non-interactive runs.
 
@@ -66,7 +66,7 @@ Runs from repo root (or via `./deploy.sh` → **aws**). It:
 3. **Bootstrap probe** — Reads bootstrap stack outputs if the stack exists (for suggested stack names and later CI/CD). Full **bootstrap** create/sync runs only if you select it in **Deploy Tasks** (see below).
 4. **App stack identity** — Prompts for stage (`test`/`prod`) and stack name; detects an existing CloudFormation stack for update.
 5. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Bootstrap** (create/sync bootstrap stack; respects `SYNCBOT_SKIP_BOOTSTRAP_SYNC=1` for sync), **Build/Deploy** (full config + SAM), **CI/CD** (`gh` / GitHub Actions), **Slack API**. Omitting **Build/Deploy** requires an existing stack for tasks that need live outputs.
-6. **Configuration** (if Build/Deploy selected) — **Database source** (stack-managed RDS vs existing RDS host) and **engine** (MySQL vs PostgreSQL). **Slack app credentials** (signing secret, client secret, client ID). **App secrets** (`DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, optionally `DATABASE_USER`) — passed as SAM parameters with `NoEcho` (no Secrets Manager dependency). **Existing database host** mode: RDS endpoint, admin user/password, optional **ExistingDatabasePort** (blank = engine default; use for non-standard ports e.g. TiDB **4000**), optional **ExistingDatabaseUsernamePrefix** (e.g. TiDB Cloud cluster prefix `abc123`; a dot separator is added automatically; prepended to **ExistingDatabaseAdminUser** and the default app user `{prefix}.sbapp_{stage}` — use bare admin names like `root` when set), optional **ExistingDatabaseAppUsername** (full app username override when the default would exceed provider limits, e.g. MySQL 32 chars), whether to **create a dedicated app DB user** and whether to run **`CREATE DATABASE IF NOT EXISTS`**, **public vs private** network mode, and for **private** mode: subnet IDs and Lambda security group (with optional auto-detect and **connectivity preflight** using the effective DB port). **New RDS in stack** mode: summarizes auto-generated DB users and prompts for **DatabaseSchema** and **DatabaseAdminPassword**. **Log level** (numbered list `1`–`5` with `Choose level [N]:`, default from prior stack or **INFO**), **deploy summary**, then **SAM build** (`--use-container`) and **sam deploy**.
+6. **Configuration** (if Build/Deploy selected) — **Database source**: **1)** existing host (TiDB / MySQL / your own RDS — **default**) or **2)** SQLite + Litestream → S3. **Engine** (MySQL vs PostgreSQL) only for existing. **Slack app credentials** (signing secret, client secret, client ID). **App secrets** (`DATA_ENCRYPTION_KEY`; for existing also `DATABASE_PASSWORD` and full `DATABASE_USER`) — SAM `NoEcho` parameters (no Secrets Manager). Existing mode: hostname, optional **ExistingDatabasePort** (blank = engine default; TiDB Cloud **4000**), schema (e.g. `syncbot_test`), and the **app** user you already created (include any TiDB cluster prefix in `DATABASE_USER`). No admin credentials, no CREATE USER/DATABASE, no VPC/private-DB attach. Sqlite mode skips host/user/password; Lambda uses `/tmp/syncbot.db` with reserved concurrency 1. **Keep-warm** (`ENABLE_KEEP_WARM`, default on). **Log level**, **deploy summary**, then **SAM build** (`--use-container`) and **sam deploy**. If the live stack still has stack-managed RDS, deploy **aborts** (see [Upgrading AWS](#upgrading-aws-stack-managed-rds-removal)).
 7. **Post-deploy** — According to selected tasks: stack outputs, `slack-manifest_<stage>.json`, Slack API, **`gh`** setup, and deploy receipt under `deploy-receipts/` (gitignored). The receipt includes all configuration, secrets, and Slack URLs (events, install, OAuth redirect). Use `--verbose` to also include the full SAM parameters array and inline Slack manifest in the receipt.
 
 ### GCP: `infra/gcp/scripts/deploy.sh`
@@ -109,11 +109,47 @@ See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and ou
 
 ## Database backends
 
-The app supports **MySQL** (default on AWS), **PostgreSQL**, and **SQLite**. Schema changes use Alembic (`alembic upgrade head`). **AWS Lambda:** Applied after each deploy via a workflow step that invokes the function with `{"action":"migrate"}` (not on every cold start). **Cloud Run / local:** Applied at process startup before serving HTTP.
+The app supports **MySQL** (default on AWS existing), **PostgreSQL** (engine under existing), and **SQLite**. Schema changes use Alembic (`alembic upgrade head`). The app does **not** `CREATE DATABASE` or mint users — create those first (recipes below). **AWS Lambda (existing / MySQL):** migrations run after each deploy via `{"action":"migrate"}` (not on every Slack cold start). **AWS Lambda (sqlite):** the Litestream wrapper restores, runs Alembic once per execution environment, then replicates; keep the post-deploy migrate invoke. **Cloud Run / local:** migrations at process startup before serving HTTP.
 
-- **AWS:** Choose engine in the deploy script or pass `DatabaseEngine=mysql` / `postgresql` to `sam deploy`.
-- **GCP:** `GCP_DATABASE_MODE=sqlite` (default) uses Cloud Run local SQLite + Litestream → GCS. `existing` is TiDB Cloud or other MySQL (same host/user/password/prefix contract as AWS). **Do not infer mode from `DATABASE_HOST`** — `.env.deploy.example` always has a TiDB host. `DATABASE_ENGINE=sqlite` is a synonym for sqlite mode. Cloud SQL is not created.
+- **AWS:** `AWS_DATABASE_MODE=existing` (default) or `sqlite`. Existing: pass `DatabaseEngine=mysql` / `postgresql` and `ExistingDatabaseHost` / `DatabaseUser` / `DatabasePassword`. Sqlite: `/tmp` file + Litestream → S3. **Do not infer mode from `DATABASE_HOST`**. `DATABASE_ENGINE=sqlite` is a synonym for sqlite mode. This template does **not** create RDS or a VPC.
+- **GCP:** `GCP_DATABASE_MODE=sqlite` (default) uses Cloud Run local SQLite + Litestream → GCS. `existing` is TiDB Cloud or other MySQL (full `DATABASE_USER`, including any TiDB prefix). **Do not infer mode from `DATABASE_HOST`**. Cloud SQL is not created.
 - **Contract:** [INFRA_CONTRACT.md](INFRA_CONTRACT.md) — `DATABASE_BACKEND`, `DATABASE_URL` or host/user/password/schema.
+
+### Create the database and app user (existing mode)
+
+Create the database and a least-privilege user **before** first migrate. Use a per-stage name such as `syncbot_test` / `syncbot_prod`.
+
+**MySQL / TiDB Cloud** — `DATABASE_USER` must be the **full** username (TiDB Cloud Serverless includes a cluster prefix, e.g. `abc123.syncbot_app`):
+
+```sql
+CREATE DATABASE IF NOT EXISTS syncbot_test;
+CREATE USER 'YOUR_FULL_USERNAME'@'%' IDENTIFIED BY 'a-strong-password';
+GRANT ALL ON syncbot_test.* TO 'YOUR_FULL_USERNAME'@'%';
+FLUSH PRIVILEGES;
+```
+
+**PostgreSQL:**
+
+```sql
+CREATE DATABASE syncbot_test;
+CREATE USER syncbot_app WITH PASSWORD 'a-strong-password';
+GRANT ALL PRIVILEGES ON DATABASE syncbot_test TO syncbot_app;
+\c syncbot_test
+GRANT ALL ON SCHEMA public TO syncbot_app;
+```
+
+Then set `DATABASE_HOST`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_SCHEMA`, and `AWS_DATABASE_MODE=existing` (or `GCP_DATABASE_MODE=existing`). Sqlite modes do not need a SQL user.
+
+### Upgrading AWS (stack-managed RDS removal)
+
+If `./deploy.sh` or GitHub Actions **aborts** because the CloudFormation stack still contains `RDSInstanceMysql` / `RDSInstancePostgres`, do **not** retry the same update. There is no in-place migrate from stack RDS to TiDB or sqlite.
+
+1. While the old stack is still serving Slack, open Home → **Backup/Restore** and download JSON (`PRIMARY_WORKSPACE` required). Keep the same `DATA_ENCRYPTION_KEY` for the new stack. See [BACKUP_AND_MIGRATION.md](BACKUP_AND_MIGRATION.md).
+2. Delete the CloudFormation **app** stack. RDS `DeletionProtection` may block `delete-stack` until you disable protection or delete the instance in the RDS console — do that **manually** after the backup. Deploy scripts will not disable protection.
+3. Deploy a **new** stack with `AWS_DATABASE_MODE=existing` (TiDB / your own host) or `sqlite`. Point Slack at the new Function URL / generated manifest.
+4. Restore the backup JSON onto the empty new database.
+
+Stacks that already use a public existing host (TiDB) update in place: set the full `DATABASE_USER` (and password/host) in `.env.deploy.*` and GitHub environment variables **before** this template update, then deploy.
 
 ---
 
@@ -162,18 +198,23 @@ sam deploy \
     SlackClientSecret=... \
     SlackOauthBotScopes=... \
     SlackOauthUserScopes=... \
+    DatabaseMode=existing \
     DatabaseEngine=mysql \
     DatabaseSchema=syncbot_test \
-    ...
+    ExistingDatabaseHost=gateway.tidbcloud.com \
+    ExistingDatabasePort=4000 \
+    DatabaseUser=... \
+    DatabasePassword=... \
+    EnableKeepWarm=true
 ```
 
-Use **`sam deploy --guided`** the first time if you prefer prompts. For **existing RDS**, set `ExistingDatabaseHost`, `ExistingDatabaseAdminUser`, `ExistingDatabaseAdminPassword`, and for **private** DBs also `ExistingDatabaseNetworkMode=private`, `ExistingDatabaseSubnetIdsCsv`, `ExistingDatabaseLambdaSecurityGroupId`. Optional: `ExistingDatabasePort` (empty = engine default), `ExistingDatabaseCreateAppUser` / `ExistingDatabaseCreateSchema` (`true`/`false`). Omit `ExistingDatabaseHost` to create a **new** RDS in the stack.
+Use **`sam deploy --guided`** the first time if you prefer prompts. For **existing** mode set `DatabaseMode=existing`, `ExistingDatabaseHost`, `DatabaseUser`, `DatabasePassword`, and optional `ExistingDatabasePort` (empty = engine default; TiDB **4000**). For **sqlite** set `DatabaseMode=sqlite` (no host/user/password). Empty `ExistingDatabaseHost` does **not** create RDS.
 
-**`DatabaseSchema` naming:** Use a per-stage database name such as `syncbot_test` / `syncbot_prod` (often `syncbot_` + `Stage`) so multiple environments can share one DB host without colliding. The app connects to the database named exactly by this parameter (and by the `DATABASE_SCHEMA` GitHub variable / `.env.deploy.*` value); it does **not** append the stage automatically. Match this name to the database your app user is granted on (e.g. same suffix as `sbapp_<stage>` from DbSetup).
+**`DatabaseSchema` naming:** Use a per-stage database name such as `syncbot_test` / `syncbot_prod` (often `syncbot_` + `Stage`) so multiple environments can share one DB host without colliding. The app connects to the database named exactly by this parameter (and by the `DATABASE_SCHEMA` GitHub variable / `.env.deploy.*` value); it does **not** append the stage automatically. Match this name to the database your app user is granted on.
 
-**samconfig:** Predefined profiles in `samconfig.toml` (`test-new-rds`, `test-existing-rds`, etc.) — adjust placeholders before use.
+**samconfig:** `samconfig.toml` has `test` / `prod` profiles with `Stage` only — pass other parameters via `--parameter-overrides` or the guided deploy script.
 
-**Secrets (SAM / CloudFormation):** `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and optionally `DATABASE_USER` are SAM parameters with `NoEcho: true`. The deploy script auto-generates `DATA_ENCRYPTION_KEY` if empty and saves it back to the `.env.deploy` file. Back it up securely — if lost, all workspaces must reinstall. When using `DbSetup` (admin creds provided), `DATABASE_PASSWORD` and `DATABASE_USER` are also auto-generated if empty.
+**Secrets (SAM / CloudFormation):** `DATA_ENCRYPTION_KEY`, `DATABASE_PASSWORD`, and `DATABASE_USER` are SAM parameters with `NoEcho: true` (user/password unused for sqlite). The deploy script auto-generates `DATA_ENCRYPTION_KEY` if empty and saves it back to the `.env.deploy` file. Back it up securely — if lost, all workspaces must reinstall. Create the SQL user yourself; the stack does not mint credentials.
 
 **GitHub Actions:** `DATABASE_USER` is a **repository environment variable** (not a secret)—set it to the same value as in your local `.env.deploy.<stage>` so CI matches your deploy file.
 
@@ -198,38 +239,31 @@ Configure **repository** variables: `AWS_ROLE_TO_ASSUME`, `AWS_S3_BUCKET`, `AWS_
 
 `AWS_S3_BUCKET` is the bootstrap **SAM deploy artifact** bucket (`DeploymentBucketName`): CI uses it for `sam deploy --s3-bucket` (Lambda package uploads) only. It is **not** for Slack file hosting or other app media. The guided deploy script resolves the target repo from **git remotes** (origin, upstream, then others): if your fork and upstream differ, it asks which `owner/repo` should receive variables, then passes `-R owner/repo` to `gh` so writes go there (not whatever `gh` infers from context alone).
 
-Configure **per-environment** (`test` / `prod`) variables and secrets so they match your stack — especially if you use **existing RDS** or **private** networking:
+Configure **per-environment** (`test` / `prod`) variables and secrets so they match your stack:
 
 | Type | Name | Notes |
 |------|------|--------|
 | Var | `AWS_STACK_NAME` | CloudFormation stack name |
 | Var | `STAGE_NAME` | `test` or `prod` |
-| Var | `DATABASE_SCHEMA` | MySQL/Postgres **database name** (e.g. `syncbot_test`, `syncbot_prod`). Convention: `syncbot_<stage>` when sharing a host across stages; must match `DatabaseSchema` / grants for your app user. |
+| Var | `AWS_DATABASE_MODE` | `existing` (default) or `sqlite`. Do not infer from `DATABASE_HOST`. |
+| Var | `ENABLE_KEEP_WARM` | `true` (default) or `false`. EventBridge ScheduleV2 keep-warm. |
+| Var | `DATABASE_SCHEMA` | MySQL/Postgres **database name** (e.g. `syncbot_test`, `syncbot_prod`). Convention: `syncbot_<stage>` when sharing a host; unused for sqlite. |
 | Var | `LOG_LEVEL` | Optional. `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL`. Passed to SAM as `LogLevel`; defaults to `INFO` in the workflow when unset. |
 | Var | `SLACK_CLIENT_ID` | From Slack app |
-| Var | `DATABASE_ENGINE` | `mysql` or `postgresql` (workflow defaults to `mysql` if unset) |
-| Var | `DATABASE_HOST` | Empty for **new** RDS in stack |
-| Var | `DATABASE_ADMIN_USER` | When using existing host |
-| Var | `DATABASE_NETWORK_MODE` | `public` or `private` |
-| Var | `DATABASE_SUBNET_IDS_CSV` | **Private** mode: comma-separated subnet IDs (no spaces) |
-| Var | `DATABASE_LAMBDA_SECURITY_GROUP_ID` | **Private** mode: Lambda ENI security group |
+| Var | `DATABASE_ENGINE` | `mysql` or `postgresql` for existing (workflow defaults to `mysql`). `sqlite` selects sqlite mode. |
+| Var | `DATABASE_HOST` | Required for existing. Unused for sqlite. |
 | Var | `DATABASE_PORT` | Optional; non-standard TCP port (e.g. `4000`). Empty = engine default in SAM. |
-| Var | `DATABASE_CREATE_APP_USER` | `true` / `false` (default `true`). Set `false` when the DB cannot create a dedicated app user. |
-| Var | `DATABASE_CREATE_SCHEMA` | `true` / `false` (default `true`). Set `false` when the database/schema already exists. |
-| Var | `DATABASE_USERNAME_PREFIX` | Optional. Provider-specific username prefix (e.g. TiDB Cloud `abc123`; dot separator added automatically). Prepended to admin and default app user `{prefix}.sbapp_{stage}` in the bootstrap Lambda; use bare `DATABASE_ADMIN_USER` (e.g. `root`). Empty for RDS/standard MySQL. |
-| Var | `DATABASE_APP_USERNAME` | Optional. Full dedicated app DB username (bypasses prefix + default `sbapp_{stage}`). Use if the auto name exceeds provider limits. Empty = default. |
+| Var | `DATABASE_USER` | **Required for existing.** Full app username (including any TiDB cluster prefix). Not a secret. |
 | Secret | `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_SECRET` | |
 | Secret | `DATA_ENCRYPTION_KEY` | Required; back up securely |
-| Secret | `DATABASE_PASSWORD` | App database password |
-| Var | `DATABASE_USER` | App DB username (same as local `.env.deploy.*`; not a secret) |
-| Secret | `DATABASE_ADMIN_PASSWORD` | When `DATABASE_HOST` is set |
+| Secret | `DATABASE_PASSWORD` | Required for existing. Unused for sqlite. |
 | Var | `ENABLE_XRAY` | Optional. `true` / `false`. AWS X-Ray tracing (default `false`). |
 
 The interactive deploy script can set these via `gh` when you opt in. Use `--setup-github` to push config to GitHub — works with both `--env` (non-interactive) and interactive deploys. Re-run that step after changing DB mode or engine so CI stays aligned.
 
 **Bootstrap sync in CI:** The deploy workflow includes a conditional step that syncs the bootstrap CloudFormation stack (`template.bootstrap.yaml`) when the template has changed since the last deploy. The step compares template hashes and skips if unchanged. First-time bootstrap must be done locally with `./deploy.sh --env <stage> --bootstrap aws`.
 
-**Dependency hygiene:** CI **`pip-audit`** exports from `poetry.lock` in the job (it does not read the committed `*requirements.txt` files). After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates **`syncbot/requirements.txt`** and **`infra/aws/db_setup/requirements.txt`** when `poetry.lock` changes (`sam build` installs from those files). If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md). Same-repo CI on sprocktech/syncbot may commit the export onto the PR if the files are stale. **`./deploy.sh` does not run `poetry update`**; it installs committed pins and may warn if an export differs from those files.
+**Dependency hygiene:** CI **`pip-audit`** exports from `poetry.lock` in the job (it does not read the committed `*requirements.txt` files). After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates **`syncbot/requirements.txt`** when `poetry.lock` changes (`sam build` installs from that file). If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md). Same-repo CI on sprocktech/syncbot may commit the export onto the PR if the file is stale. **`./deploy.sh` does not run `poetry update`**; it installs committed pins and may warn if an export differs from that file.
 
 ### 4. Ongoing local deploys (least privilege)
 
@@ -266,7 +300,7 @@ GCP-only knobs use a `GCP_` prefix. Shared contract names and portable deploy sw
 | `CLOUD_RUN_IMAGE` | `.env.deploy.*` | Fallback if `GCP_CLOUD_RUN_IMAGE` is unset |
 | `GCP_DATABASE_MODE` | `.env.deploy.*` | `sqlite` (default) or `existing` |
 | `GCP_CLOUD_RUN_MIN_INSTANCES` | `.env.deploy.*` | `0` (default, free) or `1` (paid always-on) |
-| `ENABLE_KEEP_WARM` | `.env.deploy.*` | Portable name, default `true`. **This PR wires it on GCP only**; AWS still always creates EventBridge keep-warm |
+| `ENABLE_KEEP_WARM` | `.env.deploy.*`, GitHub vars (AWS) | Portable name, default `true`. GCP Cloud Scheduler `/health`; AWS EventBridge ScheduleV2 |
 | `DEPLOY_TARGET` | GitHub vars | `gcp` to run Deploy (GCP) and skip Deploy (AWS) |
 | `CLOUD_PROVIDER` | `.env.deploy.*` | `aws` / `gcp` |
 | `GITHUB_REPO` | `.env.deploy.*` | `owner/repo` of **this** deploying repo (for WIF) |
@@ -290,7 +324,7 @@ terraform plan -var="project_id=YOUR_PROJECT_ID" -var="stage=test" -var="github_
 terraform apply -var="project_id=YOUR_PROJECT_ID" -var="stage=test" -var="github_repo=owner/repo"
 ```
 
-Default `database_mode` is `sqlite`. For TiDB / existing MySQL, pass `-var=database_mode=existing` plus host, password, and (for TiDB) port `4000` / username prefix. Capture outputs:
+Default `database_mode` is `sqlite`. For TiDB / existing MySQL, pass `-var=database_mode=existing` plus host, full `database_user` / `DATABASE_USER`, password, and (for TiDB) port `4000`. Capture outputs:
 
 ```bash
 ./infra/gcp/scripts/print-bootstrap-outputs.sh
@@ -318,12 +352,11 @@ Push `test` / `prod` (or `workflow_dispatch`) after Terraform exists. Do not pas
 
 ---
 
-## Using an existing RDS host (AWS)
+## Using an existing database host (AWS)
 
-When **ExistingDatabaseHost** is set, the template **does not** create VPC/RDS; a custom resource can create the schema and optionally a dedicated app user (default `sbapp_<stage>`, or **ExistingDatabaseAppUsername** if set). When **`ExistingDatabaseCreateAppUser=false`** and admin credentials are omitted, `DATABASE_USER` and `DATABASE_PASSWORD` must be provided directly (e.g. via `.env.deploy` file) and the `DbSetup` custom resource is skipped entirely.
+Set **`AWS_DATABASE_MODE=existing`** (default) and **ExistingDatabaseHost**. The template does **not** create VPC or RDS. Create the database and app user first ([recipe above](#create-the-database-and-app-user-existing-mode)); pass **`DATABASE_USER`** / **`DATABASE_PASSWORD`** (full TiDB username if applicable). Lambda has no VPC — the host must be reachable from public Lambda (TiDB Cloud, or RDS you made `PubliclyAccessible` with an SG that allows the internet).
 
-- **Public:** Lambda is not in your VPC; the DB must be reachable on the Internet on the configured port (**`ExistingDatabasePort`**, or **3306** / **5432** by engine).
-- **Private:** Lambda uses `ExistingDatabaseSubnetIdsCsv` and `ExistingDatabaseLambdaSecurityGroupId`; DB security group must allow the Lambda SG; subnets need **NAT** egress for Slack API calls.
+Sqlite mode (`AWS_DATABASE_MODE=sqlite`) does not use a SQL host; Litestream replicates `/tmp/syncbot.db` to S3.
 
 See also [Sharing infrastructure across apps](#sharing-infrastructure-across-apps-aws) below.
 
@@ -360,7 +393,8 @@ See also [Sharing infrastructure across apps](#sharing-infrastructure-across-app
 
 Schema lives under `syncbot/db/alembic/`. **`alembic upgrade head`** runs:
 
-- **AWS (GitHub Actions):** After `sam deploy`, the workflow invokes the Lambda with `{"action":"migrate"}` (migrations + warm instance). Manual `sam deploy` from the guided script should be followed by the same invoke (see script post-deploy or run `aws lambda invoke` with that payload using stack output `SyncBotFunctionArn`).
+- **AWS (existing SQL):** After `sam deploy`, the workflow invokes the Lambda with `{"action":"migrate"}` (migrations + warm instance). The guided script does the same.
+- **AWS (sqlite):** The Litestream wrapper also runs Alembic once per new execution environment after restore. Keep the post-deploy migrate invoke so deploys upgrade the replica.
 - **Cloud Run / `python app.py`:** At process startup before the server listens.
 
 ---
@@ -378,7 +412,7 @@ After deploying a build that changes Slack listener wiring, verify **in the depl
 
 ## Sharing infrastructure across apps (AWS)
 
-Reuse one RDS with **different `DatabaseSchema`** per app/environment; set **ExistingDatabaseHost** and distinct schemas. Prefer names like `syncbot_test` vs `syncbot_prod` so each stage’s app user (`sbapp_<stage>` by default) maps cleanly to its own database. Lambda Function URLs remain per stack.
+Reuse one MySQL/TiDB/Postgres host with **different `DatabaseSchema`** per app/environment; set **ExistingDatabaseHost** and distinct schemas. Prefer names like `syncbot_test` vs `syncbot_prod`. Lambda Function URLs remain per stack.
 
 ---
 
@@ -458,7 +492,7 @@ These files are gitignored. For CI/CD, use GitHub environment variables and secr
 
 ### Database env names (`EXISTING_DATABASE_*` → `DATABASE_*`)
 
-For external / existing RDS flows, GitHub environment **variables** and **secrets** now use unprefixed names (for example `DATABASE_HOST`, `DATABASE_ADMIN_USER`, `secrets.DATABASE_ADMIN_PASSWORD`) instead of `EXISTING_DATABASE_*`. SAM parameter names on the stack are unchanged (`ExistingDatabaseHost`, etc.). The deploy scripts still honor the old `EXISTING_DATABASE_*` names if set, so local env files can migrate gradually; GitHub Actions should use the new names to match `.github/workflows/deploy-aws.yml`.
+For existing-host flows, GitHub environment **variables** and **secrets** use unprefixed names (`DATABASE_HOST`, `DATABASE_USER`, `secrets.DATABASE_PASSWORD`) instead of `EXISTING_DATABASE_*`. SAM parameter names on the stack stay `ExistingDatabaseHost` / `ExistingDatabasePort`. The deploy scripts still honor the old `EXISTING_DATABASE_HOST` / `EXISTING_DATABASE_PORT` names if set. Do not set leftover admin/create-user/network-mode GitHub vars — the CI/CD task deletes them if present.
 
 ---
 

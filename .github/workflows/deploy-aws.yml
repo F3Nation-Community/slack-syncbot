@@ -125,22 +125,17 @@ jobs:
           AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
           AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
           STAGE_NAME: ${{ vars.STAGE_NAME }}
+          AWS_DATABASE_MODE: ${{ vars.AWS_DATABASE_MODE || 'existing' }}
+          ENABLE_KEEP_WARM: ${{ vars.ENABLE_KEEP_WARM || 'true' }}
           DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
           DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           DATABASE_USER: ${{ vars.DATABASE_USER }}
           DATABASE_HOST: ${{ vars.DATABASE_HOST }}
-          DATABASE_ADMIN_USER: ${{ vars.DATABASE_ADMIN_USER }}
-          DATABASE_ADMIN_PASSWORD: ${{ secrets.DATABASE_ADMIN_PASSWORD }}
-          DATABASE_NETWORK_MODE: ${{ vars.DATABASE_NETWORK_MODE || 'public' }}
-          DATABASE_SUBNET_IDS_CSV: ${{ vars.DATABASE_SUBNET_IDS_CSV }}
-          DATABASE_LAMBDA_SECURITY_GROUP_ID: ${{ vars.DATABASE_LAMBDA_SECURITY_GROUP_ID }}
           DATABASE_PORT: ${{ vars.DATABASE_PORT }}
-          DATABASE_CREATE_APP_USER: ${{ vars.DATABASE_CREATE_APP_USER || 'true' }}
-          DATABASE_CREATE_SCHEMA: ${{ vars.DATABASE_CREATE_SCHEMA || 'true' }}
-          DATABASE_USERNAME_PREFIX: ${{ vars.DATABASE_USERNAME_PREFIX }}
-          DATABASE_APP_USERNAME: ${{ vars.DATABASE_APP_USERNAME }}
           DATABASE_SCHEMA: ${{ vars.DATABASE_SCHEMA }}
+          DATABASE_TLS_ENABLED: ${{ vars.DATABASE_TLS_ENABLED }}
+          DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
           SOFT_DELETE_RETENTION_DAYS: ${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }}
@@ -246,22 +241,17 @@ jobs:
           AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
           AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
           STAGE_NAME: ${{ vars.STAGE_NAME }}
+          AWS_DATABASE_MODE: ${{ vars.AWS_DATABASE_MODE || 'existing' }}
+          ENABLE_KEEP_WARM: ${{ vars.ENABLE_KEEP_WARM || 'true' }}
           DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
           DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           DATABASE_USER: ${{ vars.DATABASE_USER }}
           DATABASE_HOST: ${{ vars.DATABASE_HOST }}
-          DATABASE_ADMIN_USER: ${{ vars.DATABASE_ADMIN_USER }}
-          DATABASE_ADMIN_PASSWORD: ${{ secrets.DATABASE_ADMIN_PASSWORD }}
-          DATABASE_NETWORK_MODE: ${{ vars.DATABASE_NETWORK_MODE || 'public' }}
-          DATABASE_SUBNET_IDS_CSV: ${{ vars.DATABASE_SUBNET_IDS_CSV }}
-          DATABASE_LAMBDA_SECURITY_GROUP_ID: ${{ vars.DATABASE_LAMBDA_SECURITY_GROUP_ID }}
           DATABASE_PORT: ${{ vars.DATABASE_PORT }}
-          DATABASE_CREATE_APP_USER: ${{ vars.DATABASE_CREATE_APP_USER || 'true' }}
-          DATABASE_CREATE_SCHEMA: ${{ vars.DATABASE_CREATE_SCHEMA || 'true' }}
-          DATABASE_USERNAME_PREFIX: ${{ vars.DATABASE_USERNAME_PREFIX }}
-          DATABASE_APP_USERNAME: ${{ vars.DATABASE_APP_USERNAME }}
           DATABASE_SCHEMA: ${{ vars.DATABASE_SCHEMA }}
+          DATABASE_TLS_ENABLED: ${{ vars.DATABASE_TLS_ENABLED }}
+          DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
           SOFT_DELETE_RETENTION_DAYS: ${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }}

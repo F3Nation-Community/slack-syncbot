@@ -55,31 +55,7 @@ variable "existing_db_schema" {
 variable "existing_db_user" {
   type        = string
   default     = ""
-  description = "Existing MySQL user (when database_mode = existing). Ignored when existing_db_app_username or existing_db_username_prefix is set."
-}
-
-variable "existing_db_username_prefix" {
-  type        = string
-  default     = ""
-  description = "Optional prefix for DATABASE_USER (e.g. TiDB Cloud cluster prefix \"abc123\"). A dot separator is added automatically. When non-empty, DATABASE_USER is {prefix}.sbapp_{stage} unless existing_db_app_username is set; existing_db_user is ignored."
-}
-
-variable "existing_db_app_username" {
-  type        = string
-  default     = ""
-  description = "Optional full DATABASE_USER override when database_mode = existing (bypasses prefix + sbapp_{stage} and existing_db_user)."
-}
-
-variable "existing_db_create_app_user" {
-  type        = bool
-  default     = true
-  description = "When database_mode = existing: operator note — whether a dedicated app DB user exists (Terraform does not create the user)."
-}
-
-variable "existing_db_create_schema" {
-  type        = bool
-  default     = true
-  description = "When database_mode = existing: operator note — whether the schema was created manually (Terraform does not create schema for existing host)."
+  description = "Existing MySQL/Postgres username (when database_mode = existing). Prefer database_user for the full username (including any TiDB cluster prefix)."
 }
 
 # ---------------------------------------------------------------------------
@@ -212,7 +188,7 @@ variable "database_password" {
 variable "database_user" {
   type        = string
   default     = ""
-  description = "DATABASE_USER override; when set, used instead of computed db_user from existing_db_* variables"
+  description = "DATABASE_USER (full username, including any TiDB cluster prefix). Required when database_mode = existing if existing_db_user is empty."
 }
 
 # ---------------------------------------------------------------------------

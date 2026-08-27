@@ -78,6 +78,17 @@ def test_entrypoint_does_not_exec_python_while_litestream_runs() -> None:
     assert "exec python" not in litestream_branch
 
 
+def test_gcp_existing_uses_full_database_user() -> None:
+    main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    vars_tf = (INFRA_GCP / "variables.tf").read_text(encoding="utf-8")
+    deploy = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "existing_db_username_prefix" not in vars_tf
+    assert "existing_db_create_app_user" not in vars_tf
+    assert "prefix.sbapp" not in main_tf
+    assert "DATABASE_ADMIN" not in deploy
+    assert "DATABASE_CREATE_APP_USER" not in deploy
+
+
 def test_deploy_script_sqlite_skips_required_password() -> None:
     script = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "DATABASE_PASSWORD:?" not in script

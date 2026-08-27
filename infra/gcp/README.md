@@ -44,7 +44,7 @@ Container: `docker build -f infra/gcp/Dockerfile --platform linux/amd64 .` from 
 | `database_mode` / `GCP_DATABASE_MODE` | Runtime | Notes |
 | --- | --- | --- |
 | `sqlite` (default) | `DATABASE_BACKEND=sqlite`, `DATABASE_URL=sqlite:////data/syncbot.db`, Litestream → GCS | `max_instances=1`, concurrency 1. No `DATABASE_PASSWORD`. |
-| `existing` | MySQL / TiDB via host, user, password, schema | Same TiDB contract as AWS (port 4000, username prefix). No GCS bucket. Cloud Run may scale above 1 instance. |
+| `existing` | MySQL / TiDB via host, user, password, schema | Same existing-host contract as AWS (port 4000, full username including any TiDB prefix). No GCS bucket. Cloud Run may scale above 1 instance. |
 
 `DATABASE_ENGINE=sqlite` is a synonym for sqlite mode. Do not infer mode from `DATABASE_HOST`.
 
@@ -63,7 +63,7 @@ Container: `docker build -f infra/gcp/Dockerfile --platform linux/amd64 .` from 
 | `slack_*` / `data_encryption_key` | App secrets (sensitive TF vars) |
 | `existing_db_*` / `database_password` | Required when `database_mode=existing` |
 
-See [variables.tf](variables.tf) and [example.tfvars](example.tfvars). Deploy file names: `GCP_CLOUD_RUN_IMAGE` (fallback `CLOUD_RUN_IMAGE`), `GCP_CLOUD_RUN_MIN_INSTANCES`, `ENABLE_KEEP_WARM` (unprefixed; portable name, AWS does not read it yet).
+See [variables.tf](variables.tf) and [example.tfvars](example.tfvars). Deploy file names: `GCP_CLOUD_RUN_IMAGE` (fallback `CLOUD_RUN_IMAGE`), `GCP_CLOUD_RUN_MIN_INSTANCES`, `ENABLE_KEEP_WARM` (unprefixed; portable name, also used on AWS EventBridge).
 
 ## Outputs
 

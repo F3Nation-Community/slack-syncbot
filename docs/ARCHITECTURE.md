@@ -25,7 +25,7 @@ sequenceDiagram
     participant S as Slack API
     participant FU as Lambda Function URL
     participant L as Lambda (SyncBot)
-    participant DB as RDS
+    participant DB as Database
     participant SB as Slack API (Workspace B)
 
     U->>S: Posts message in #general
@@ -88,7 +88,7 @@ flowchart TB
             FED["federation/"]
         end
 
-        subgraph Database["RDS PostgreSQL or MySQL"]
+        subgraph Database["Existing SQL or sqlite"]
             T1["workspaces"]
             T2["workspace_groups"]
             T2a["workspace_group_members"]
@@ -106,6 +106,7 @@ flowchart TB
         end
 
         EB["EventBridge<br>(keep-warm every 5 min)"]
+        S3LS["S3 Litestream bucket<br>(sqlite mode only)"]
     end
 
     WA & WB <-->|Events & API calls| EP
@@ -117,11 +118,12 @@ flowchart TB
     HELP -->|SQLAlchemy<br>QueuePool + retry| Database
     EB -->|ScheduleV2| Lambda
     Lambda -.->|logs & metrics| Monitoring
+    Lambda -.->|sqlite replica| S3LS
 ```
 
-All infrastructure is defined in `infra/aws/template.yaml` (AWS SAM). Dashed lines indicate resources that are conditionally created — when `Existing*` parameters are set, those resources are skipped.
+All infrastructure is defined in `infra/aws/template.yaml` (AWS SAM). **Existing** (default): public Lambda talks to a database you already created (TiDB, MySQL, Postgres, or RDS you own). **Sqlite:** `/tmp/syncbot.db` + Litestream → S3, reserved concurrency 1. The stack does not create RDS or a VPC.
 
-**Lambda cold start vs Slack acks:** The main function uses **256 MB** memory (faster init than 128 MB). Alembic migrations run only when the function is invoked with `{"action":"migrate"}` (post-deploy in CI), not on every cold start, so the first Slack interaction after deploy can ack within Slack’s time limit. EventBridge keep-warm ScheduleV2 invokes are handled in `app.handler` with a trivial JSON response instead of the Slack Bolt adapter.
+**Lambda cold start vs Slack acks:** The main function uses **256 MB** memory (faster init than 128 MB). For **existing** SQL, Alembic runs only on `{"action":"migrate"}` (post-deploy), not on every Slack cold start. For **sqlite**, the wrapper restores from S3 and runs Alembic once per execution environment (then `litestream replicate`); a true cold start can miss Slack’s 3s window — keep-warm (`ENABLE_KEEP_WARM`) makes that rare; events still retry. EventBridge keep-warm ScheduleV2 invokes are handled in `app.handler` with a trivial JSON response instead of the Slack Bolt adapter.
 
 ## GCP Infrastructure
 
@@ -171,12 +173,12 @@ GitHub Actions never runs `terraform apply`. Image updates are CI-only; Terrafor
 | **Encryption** | Bot tokens encrypted at rest with Fernet (PBKDF2-derived key, cached to avoid repeated 600K iterations) |
 | **Database** | `pool_pre_ping=True` for stale connection detection, retry decorator on all operations, `dispose()` only after all retries exhausted |
 | **Slack API** | `slack_retry` decorator with exponential backoff, `Retry-After` header support, user profile caching |
-| **Network** | RDS SSL/TLS enforcement, Lambda Function URL (IAM `NONE` auth type), federation HMAC-SHA256 signing with 5-minute replay window |
+| **Network** | TLS to the existing SQL host when used, Lambda Function URL (IAM `NONE` auth type), federation HMAC-SHA256 signing with 5-minute replay window |
 | **Authorization** | Admin/owner checks on all configuration actions, configurable via `REQUIRE_ADMIN` |
 
 ## Performance & Cost (Home and User Mapping Refresh)
 
-To keep RDS and Slack API usage low when admins use the **Refresh** button on the Home tab or User Mapping screen:
+To keep database and Slack API usage low when admins use the **Refresh** button on the Home tab or User Mapping screen:
 
 - **Content hash** — A minimal set of DB queries computes a hash of the data that drives the view (groups, members, syncs, pending invites; for User Mapping, mapping ids and methods). If the hash matches the last full refresh, the app skips expensive work.
 - **Cached built blocks** — After a full refresh, the built Block Kit payload is cached (keyed by workspace and user). When the hash matches, the app re-publishes that cached view with one `views.publish` instead of re-running all DB and Slack calls.
