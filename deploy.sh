@@ -816,20 +816,24 @@ main() {
     exit 1
   fi
 
-  echo "=== Sync Python Dependencies ==="
-  if command -v poetry &>/dev/null; then
-    poetry update --quiet
-    if poetry self show plugins 2>/dev/null | grep -q poetry-plugin-export; then
-      poetry export -f requirements.txt --without-hashes -o "$REPO_ROOT/syncbot/requirements.txt"
-      echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > "$REPO_ROOT/infra/aws/db_setup/requirements.txt"
-      grep -E "^(pymysql|psycopg2-binary|cryptography)==" "$REPO_ROOT/syncbot/requirements.txt" >> "$REPO_ROOT/infra/aws/db_setup/requirements.txt"
-      echo "syncbot/requirements.txt and infra/aws/db_setup/requirements.txt updated from poetry.lock."
+  # Match GitHub Actions: install committed pins. Do not run poetry update or rewrite
+  # poetry.lock / *requirements.txt. Warn if an export from the lockfile differs.
+  if command -v poetry &>/dev/null \
+    && poetry self show plugins 2>/dev/null | grep -q poetry-plugin-export; then
+    echo "=== Check Python dependency export ==="
+    _export_tmp="$(mktemp -d)"
+    if poetry export -f requirements.txt --without-hashes -o "$_export_tmp/syncbot-requirements.txt"; then
+      echo "# Required for MySQL 8+ caching_sha2_password; pin for reproducible CI (sam build)." > "$_export_tmp/db-setup-requirements.txt"
+      grep -E "^(pymysql|psycopg2-binary|cryptography)==" "$_export_tmp/syncbot-requirements.txt" >> "$_export_tmp/db-setup-requirements.txt" || true
+      if ! cmp -s "$_export_tmp/syncbot-requirements.txt" "$REPO_ROOT/syncbot/requirements.txt" \
+        || ! cmp -s "$_export_tmp/db-setup-requirements.txt" "$REPO_ROOT/infra/aws/db_setup/requirements.txt"; then
+        echo "Warning: committed *requirements.txt files differ from a poetry.lock export." >&2
+        echo "Deploy uses the committed pins (same as GitHub Actions). Refresh with pre-commit or poetry export; see docs/DEVELOPMENT.md." >&2
+      fi
     else
-      echo "Warning: poetry-plugin-export not installed. Run: poetry self add poetry-plugin-export" >&2
-      echo "Skipping requirements.txt sync." >&2
+      echo "Warning: poetry export failed; continuing with committed *requirements.txt." >&2
     fi
-  else
-    echo "Warning: poetry not found. Skipping dependency sync." >&2
+    rm -rf "$_export_tmp"
   fi
 
   echo "=== Run Provider Script ==="

@@ -1,5 +1,6 @@
 # Automated semver releases via python-semantic-release. Commits/tags/releases use the
-# GitHub git API so bot commits show as Verified (web-flow signing).
+# GitHub git API as sprocktech-automation (GitHub App) so they are Verified and can
+# bypass the main ruleset. GITHUB_TOKEN cannot updateRef on a PR-required branch.
 # Runs only on sprocktech/syncbot — forks must not mint a second release stream.
 # See docs/DEVELOPMENT.md — Releases & Versioning.
 
@@ -53,6 +54,16 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: semantic-release version --no-commit --no-tag --no-push --no-vcs-release --changelog --skip-build
 
+      - name: Mint GitHub App token
+        if: steps.psr.outputs.released == 'true'
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          app-id: ${{ secrets.AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
+          owner: sprocktech
+          repositories: syncbot
+
       - name: Commit, tag, and publish release (GitHub API)
         if: ${{ steps.psr.outputs.released == 'true' }}
         uses: actions/github-script@v7
@@ -61,7 +72,7 @@ jobs:
           RELEASE_NOTES: ${{ steps.psr.outputs.release_notes }}
           TAG: ${{ steps.psr.outputs.tag }}
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ steps.app-token.outputs.token }}
           script: |
             const fs = require('fs');
             const version = process.env.VERSION;
