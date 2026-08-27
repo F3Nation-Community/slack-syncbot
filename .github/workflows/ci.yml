@@ -157,15 +157,8 @@ jobs:
           echo "${CHANGED}"
 
           if echo "${CHANGED}" | grep -qx 'CHANGELOG.md'; then
-            EXTRA="$(git diff "origin/${BASE_REF}"...HEAD -- CHANGELOG.md \
-              | grep -E '^[+-]' \
-              | grep -Ev '^[+-]{3} ' \
-              | grep -Ev '^[+-][[:space:]]*<!-- version list -->[[:space:]]*$' \
-              | grep -Ev '^[+-][[:space:]]*$' \
-              || true)"
-            if [ -n "${EXTRA}" ]; then
-              echo "::error::CHANGELOG.md must not be edited in PRs except adding the <!-- version list --> insertion marker; releases update it via python-semantic-release on main."
-              echo "${EXTRA}"
+            if ! grep -q '<!-- version list -->' CHANGELOG.md; then
+              echo "::error::CHANGELOG.md must keep the <!-- version list --> insertion marker; python-semantic-release inserts new versions there."
               exit 1
             fi
           fi

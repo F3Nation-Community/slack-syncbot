@@ -79,7 +79,17 @@ prerelease = false
 [tool.semantic_release.changelog]
 mode = "update"
 insertion_flag = "<!-- version list -->"
-exclude_commit_patterns = ["^chore\\(release\\):", "^Merge ", "^chore: sync requirements"]
+template_dir = ".github/semantic-release/templates"
+exclude_commit_patterns = [
+    "^chore",
+    "^ci(?:\\(|:)",
+    "^docs(?:\\(|:)",
+    "^test(?:\\(|:)",
+    "^style(?:\\(|:)",
+    "^build(?:\\(|:)",
+    "^refactor(?:\\(|:)",
+    "^Merge ",
+]
 
 [tool.semantic_release.changelog.default_templates]
 changelog_file = "CHANGELOG.md"

@@ -5,7 +5,7 @@ alwaysApply: true
 
 # Do not hand-edit (normal PRs)
 
-- **`CHANGELOG.md`** — updated by **python-semantic-release** on `main` ( insertion marker `<!-- version list -->` ).
+- **`CHANGELOG.md`** — python-semantic-release inserts **new** version headings on `main` above `<!-- version list -->`. Do not add a new version heading or bump `pyproject.toml` `version` in a feature PR. Polishing notes under an already-released heading (Keep a Changelog style) is OK.
 - **`pyproject.toml` `version`** — bumped only by the release workflow / semantic-release.
 - **`syncbot/requirements.txt`**, **`infra/aws/db_setup/requirements.txt`** — generated via `poetry export` / pre-commit hook from `pyproject.toml`.
 - **Secrets** — never commit `.env`, `.env.deploy.*` with real values; only `*.example` templates belong in git.

@@ -18,7 +18,7 @@ poetry run pytest -q tests/ infra/aws/tests infra/gcp/tests
 
 ## Do not
 
-- Edit `CHANGELOG.md`, bump `pyproject.toml` `version`, or hand-edit `*requirements.txt` in a PR (releases + exports handle those).
+- Bump `pyproject.toml` `version` or add a new CHANGELOG version heading in a PR (releases own those). Do not hand-edit `*requirements.txt` (exports handle those).
 - Commit `.env` secrets or `.aws-sam/` build output.
 
 ## PR rules
