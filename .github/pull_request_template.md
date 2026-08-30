@@ -21,3 +21,10 @@
 - [ ] CI passes (`ci-gate`: requirements sync, forbidden path checks, ruff, SAM lint / terraform-validate / docker-build-gcp when those paths change, pip-audit when deps change, tests)
 - [ ] Docs updated if behavior or deploy steps changed
 - [ ] No new cloud-provider-specific code under `syncbot/` (keep infra in `infra/` and workflows)
+
+## Commits
+
+Copy this list into the squash merge body. GitHub will add one Co-authored-by trailer.
+
+<!-- commits -->
+<!-- /commits -->

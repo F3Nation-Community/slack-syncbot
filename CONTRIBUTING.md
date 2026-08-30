@@ -50,7 +50,7 @@ This repository uses [Conventional Commits](https://www.conventionalcommits.org/
 - **Patch** bump: `fix:`, `perf:` (and similar non-breaking fixes).
 - **Minor** bump: `feat:` (user-visible additions).
 - **Major** bump: add `BREAKING CHANGE:` in the commit body/footer, or use a `feat!:` / `fix!:` subject line per Conventional Commits.
-- **Squash merges**: the PR title becomes the squash commit **subject** — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`). The default squash **body** is blank so `Co-authored-by` appears once at the bottom (GitHub adds it), not once per commit.
+- **Squash merges**: the PR title becomes the merge commit **subject** — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`). CI fills a **Commits** section on the PR (no `Co-authored-by` lines); paste that block into the squash body if you want those messages on `main`. GitHub then adds a single `Co-authored-by` trailer.
 - **Changelog / GitHub Release:** Keep a Changelog headings only (**Added** / **Changed** / **Fixed**). Copy **[1.2.0](CHANGELOG.md)** for voice. python-semantic-release drafts from `feat` / `fix` / `perf`; polish (or pre-write that version's section in the release PR) so operators do not see `### bug fixes` or a raw commit subject.
 
 Also install the commit-msg hook so local commits are checked:

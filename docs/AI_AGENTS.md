@@ -50,6 +50,6 @@ Configure in GitHub **Settings → Rulesets / Branches** for `main`:
 - Required checks: **`ci-gate`**, **`conventional`**
 - Do **not** require review from Code Owners (that would block Dependabot auto-merge)
 - Do **not** add Dependabot, Write, or Maintain to the ruleset bypass list; `github-actions[bot]` cannot be added here. Organization admin bypass is for humans. Add GitHub App **`f3n-community-automation`** so Release `updateRef` and leftover requirements-sync pushes can land on `main` (see [DEVELOPMENT.md](DEVELOPMENT.md)).
-- Allow auto-merge; squash only; squash commit message default **blank** (not commit details); do not require conversation resolution
+- Allow auto-merge; squash only; do not require conversation resolution
 
 Exact job names come from `.github/workflows/ci.yml` and `pr-title.yml`.

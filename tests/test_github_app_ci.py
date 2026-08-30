@@ -5,6 +5,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
+def test_pr_commits_section_is_api_only() -> None:
+    text = (REPO_ROOT / ".github" / "workflows" / "pr-commits-section.yml").read_text()
+    template = (REPO_ROOT / ".github" / "pull_request_template.md").read_text()
+    assert "pull_request_target" in text
+    assert "actions/checkout" not in text
+    assert "<!-- commits -->" in text
+    assert "<!-- commits -->" in template
+    assert "<!-- /commits -->" in template
+
+
 def test_release_uses_app_token_for_git_api() -> None:
     text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
     assert "actions/create-github-app-token@v3" in text
