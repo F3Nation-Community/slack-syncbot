@@ -76,6 +76,28 @@ resolve_github_repo_for_create() {
   return 1
 }
 
+# GitHub issues an immutable OIDC subject claim, repo:owner@owner-id/repo@repo-id,
+# for repositories created or transferred after 2026-07-15. A trust policy that
+# only matches repo:owner/repo rejects those tokens with a bare AccessDenied, so
+# the role has to trust both forms. Empty output means the classic form is enough.
+resolve_immutable_repository() {
+  local repo="$1" prefix=""
+  if [[ -n "${GITHUB_REPOSITORY:-}" && -n "${GITHUB_REPOSITORY_OWNER_ID:-}" && -n "${GITHUB_REPOSITORY_ID:-}" ]]; then
+    echo "${GITHUB_REPOSITORY%%/*}@${GITHUB_REPOSITORY_OWNER_ID}/${GITHUB_REPOSITORY#*/}@${GITHUB_REPOSITORY_ID}"
+    return 0
+  fi
+  if [[ -n "$repo" ]] && command -v gh >/dev/null 2>&1; then
+    prefix="$(gh api "repos/${repo}/actions/oidc/customization/sub" --jq '.sub_claim_prefix // ""' 2>/dev/null || true)"
+    prefix="${prefix//$'\r'/}"
+    prefix="${prefix#repo:}"
+    if [[ "$prefix" == *"@"* ]]; then
+      echo "$prefix"
+      return 0
+    fi
+  fi
+  echo ""
+}
+
 stack_exists() {
   aws cloudformation describe-stacks \
     --stack-name "$STACK" \
@@ -108,13 +130,18 @@ deploy_bootstrap() {
   local create_oidc="$2"
   local bucket_prefix="$3"
   local file_sha="$4"
+  local immutable_repo="$5"
 
+  if [[ -n "$immutable_repo" ]]; then
+    echo "OIDC trust also allows immutable subject 'repo:${immutable_repo}:*'."
+  fi
   echo "Deploying bootstrap stack '$STACK' in $REGION ..."
   aws cloudformation deploy \
     --template-file "$BOOTSTRAP_TEMPLATE" \
     --stack-name "$STACK" \
     --parameter-overrides \
       "GitHubRepository=$github_repo" \
+      "GitHubImmutableRepository=$immutable_repo" \
       "CreateOIDCProvider=$create_oidc" \
       "DeploymentBucketPrefix=$bucket_prefix" \
       "${SHA_PARAM_KEY}=${file_sha}" \
@@ -172,8 +199,9 @@ if ! stack_exists; then
   GH_REPO="$(resolve_github_repo_for_create)"
   CREATE_OIDC="${AWS_CREATE_OIDC_PROVIDER:-true}"
   BUCKET_PREFIX="${AWS_DEPLOY_BUCKET_PREFIX:-syncbot-deploy}"
+  IMMUTABLE_REPO="$(resolve_immutable_repository "$GH_REPO")"
   echo "Bootstrap stack '$STACK' not found; creating (GitHubRepository=$GH_REPO)."
-  deploy_bootstrap "$GH_REPO" "$CREATE_OIDC" "$BUCKET_PREFIX" "$FILE_SHA"
+  deploy_bootstrap "$GH_REPO" "$CREATE_OIDC" "$BUCKET_PREFIX" "$FILE_SHA" "$IMMUTABLE_REPO"
   exit 0
 fi
 
@@ -188,7 +216,30 @@ if [[ "$STACK_SHA" == "None" ]]; then
   STACK_SHA=""
 fi
 
-if [[ "$FORCE" != "true" && -n "$STACK_SHA" && "$STACK_SHA" == "$FILE_SHA" ]]; then
+GH_REPO="$(stack_param GitHubRepository)"
+CREATE_OIDC="$(stack_param CreateOIDCProvider)"
+BUCKET_PREFIX="$(stack_param DeploymentBucketPrefix)"
+STACK_IMMUTABLE_REPO="$(stack_param GitHubImmutableRepository)"
+GH_REPO="${GH_REPO//$'\r'/}"
+CREATE_OIDC="${CREATE_OIDC//$'\r'/}"
+BUCKET_PREFIX="${BUCKET_PREFIX//$'\r'/}"
+STACK_IMMUTABLE_REPO="${STACK_IMMUTABLE_REPO//$'\r'/}"
+[[ "$GH_REPO" == "None" ]] && GH_REPO=""
+[[ "$CREATE_OIDC" == "None" || -z "$CREATE_OIDC" ]] && CREATE_OIDC="true"
+[[ "$BUCKET_PREFIX" == "None" || -z "$BUCKET_PREFIX" ]] && BUCKET_PREFIX="syncbot-deploy"
+[[ "$STACK_IMMUTABLE_REPO" == "None" ]] && STACK_IMMUTABLE_REPO=""
+
+if [[ -z "$GH_REPO" ]]; then
+  echo "Error: bootstrap stack has no GitHubRepository parameter; cannot sync." >&2
+  exit 1
+fi
+
+# GitHub can switch a repository to immutable subject claims without the template
+# changing, which would strand the stack on a trust policy that rejects every token.
+IMMUTABLE_REPO="$(resolve_immutable_repository "$GH_REPO")"
+[[ -z "$IMMUTABLE_REPO" ]] && IMMUTABLE_REPO="$STACK_IMMUTABLE_REPO"
+
+if [[ "$FORCE" != "true" && -n "$STACK_SHA" && "$STACK_SHA" == "$FILE_SHA" && "$IMMUTABLE_REPO" == "$STACK_IMMUTABLE_REPO" ]]; then
   echo "Bootstrap template unchanged (sha256 $FILE_SHA); skipping sync."
   exit 0
 fi
@@ -197,23 +248,10 @@ if [[ "$FORCE" == "true" ]]; then
   echo "Forcing bootstrap sync (--bootstrap / --force)."
 elif [[ -z "$STACK_SHA" ]]; then
   echo "Bootstrap stack has no ${SHA_PARAM_KEY} parameter; syncing once to record the template hash."
+elif [[ "$IMMUTABLE_REPO" != "$STACK_IMMUTABLE_REPO" ]]; then
+  echo "OIDC subject claim changed (stack '${STACK_IMMUTABLE_REPO:-none}' → '${IMMUTABLE_REPO:-none}'); syncing."
 else
   echo "Bootstrap template changed (stack $STACK_SHA → file $FILE_SHA); syncing."
 fi
 
-GH_REPO="$(stack_param GitHubRepository)"
-CREATE_OIDC="$(stack_param CreateOIDCProvider)"
-BUCKET_PREFIX="$(stack_param DeploymentBucketPrefix)"
-GH_REPO="${GH_REPO//$'\r'/}"
-CREATE_OIDC="${CREATE_OIDC//$'\r'/}"
-BUCKET_PREFIX="${BUCKET_PREFIX//$'\r'/}"
-[[ "$GH_REPO" == "None" ]] && GH_REPO=""
-[[ "$CREATE_OIDC" == "None" || -z "$CREATE_OIDC" ]] && CREATE_OIDC="true"
-[[ "$BUCKET_PREFIX" == "None" || -z "$BUCKET_PREFIX" ]] && BUCKET_PREFIX="syncbot-deploy"
-
-if [[ -z "$GH_REPO" ]]; then
-  echo "Error: bootstrap stack has no GitHubRepository parameter; cannot sync." >&2
-  exit 1
-fi
-
-deploy_bootstrap "$GH_REPO" "$CREATE_OIDC" "$BUCKET_PREFIX" "$FILE_SHA"
+deploy_bootstrap "$GH_REPO" "$CREATE_OIDC" "$BUCKET_PREFIX" "$FILE_SHA" "$IMMUTABLE_REPO"

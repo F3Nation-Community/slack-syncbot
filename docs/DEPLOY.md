@@ -357,6 +357,17 @@ Configure **per-environment** (`test` / `prod`) variables and secrets so they ma
 
 The interactive deploy script can set the same names via `gh` when you opt in. Redeploy after you change `DATABASE_BACKEND`.
 
+**`Not authorized to perform sts:AssumeRoleWithWebIdentity`:** This is almost always the OIDC **subject claim** format rather than a broken role. For repositories created or transferred after **2026-07-15**, GitHub embeds immutable owner and repository IDs in the `sub` claim, so a token reads `repo:my-org@12345678/syncbot@9876543210:ref:refs/heads/prod` instead of `repo:my-org/syncbot:ref:refs/heads/prod`. A trust policy that only matches `repo:my-org/syncbot:*` requires a `/` right after the org name and can never match, and AWS reports it as a plain authorization failure with no detail.
+
+The bootstrap stack handles both formats. `ensure_bootstrap.sh` reads the immutable prefix automatically (from the runner's `GITHUB_REPOSITORY_OWNER_ID` and `GITHUB_REPOSITORY_ID` in Actions, or through `gh` locally) and passes it as the `GitHubImmutableRepository` parameter. To check what your repository sends, and to fix a stack created before this was handled, run:
+
+```bash
+gh api repos/YOUR_GITHUB_OWNER/YOUR_REPO/actions/oidc/customization/sub --jq .sub_claim_prefix
+./deploy.sh --env prod --bootstrap
+```
+
+An `@` in that prefix means your repository uses the immutable format. Because the failure happens in the credentials step, which runs **before** the bootstrap sync, GitHub Actions cannot repair this itself — the bootstrap redeploy has to happen locally. GCP is unaffected: Workload Identity Federation matches on the `repository` claim, which is still `owner/repo`.
+
 **Bootstrap in CI:** `deploy-aws.yml` runs `infra/aws/scripts/ensure_bootstrap.sh` (same helper as local deploy). It compares `template.bootstrap.yaml` to stack parameter `TemplateContentSha256` and skips CloudFormation when they match. The GitHub OIDC deploy role lives in the bootstrap stack, so the first create still needs local AWS credentials (`./deploy.sh --env test`). If CI runs with no bootstrap stack, that step **fails** (it does not skip). `--bootstrap` is not required on first local deploy.
 
 **Dependency hygiene:** CI **`pip-audit`** exports from `poetry.lock` in the job (it does not read the committed `*requirements.txt` files). After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates **`syncbot/requirements.txt`** when `poetry.lock` changes (`sam build` installs from that file). If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md). Same-repo CI on F3Nation-Community/slack-syncbot may commit the export onto the PR if the file is stale. **`./deploy.sh` does not run `poetry update`**; it installs committed pins and may warn if an export differs from that file.
