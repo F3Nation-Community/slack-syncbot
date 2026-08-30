@@ -1,14 +1,7 @@
 {# Keep a Changelog insert. Update mode only; preserves history below the insertion flag. #}
+{% from "_keep_a_changelog.j2" import kac_heading, kac_bullet %}
 {% set insertion_flag = ctx.changelog_insertion_flag %}
 {% set releases = ctx.history.released.values() | list %}
-{% set type_headings = {
-  "Features": "Added",
-  "Feature": "Added",
-  "Bug Fixes": "Fixed",
-  "Bug Fix": "Fixed",
-  "Performance Improvements": "Changed",
-  "Performance Improvement": "Changed",
-} %}
 {% if ctx.changelog_mode == "update" %}
 {% set prev_changelog_contents = ctx.prev_changelog_file | read_file | safe %}
 {% set changelog_parts = prev_changelog_contents.split(insertion_flag, maxsplit=1) %}
@@ -30,17 +23,17 @@
 
 {% set commit_objects = release["elements"] | dictsort %}
 {% for type_, commits in commit_objects if type_ != "unknown" %}
-{% set heading = type_headings[type_] if type_ in type_headings else type_ %}
+{% set heading = kac_heading(type_) | trim %}
 {% set ns = namespace(lines=[]) %}
 {% for commit in commits %}
 {% if commit.descriptions %}
-{% set summary = commit.descriptions[0] | trim %}
-{% if summary %}
-{% set ns.lines = ns.lines + ["- " ~ summary] %}
+{% set line = kac_bullet(commit.descriptions[0]) | trim %}
+{% if line %}
+{% set ns.lines = ns.lines + [line] %}
 {% endif %}
 {% endif %}
 {% endfor %}
-{% if ns.lines %}
+{% if heading and ns.lines %}
 ### {{ heading }}
 
 {{ ns.lines | unique | join("\n") }}

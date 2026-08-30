@@ -41,7 +41,7 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 ## Hard rules (guardrails)
 
 1. **Provider-neutral `syncbot/`** — do not add `boto3`, `google.cloud`, or other cloud SDK imports under `syncbot/`. Use `infra/<provider>/` and workflows for provider code. This is also enforced in CI (`forbidden-imports` job).
-2. **Version & changelog** — do not bump `pyproject.toml`’s `version` or add a **new** CHANGELOG version heading in a feature PR. Releases on `main` are automated with **python-semantic-release**. Polishing notes under an already-released heading is OK (Keep a Changelog: Added / Changed / Fixed). Use Conventional Commits (see [CONTRIBUTING.md](CONTRIBUTING.md)).
+2. **Version & changelog** — do not bump `pyproject.toml`’s `version` in a feature PR. Releases on `main` are automated with **python-semantic-release**. Changelog and GitHub Release notes use Keep a Changelog headings (**Added** / **Changed** / **Fixed**) in the **1.2.0** style — operator-facing sentences, not `### bug fixes` or raw commit subjects. Polishing an already-released heading is OK. You may pre-write the next version's section below `<!-- version list -->` in a release PR so the GitHub Release copies it. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 3. **Requirements files** — do not edit `syncbot/requirements.txt` by hand. Change dependencies in `pyproject.toml` and run the pre-commit `sync-requirements` hook or `poetry export` as in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 4. **Secrets** — never commit real `.env`, `.env.deploy.*` (only `*.example` templates), private keys, or large artifacts. Do not commit `.aws-sam/build` output.
 5. **Deployment branches** — on a **fork**, do not push to `test` or `prod` as a casual step; those branches deploy. Canonical releases run only on **sprocktech/syncbot** `main` (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). Forks pull `main` and promote to `test`/`prod` themselves.
@@ -53,6 +53,8 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 Operator-facing docs (README, `docs/*.md`, `.env*.example`, `infra/gcp/example.tfvars`) should read like a helpful teammate: friendly and explanatory, not clipped or telegraphic. Write full sentences (do not drop “the” or “a” to shorten a line). Prefer a short paragraph over a dense jargon pile.
 
 Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name were arbitrary. Show the real values (`--env test`, `slack-manifest_test.json`, `syncbot_test`) and mention `prod` as the other choice. Keep `YOUR_*` for values that really vary (region, host, username).
+
+**Changelog / GitHub Release notes** follow Keep a Changelog and **[1.2.0](CHANGELOG.md)**, not the operator-docs paragraph style. See `.cursor/rules/50-changelog.mdc`.
 
 ## Definition of done (AI-resolved issues)
 
