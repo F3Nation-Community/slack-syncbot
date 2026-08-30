@@ -24,7 +24,7 @@ After you have set up the Slack app, you can follow the steps below to deploy to
 **Prerequisites**
 
 - Git and Bash. On Windows, use Git Bash or WSL.
-- **AWS:** AWS CLI v2, SAM CLI, Docker, Python 3, `curl`, and an active `aws` login.
+- **AWS:** AWS CLI v2, SAM CLI, Python 3, `curl`, and an active `aws` login.
 - **GCP:** Terraform, `gcloud`, Python 3, `curl`, and an active `gcloud` login (including Application Default Credentials).
 - Optional: `gh`, if you want the script to write GitHub Environment variables for you.
 

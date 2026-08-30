@@ -75,14 +75,6 @@ prereqs_hint_python3() {
   echo "  Documentation: https://docs.python.org/3/"
 }
 
-prereqs_hint_docker() {
-  echo "Install Docker (used by sam build --use-container on AWS):"
-  case "$(uname -s 2>/dev/null)" in
-    Linux) echo "  https://docs.docker.com/engine/install/" ;;
-    *) echo "  https://www.docker.com/products/docker-desktop/" ;;
-  esac
-}
-
 prereqs_hint_curl() {
   echo "Install curl (used for Slack manifest API and downloads):"
   echo "  https://curl.se/download.html"
