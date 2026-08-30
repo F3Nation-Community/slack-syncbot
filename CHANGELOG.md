@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.2.4] - 2026-08-30
+
+### Fixed
+
+- Trust GitHub's immutable OIDC subject claim (#22)
+
+
+
 ## [1.2.3] - 2026-08-30
 
 ### Fixed
