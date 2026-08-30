@@ -34,7 +34,9 @@ When publishing a channel inside a group, admins choose either **1-to-1** (only 
 ## Pause / Resume / Stop
 
 - **Pause/Resume** — Individual channel syncs can be paused and resumed without losing configuration. Paused channels do not sync any messages, threads, or reactions.
-- **Selective Stop** — When a workspace stops syncing a channel, only that workspace's history is removed. Other workspaces continue syncing uninterrupted. The published channel remains available until the original publisher unpublishes it.
+- **Selective Stop** — When a *subscribing* workspace stops syncing a channel, only that workspace's history is removed. Other workspaces continue syncing uninterrupted. The published channel remains available until the original publisher unpublishes it.
+- **Unpublish** — The *publishing* workspace does not "Stop Syncing" its own channel — it **Unpublishes**, which removes the sync for everyone in it. (The publisher is the source of the channel, so there is no way for it to leave while keeping the sync alive for others.) If unpublishing fails for any reason, SyncBot tells you the channel is still published rather than showing it as gone, so you can try again.
+- **Stranded syncs self-heal** — If a publisher ever leaves a sync behind, the remaining subscriber sees "publisher left; no longer syncing" and can clear it with Stop Syncing; removing the last channel deletes the empty sync automatically.
 
 ## Uninstall / Reinstall
 

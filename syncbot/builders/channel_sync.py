@@ -59,6 +59,11 @@ def _build_inline_channel_sync(
         elif not my_channel and other_channels:
             if sync.sync_mode == "direct" and sync.target_workspace_id != workspace_record.id:
                 continue
+            # A sync whose publisher has left has no source to subscribe to, so
+            # don't advertise it as available. It is cleaned up when its last
+            # remaining member stops (see handle_stop_sync_confirm).
+            if not any(c.workspace_id == sync.publisher_workspace_id for c in other_channels):
+                continue
             available_syncs.append((sync, other_channels))
 
     published_syncs.sort(key=lambda t: (t[0].title or "").lower())
@@ -132,40 +137,51 @@ def _build_inline_channel_sync(
 
         if context_parts:
             blocks.append(block_context("\n".join(context_parts)))
-        blocks.append(
-            orm.ActionsBlock(
-                elements=[
-                    toggle_btn,
-                    orm.ButtonElement(
-                        label="Stop Syncing",
-                        action=f"{actions.CONFIG_STOP_SYNC}_{sync.id}",
-                        value=str(sync.id),
-                        style="danger",
-                    ),
-                ]
+        if sync.publisher_workspace_id == workspace_record.id:
+            # The publisher is the source of the channel: their teardown removes
+            # the sync for everyone (Unpublish). "Stop Syncing" here would delete
+            # only the publisher's own channel and strand the sync with a
+            # publisher that no longer has one.
+            teardown_btn = orm.ButtonElement(
+                label="Unpublish",
+                action=f"{actions.CONFIG_UNPUBLISH_CHANNEL}_{sync.id}",
+                value=str(sync.id),
+                style="danger",
             )
-        )
+        else:
+            teardown_btn = orm.ButtonElement(
+                label="Stop Syncing",
+                action=f"{actions.CONFIG_STOP_SYNC}_{sync.id}",
+                value=str(sync.id),
+                style="danger",
+            )
+        blocks.append(orm.ActionsBlock(elements=[toggle_btn, teardown_btn]))
 
     for sync, my_ch in waiting_syncs:
-        blocks.append(section(f":outbox_tray: <#{my_ch.channel_id}> — _waiting for subscribers_"))
-        is_publisher = sync.publisher_workspace_id == workspace_record.id
-        if is_publisher:
-            blocks.append(
-                orm.ActionsBlock(
-                    elements=[
-                        orm.ButtonElement(
-                            label="Stop Syncing",
-                            action=f"{actions.CONFIG_UNPUBLISH_CHANNEL}_{my_ch.id}",
-                            value=str(sync.id),
-                            style="danger",
-                        ),
-                    ]
-                )
+        if sync.publisher_workspace_id == workspace_record.id:
+            blocks.append(section(f":outbox_tray: <#{my_ch.channel_id}> — _waiting for subscribers_"))
+            teardown_btn = orm.ButtonElement(
+                label="Unpublish",
+                action=f"{actions.CONFIG_UNPUBLISH_CHANNEL}_{sync.id}",
+                value=str(sync.id),
+                style="danger",
             )
+        else:
+            # The publisher has left, so there is nothing to sync with anymore.
+            # Let the stranded member remove their channel; stopping the last one
+            # purges the empty sync (see handle_stop_sync_confirm).
+            blocks.append(section(f":outbox_tray: <#{my_ch.channel_id}> — _publisher left; no longer syncing_"))
+            teardown_btn = orm.ButtonElement(
+                label="Stop Syncing",
+                action=f"{actions.CONFIG_STOP_SYNC}_{sync.id}",
+                value=str(sync.id),
+                style="danger",
+            )
+        blocks.append(orm.ActionsBlock(elements=[teardown_btn]))
 
-    for sync, other_chs in available_syncs:
-        publisher_ws = helpers.get_workspace_by_id(other_chs[0].workspace_id, context=context) if other_chs else None
-        publisher_name = helpers.resolve_workspace_name(publisher_ws) if publisher_ws else " another Workspace"
+    for sync, _other_chs in available_syncs:
+        publisher_ws = helpers.get_workspace_by_id(sync.publisher_workspace_id, context=context)
+        publisher_name = helpers.resolve_workspace_name(publisher_ws) if publisher_ws else "another Workspace"
         if sync.sync_mode == "direct":
             mode_tag = "1-to-1"
         else:
