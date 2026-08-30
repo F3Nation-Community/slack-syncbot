@@ -55,7 +55,8 @@ def test_changelog_1_2_1_matches_github_release_style() -> None:
 def test_changelog_1_2_2_is_prewritten_keep_a_changelog() -> None:
     text = CHANGELOG.read_text(encoding="utf-8")
     versions = H2.findall(text)
-    assert versions[0] == "1.2.2"
+    # Newest first, but do not pin which version that is: every release adds one.
+    assert versions.index("1.2.2") == versions.index("1.2.1") - 1
     start = text.index("## [1.2.2]")
     end = text.index("## [1.2.1]")
     section = text[start:end]
