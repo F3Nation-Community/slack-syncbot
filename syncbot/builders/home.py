@@ -383,8 +383,8 @@ def _build_group_section(
         if member.workspace_id:
             member_ws = helpers.get_workspace_by_id(member.workspace_id, context=context)
             name = helpers.resolve_workspace_name(member_ws) if member_ws else f"Workspace {member.workspace_id}"
-            if member.role == "creator":
-                name += " _(Group Creator)_"
+            if member.role == "owner":
+                name += " _(Group Owner)_"
         elif member.federated_workspace_id:
             fed_ws = DbManager.get_record(FederatedWorkspace, id=member.federated_workspace_id)
             name = f":globe_with_meridians: {fed_ws.name}" if fed_ws and fed_ws.name else "External"

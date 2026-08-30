@@ -286,7 +286,6 @@ def handle_federation_code_submit(
         invite_code=f"FED-{secrets.token_hex(4).upper()}",
         status="active",
         created_at=now,
-        created_by_workspace_id=workspace_record.id,
     )
     DbManager.create_record(group)
 
@@ -294,7 +293,7 @@ def handle_federation_code_submit(
         group_id=group.id,
         workspace_id=workspace_record.id,
         status="active",
-        role="creator",
+        role="owner",
         joined_at=now,
     )
     DbManager.create_record(local_member)

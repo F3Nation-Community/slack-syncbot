@@ -1,4 +1,4 @@
-"""Real-database tests for the ordered sync-purge helpers.
+"""Real-database tests for the ordered purge helpers.
 
 These run against a real SQLite file with ``PRAGMA foreign_keys=ON`` (set in
 ``conftest.py``), which is what makes the MySQL error-1451 failure reproducible
@@ -177,3 +177,104 @@ class TestPurgeSyncChannels:
         helpers.purge_sync_channels([channels[0]])
 
         assert _cache_get("sync_list:C_ACTIVE") is None
+
+
+class TestPurgeWorkspace:
+    def test_deleting_the_workspace_directly_violates_foreign_keys(self, real_db):
+        """Documents the retention-purge bug that purge_workspace fixes."""
+        workspace, _, _ = _build_sync()
+
+        with pytest.raises(IntegrityError):
+            DbManager.delete_records(schemas.Workspace, [schemas.Workspace.id == workspace.id])
+
+    def test_purge_removes_the_workspace_and_its_published_syncs(self, real_db):
+        import helpers
+
+        workspace, sync, _ = _build_sync()
+
+        helpers.purge_workspace(workspace.id)
+
+        assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == workspace.id]) == []
+        assert DbManager.find_records(schemas.Sync, [schemas.Sync.id == sync.id]) == []
+        assert DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.sync_id == sync.id]) == []
+
+    def test_purge_is_idempotent(self, real_db):
+        import helpers
+
+        workspace, _, _ = _build_sync()
+
+        helpers.purge_workspace(workspace.id)
+        helpers.purge_workspace(workspace.id)
+
+        assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == workspace.id]) == []
+
+    def test_purge_keeps_other_workspaces_memberships_and_nulls_the_inviter(self, real_db):
+        """The inviter link is nulled; the other workspace's membership survives.
+
+        workspace_group_members references workspaces.id through two columns, so
+        deleting by invited_by_workspace_id would evict a legitimate member.
+        """
+        import helpers
+
+        inviter = DbManager.create_record(schemas.Workspace(team_id="T_INVITER", workspace_name="Inviter"))
+        invitee = DbManager.create_record(schemas.Workspace(team_id="T_INVITEE", workspace_name="Invitee"))
+        group = DbManager.create_record(
+            schemas.WorkspaceGroup(
+                name="G",
+                invite_code="ABC-123",
+                status="active",
+                created_at=_now(),
+            )
+        )
+        own_membership = DbManager.create_record(
+            schemas.WorkspaceGroupMember(
+                group_id=group.id, workspace_id=inviter.id, status="active", role="owner", joined_at=_now()
+            )
+        )
+        other_membership = DbManager.create_record(
+            schemas.WorkspaceGroupMember(
+                group_id=group.id,
+                workspace_id=invitee.id,
+                status="active",
+                role="member",
+                joined_at=_now(),
+                invited_by_workspace_id=inviter.id,
+            )
+        )
+
+        helpers.purge_workspace(inviter.id)
+
+        assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == inviter.id]) == []
+        assert (
+            DbManager.find_records(schemas.WorkspaceGroupMember, [schemas.WorkspaceGroupMember.id == own_membership.id])
+            == []
+        )
+        # The group itself survives the purge of the workspace that created it.
+        assert DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group.id])
+
+        survived = DbManager.find_records(
+            schemas.WorkspaceGroupMember, [schemas.WorkspaceGroupMember.id == other_membership.id]
+        )
+        assert len(survived) == 1
+        assert survived[0].workspace_id == invitee.id
+        assert survived[0].invited_by_workspace_id is None
+
+    def test_purge_nulls_direct_sync_targets(self, real_db):
+        import helpers
+
+        publisher = DbManager.create_record(schemas.Workspace(team_id="T_PUB", workspace_name="Pub"))
+        target = DbManager.create_record(schemas.Workspace(team_id="T_TGT", workspace_name="Target"))
+        sync = DbManager.create_record(
+            schemas.Sync(
+                title="Direct",
+                sync_mode="direct",
+                publisher_workspace_id=publisher.id,
+                target_workspace_id=target.id,
+            )
+        )
+
+        helpers.purge_workspace(target.id)
+
+        remaining = DbManager.find_records(schemas.Sync, [schemas.Sync.id == sync.id])
+        assert len(remaining) == 1
+        assert remaining[0].target_workspace_id is None

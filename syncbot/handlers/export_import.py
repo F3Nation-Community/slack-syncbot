@@ -649,7 +649,6 @@ def _data_migration_prepare(
                     invite_code=f"FED-{secrets.token_hex(4).upper()}",
                     status="active",
                     created_at=now,
-                    created_by_workspace_id=workspace_record.id,
                 )
                 DbManager.create_record(new_group)
                 DbManager.create_record(
@@ -657,7 +656,7 @@ def _data_migration_prepare(
                         group_id=new_group.id,
                         workspace_id=workspace_record.id,
                         status="active",
-                        role="creator",
+                        role="owner",
                         joined_at=now,
                     )
                 )

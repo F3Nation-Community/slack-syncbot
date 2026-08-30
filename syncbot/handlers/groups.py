@@ -158,7 +158,6 @@ def handle_create_group_submit(
         invite_code=code,
         status="active",
         created_at=now,
-        created_by_workspace_id=workspace_record.id,
     )
     DbManager.create_record(group)
 
@@ -166,7 +165,7 @@ def handle_create_group_submit(
         group_id=group.id,
         workspace_id=workspace_record.id,
         status="active",
-        role="creator",
+        role="owner",
         joined_at=now,
     )
     DbManager.create_record(member)
@@ -273,11 +272,10 @@ def handle_join_group_submit(
 
     group = groups[0]
 
-    if group.created_by_workspace_id == workspace_record.id:
-        _logger.warning("group_self_join", extra={"workspace_id": workspace_record.id})
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
-        return
-
+    # The old self-join guard read created_by_workspace_id here. The membership
+    # check below already covers it, since a group's creator always has a
+    # membership row — and dropping the guard lets a workspace that left rejoin
+    # by code instead of being blocked forever.
     existing = DbManager.find_records(
         schemas.WorkspaceGroupMember,
         [
