@@ -58,6 +58,7 @@ from helpers.slack_api import (
     slack_retry,
     update_modal,
 )
+from helpers.sync_cleanup import purge_sync, purge_sync_channels
 from helpers.user_matching import (
     _get_user_profile,
     _normalize_name,
@@ -140,6 +141,8 @@ __all__ = [
     "parse_mentioned_users",
     "post_message",
     "purge_stale_soft_deletes",
+    "purge_sync",
+    "purge_sync_channels",
     "resolve_channel_name",
     "resolve_channel_references",
     "refresh_after_full",

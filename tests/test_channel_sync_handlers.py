@@ -14,7 +14,66 @@ from handlers.channel_sync import (  # noqa: E402
     handle_publish_channel_submit_ack,
     handle_publish_mode_submit_ack,
     handle_subscribe_channel_submit,
+    handle_unpublish_channel,
 )
+
+
+class TestUnpublishChannel:
+    """Unpublish must purge children before the sync, and must not fail silently."""
+
+    SYNC_ID = 31
+
+    def _run(self, *, purge_side_effect=None):
+        workspace = SimpleNamespace(id=10, team_id="T1", bot_token=None, deleted_at=None)
+        sync = SimpleNamespace(id=self.SYNC_ID, publisher_workspace_id=workspace.id, group_id=None)
+        body = {"actions": [{"value": str(self.SYNC_ID), "action_id": "unpublish_channel"}]}
+
+        with (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=sync),
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.helpers.purge_sync", side_effect=purge_side_effect) as purge,
+            patch("handlers.channel_sync.helpers.notify_admins_dm") as notify,
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace") as refresh,
+            patch("handlers.channel_sync._logger.error") as error_log,
+        ):
+            handle_unpublish_channel(body, MagicMock(), MagicMock(), context={})
+
+        return purge, notify, refresh, error_log
+
+    def test_purges_the_sync_through_the_ordered_helper(self):
+        purge, _, refresh, error_log = self._run()
+
+        purge.assert_called_once_with(self.SYNC_ID)
+        assert refresh.called
+        assert not error_log.called
+
+    def test_purge_failure_is_logged_and_reported_to_the_admin(self):
+        """A dead-looking button was the original symptom; failures must be visible."""
+        purge, notify, refresh, error_log = self._run(purge_side_effect=RuntimeError("fk violation"))
+
+        assert purge.called
+        assert notify.called
+        assert not refresh.called
+
+        assert error_log.call_args.args[0] == "unpublish_failed"
+        assert error_log.call_args.kwargs["extra"]["sync_id"] == self.SYNC_ID
+
+    def test_non_publisher_cannot_unpublish(self):
+        workspace = SimpleNamespace(id=10, team_id="T1")
+        sync = SimpleNamespace(id=self.SYNC_ID, publisher_workspace_id=999, group_id=None)
+        body = {"actions": [{"value": str(self.SYNC_ID), "action_id": "unpublish_channel"}]}
+
+        with (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=sync),
+            patch("handlers.channel_sync.helpers.purge_sync") as purge,
+        ):
+            handle_unpublish_channel(body, MagicMock(), MagicMock(), context={})
+
+        assert not purge.called
 
 
 class TestPublishModeSubmitAck:

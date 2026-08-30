@@ -134,9 +134,8 @@ def handle_leave_group_confirm(
                 schemas.SyncChannel.deleted_at.is_(None),
             ],
         )
+        helpers.purge_sync_channels(my_channels)
         for ch in my_channels:
-            DbManager.delete_records(schemas.PostMeta, [schemas.PostMeta.sync_channel_id == ch.id])
-            DbManager.delete_records(schemas.SyncChannel, [schemas.SyncChannel.id == ch.id])
             try:
                 client.conversations_leave(channel=ch.channel_id)
             except Exception as e:
@@ -148,7 +147,10 @@ def handle_leave_group_confirm(
                 [schemas.SyncChannel.sync_id == sync.id, schemas.SyncChannel.deleted_at.is_(None)],
             )
             if not remaining:
-                DbManager.delete_records(schemas.Sync, [schemas.Sync.id == sync.id])
+                # purge_sync, not a bare Sync delete: soft-deleted channels from an
+                # uninstalled member are excluded by `remaining` but still reference
+                # the sync, so a parent-first delete fails on MySQL.
+                helpers.purge_sync(sync.id)
 
     DbManager.delete_records(
         schemas.UserMapping,

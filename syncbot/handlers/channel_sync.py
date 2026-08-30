@@ -371,9 +371,13 @@ def handle_unpublish_channel(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Unpublish a channel: hard-delete the Sync record.
+    """Unpublish a channel: hard-delete the Sync and everything beneath it.
 
-    DB cascades remove all ``SyncChannel`` and ``PostMeta`` rows.
+    There are no DB cascades on ``sync_channels.sync_id`` or
+    ``post_meta.sync_channel_id``, so :func:`helpers.purge_sync` deletes the
+    children first. Deleting the ``Sync`` directly fails on MySQL with error
+    1451 and makes the button look dead.
+
     Only the original publisher can unpublish.
     """
     auth_result = _get_authorized_workspace(body, client, context, "unpublish_channel")
@@ -422,7 +426,21 @@ def handle_unpublish_channel(
         except Exception as e:
             _logger.warning(f"Failed to notify/leave channel {sync_channel.channel_id}: {e}")
 
-    DbManager.delete_records(schemas.Sync, [schemas.Sync.id == sync_id])
+    try:
+        helpers.purge_sync(sync_id)
+    except Exception as exc:
+        # Previously any failure here was indistinguishable from a dead button.
+        _logger.error(
+            "unpublish_failed",
+            extra={"sync_id": sync_id, "group_id": group_id, "error": str(exc)},
+        )
+        with contextlib.suppress(Exception):
+            helpers.notify_admins_dm(
+                client,
+                ":warning: Unpublishing that Channel failed, so it is still published. "
+                "Please try again, and let your SyncBot operator know if it keeps failing.",
+            )
+        return
 
     _logger.info(
         "channel_unpublished",
@@ -651,8 +669,7 @@ def handle_stop_sync_confirm(
             _logger.warning(f"Failed to notify channel {sync_channel.channel_id}: {e}")
 
     if my_channel:
-        DbManager.delete_records(schemas.PostMeta, [schemas.PostMeta.sync_channel_id == my_channel.id])
-        DbManager.delete_records(schemas.SyncChannel, [schemas.SyncChannel.id == my_channel.id])
+        helpers.purge_sync_channels([my_channel])
         try:
             client.conversations_leave(channel=my_channel.channel_id)
         except Exception as e:
