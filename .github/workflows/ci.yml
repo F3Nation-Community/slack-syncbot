@@ -90,8 +90,23 @@ jobs:
       - name: Install Poetry and export plugin
         run: |
           python -m pip install --upgrade pip
-          pip install poetry
-          poetry self add poetry-plugin-export
+          # Retry the install: when a transitive dependency of Poetry (e.g.
+          # rapidfuzz) publishes a new release, its version metadata can appear on
+          # PyPI seconds before every wheel finishes propagating to the CDN, so a
+          # fresh resolve briefly fails with "Unable to find installation
+          # candidates". Riding out that short window keeps CI green without pinning
+          # Poetry's own dependency tree.
+          for attempt in 1 2 3 4 5; do
+            if pip install poetry && poetry self add poetry-plugin-export; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Poetry/export-plugin install failed after 5 attempts."
+              exit 1
+            fi
+            echo "::warning::Poetry/export-plugin install failed (attempt ${attempt}/5); retrying in $((attempt * 15))s."
+            sleep "$((attempt * 15))"
+          done
       - name: Sync requirements.txt with poetry.lock
         id: sync
         env:
@@ -255,8 +270,19 @@ jobs:
           python-version: "3.12"
       - name: Install Poetry, export plugin, and pip-audit
         run: |
-          python -m pip install --upgrade pip poetry pip-audit
-          poetry self add poetry-plugin-export
+          # See requirements-sync for why this install is retried (transient PyPI
+          # wheel-propagation races on freshly published Poetry dependencies).
+          for attempt in 1 2 3 4 5; do
+            if python -m pip install --upgrade pip poetry pip-audit && poetry self add poetry-plugin-export; then
+              break
+            fi
+            if [ "$attempt" -eq 5 ]; then
+              echo "::error::Poetry/export-plugin install failed after 5 attempts."
+              exit 1
+            fi
+            echo "::warning::Poetry/export-plugin install failed (attempt ${attempt}/5); retrying in $((attempt * 15))s."
+            sleep "$((attempt * 15))"
+          done
       - name: Audit dependencies from poetry.lock (export in-job)
         run: |
           poetry export -f requirements.txt --without-hashes -o /tmp/syncbot-requirements.txt
