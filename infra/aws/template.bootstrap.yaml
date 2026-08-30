@@ -29,6 +29,12 @@ Parameters:
     Description: >
       Prefix for the deployment artifact bucket. The bucket resource name is
       DeploymentBucketPrefix + account ID + region (see DeploymentBucket in Resources).
+  TemplateContentSha256:
+    Type: String
+    Default: ""
+    Description: >
+      sha256 of infra/aws/template.bootstrap.yaml. Set by ensure_bootstrap.sh so
+      later deploys skip CloudFormation when the file is unchanged. Do not set by hand.
 
 Conditions:
   CreateOIDC: !Equals [!Ref CreateOIDCProvider, "true"]
@@ -274,3 +280,6 @@ Outputs:
   SuggestedProdStackName:
     Description: Suggested stack name for prod environment.
     Value: syncbot-prod
+  BootstrapTemplateSha256:
+    Description: sha256 of template.bootstrap.yaml from the last bootstrap deploy.
+    Value: !Ref TemplateContentSha256

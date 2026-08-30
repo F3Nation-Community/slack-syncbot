@@ -3,15 +3,35 @@
 # aws cloudformation update-stack when changeset early validation fails
 # (e.g. AWS::EarlyValidation::ResourceExistenceCheck).
 #
-# Required env: AWS_REGION, AWS_S3_BUCKET, AWS_STACK_NAME, STAGE_NAME,
-# DATABASE_SCHEMA, and secret/credential vars below (set by the workflow).
+# Required env: AWS_REGION, AWS_STACK_NAME, STAGE_NAME (test or prod).
+# AWS_S3_BUCKET may be empty; it is then read from the bootstrap stack output
+# DeploymentBucketName. Empty DATABASE_SCHEMA reuses the live stack parameter
+# or infers syncbot_${STAGE_NAME} for a new stack.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/resolve_database_backend.sh"
+# Aliases AWS_DATABASE_MODE / DATABASE_ENGINE / EXISTING_DATABASE_HOST: see resolve_database_backend.sh.
+apply_aws_provider_env_aliases
 TEMPLATE="${SAM_TEMPLATE:-.aws-sam/build/template.yaml}"
 STACK_NAME="${AWS_STACK_NAME:?AWS_STACK_NAME is required}"
 REGION="${AWS_REGION:?AWS_REGION is required}"
+if [[ -z "${AWS_S3_BUCKET:-}" ]]; then
+  _boot="${AWS_BOOTSTRAP_STACK_NAME:-syncbot-bootstrap}"
+  AWS_S3_BUCKET="$(aws cloudformation describe-stacks \
+    --stack-name "$_boot" \
+    --region "$REGION" \
+    --query "Stacks[0].Outputs[?OutputKey=='DeploymentBucketName'].OutputValue" \
+    --output text 2>/dev/null || true)"
+  AWS_S3_BUCKET="${AWS_S3_BUCKET//$'\r'/}"
+  if [[ -z "$AWS_S3_BUCKET" || "$AWS_S3_BUCKET" == "None" ]]; then
+    echo "Error: AWS_S3_BUCKET is empty and bootstrap stack '${_boot}' has no DeploymentBucketName output." >&2
+    echo "Create the bootstrap stack with ./deploy.sh --env test (GitHub cannot create it on first deploy)." >&2
+    exit 1
+  fi
+fi
 BUCKET="${AWS_S3_BUCKET:?AWS_S3_BUCKET is required}"
 
 abort_if_stack_managed_rds() {
@@ -41,7 +61,7 @@ Do this instead (while the old stack is still serving Slack):
   2. Delete the CloudFormation app stack. RDS DeletionProtection may block
      delete-stack until you disable protection or delete the instance in the
      RDS console — do that manually after the backup.
-  3. Redeploy a fresh stack with AWS_DATABASE_MODE=existing (TiDB / your host)
+  3. Redeploy a fresh stack with DATABASE_BACKEND=mysql (TiDB / your host)
      or sqlite. Point Slack at the new Function URL / manifest.
   4. Restore the backup JSON on the empty new database.
 
@@ -50,50 +70,14 @@ EOF
   exit 1
 }
 
-resolve_aws_database_mode() {
-  local mode="${AWS_DATABASE_MODE:-}"
-  if [[ "${DATABASE_ENGINE:-}" == "sqlite" ]]; then
-    mode="sqlite"
-  fi
-  mode="${mode:-existing}"
-  case "$mode" in
-    sqlite|existing) echo "$mode" ;;
-    *)
-      echo "Error: AWS_DATABASE_MODE must be sqlite or existing (got '$mode')." >&2
-      return 1
-      ;;
-  esac
-}
-
-sam_database_engine() {
-  case "${1:-mysql}" in
-    postgresql) echo postgresql ;;
-    *) echo mysql ;;
-  esac
-}
-
-AWS_DATABASE_MODE="$(resolve_aws_database_mode)"
+resolve_database_backend aws
+require_database_credentials_for_backend
 ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
-SAM_DATABASE_ENGINE="$(sam_database_engine "${DATABASE_ENGINE:-mysql}")"
-
-if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-  if [[ -z "${DATABASE_HOST:-}" ]]; then
-    echo "Error: DATABASE_HOST is required when AWS_DATABASE_MODE=existing." >&2
-    exit 1
-  fi
-  if [[ -z "${DATABASE_USER:-}" ]]; then
-    echo "Error: DATABASE_USER is required when AWS_DATABASE_MODE=existing." >&2
-    exit 1
-  fi
-  if [[ -z "${DATABASE_PASSWORD:-}" ]]; then
-    echo "Error: DATABASE_PASSWORD is required when AWS_DATABASE_MODE=existing." >&2
-    exit 1
-  fi
-else
-  DATABASE_HOST=""
-  DATABASE_USER="${DATABASE_USER:-}"
-  DATABASE_PASSWORD="${DATABASE_PASSWORD:-}"
+if [[ -z "${STAGE_NAME:-}" || ( "$STAGE_NAME" != "test" && "$STAGE_NAME" != "prod" ) ]]; then
+  echo "Error: STAGE_NAME must be test or prod (got '${STAGE_NAME:-}')." >&2
+  exit 1
 fi
+resolve_database_schema "$STACK_NAME" "$REGION" "$STAGE_NAME"
 
 abort_if_stack_managed_rds "$STACK_NAME" "$REGION"
 
@@ -156,14 +140,13 @@ print(json.dumps(result))
 # Keys must match remaining SAM parameters — do not pass removed RDS/admin/VPC params.
 emit_override_lines() {
   printf 'Stage=%s\n' "${STAGE_NAME}"
-  printf 'DatabaseMode=%s\n' "${AWS_DATABASE_MODE}"
-  printf 'DatabaseEngine=%s\n' "${SAM_DATABASE_ENGINE}"
+  printf 'DatabaseBackend=%s\n' "${DATABASE_BACKEND}"
   printf 'EnableKeepWarm=%s\n' "${ENABLE_KEEP_WARM}"
   printf 'DataEncryptionKey=%s\n' "${DATA_ENCRYPTION_KEY}"
   printf 'DatabasePassword=%s\n' "${DATABASE_PASSWORD:-}"
   printf 'DatabaseUser=%s\n' "${DATABASE_USER:-}"
-  printf 'ExistingDatabaseHost=%s\n' "${DATABASE_HOST:-}"
-  printf 'ExistingDatabasePort=%s\n' "${DATABASE_PORT:-}"
+  printf 'DatabaseHost=%s\n' "${DATABASE_HOST:-}"
+  printf 'DatabasePort=%s\n' "${DATABASE_PORT:-}"
   printf 'DatabaseSchema=%s\n' "${DATABASE_SCHEMA}"
   printf 'LogLevel=%s\n' "${LOG_LEVEL:-INFO}"
   printf 'RequireAdmin=%s\n' "${REQUIRE_ADMIN:-true}"
@@ -173,7 +156,7 @@ emit_override_lines() {
   printf 'SyncbotPublicUrl=%s\n' "${SYNCBOT_PUBLIC_URL:-}"
   printf 'PrimaryWorkspace=%s\n' "${PRIMARY_WORKSPACE:-}"
   printf 'EnableDbReset=%s\n' "${ENABLE_DB_RESET:-}"
-  printf 'EnableXRay=%s\n' "${ENABLE_XRAY:-false}"
+  printf 'EnableXRay=%s\n' "${AWS_ENABLE_XRAY:-false}"
   printf 'DatabaseTlsEnabled=%s\n' "${DATABASE_TLS_ENABLED:-}"
   printf 'DatabaseSslCaPath=%s\n' "${DATABASE_SSL_CA_PATH:-}"
   printf 'SlackClientID=%s\n' "${SLACK_CLIENT_ID}"

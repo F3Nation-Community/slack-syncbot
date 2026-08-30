@@ -5,7 +5,7 @@
 # pushes to Artifact Registry, and runs `gcloud run services update --image`.
 #
 # Required GitHub variables (repository or environment):
-#   DEPLOY_TARGET=gcp
+#   GITHUB_DEPLOY_TARGET=gcp
 #   GCP_PROJECT_ID
 #   GCP_REGION
 #   GCP_WORKLOAD_IDENTITY_PROVIDER
@@ -41,7 +41,7 @@ permissions:
 
 jobs:
   deploy:
-    if: vars.DEPLOY_TARGET == 'gcp' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
+    if: (vars.GITHUB_DEPLOY_TARGET || vars.DEPLOY_TARGET) == 'gcp' && (github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod')
     runs-on: ubuntu-latest
     environment: ${{ github.event.inputs.environment || github.ref_name }}
     steps:
@@ -99,7 +99,29 @@ jobs:
             --region "${{ vars.GCP_REGION }}" \
             --image "$IMAGE"; then
             echo "::error::gcloud run services update failed."
-            echo "::error::If the service is missing, run terraform apply first: ./deploy.sh --env ${STAGE} gcp"
+            echo "::error::If the service is missing, run terraform apply first: ./deploy.sh --env ${STAGE}"
             echo "::error::If this is a WIF 403, github_repo must equal owner/repo of THIS GitHub repository (the one with test/prod), not sprocktech/syncbot when deploying from a fork."
             exit 1
           fi
+
+      - name: Post-deploy summary
+        env:
+          STAGE: ${{ steps.stage.outputs.stage }}
+        run: |
+          set -euo pipefail
+          SERVICE="syncbot-${STAGE}"
+          BASE_URL=$(gcloud run services describe "$SERVICE" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --format 'value(status.url)')
+          INSTALL_URL="${BASE_URL}/slack/install"
+          OAUTH_URL="${BASE_URL}/slack/oauth_redirect"
+          EVENTS_URL="${BASE_URL}/slack/events"
+          cat >> "$GITHUB_STEP_SUMMARY" <<EOF
+          ## SyncBot Deploy ($STAGE)
+          - **Service**: $SERVICE
+          - **Base URL**: $BASE_URL
+          - **Install URL**: $INSTALL_URL
+          - **OAuth Redirect URL**: $OAUTH_URL
+          - **Event / Request URL**: $EVENTS_URL
+          EOF

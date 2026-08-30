@@ -19,6 +19,19 @@ CI_SAM = (INFRA_AWS / "scripts" / "ci_sam_deploy_with_fallback.sh").read_text(en
 WORKFLOW = (REPO_ROOT / ".github" / "workflows" / "deploy-aws.yml").read_text(encoding="utf-8")
 
 
+def test_aws_region_default_is_us_east_1() -> None:
+    ensure = (INFRA_AWS / "scripts" / "ensure_bootstrap.sh").read_text(encoding="utf-8")
+    print_boot = (INFRA_AWS / "scripts" / "print-bootstrap-outputs.sh").read_text(encoding="utf-8")
+    samconfig = (REPO_ROOT / "samconfig.toml").read_text(encoding="utf-8")
+    example = (REPO_ROOT / ".env.deploy.example").read_text(encoding="utf-8")
+    for text in (DEPLOY_SH, ensure, print_boot, samconfig, example):
+        assert "us-east-2" not in text
+    assert "${AWS_REGION:-us-east-1}" in DEPLOY_SH
+    assert "${AWS_REGION:-us-east-1}" in ensure
+    assert "${AWS_REGION:-us-east-1}" in print_boot
+    assert 'region = "us-east-1"' in samconfig
+
+
 def test_template_has_no_rds_or_vpc() -> None:
     assert "AWS::RDS::" not in TEMPLATE
     assert "RDSInstance" not in TEMPLATE
@@ -33,8 +46,15 @@ def test_template_has_no_rds_or_vpc() -> None:
 
 
 def test_template_sqlite_and_keep_warm() -> None:
-    assert "DatabaseMode:" in TEMPLATE
-    assert "EnableKeepWarm:" in TEMPLATE
+    assert "DatabaseBackend:" in TEMPLATE
+    assert "DatabaseMode:" not in TEMPLATE
+    assert "ExistingDatabaseHost:" not in TEMPLATE
+    assert "ExistingDatabasePort:" not in TEMPLATE
+    assert "DatabaseEngine:" not in TEMPLATE
+    assert "MemorySize: 256" in TEMPLATE
+    assert "MemorySize: 128" not in TEMPLATE
+    assert "Timeout: 30" in TEMPLATE
+    assert "Timeout: 10" not in TEMPLATE
     assert "sqlite:////tmp/syncbot.db" in TEMPLATE
     assert "LITESTREAM_S3_BUCKET" in TEMPLATE
     assert "ReservedConcurrentExecutions" in TEMPLATE
@@ -75,18 +95,43 @@ def test_wrapper_restore_then_init_then_replicate() -> None:
 
 def test_deploy_scripts_modes_and_rds_abort() -> None:
     assert "AWS_DATABASE_MODE" in DEPLOY_SH
+    assert "DATABASE_ENGINE" in DEPLOY_SH
     assert "abort_if_stack_managed_rds" in DEPLOY_SH
     assert "rds_lookup_" not in DEPLOY_SH
     assert "stack-managed RDS vs existing" not in DEPLOY_SH
     assert "Use stack-managed RDS" not in DEPLOY_SH
     assert "ENABLE_KEEP_WARM" in DEPLOY_SH
-    assert "Existing database host (TiDB / MySQL / your own RDS)" in DEPLOY_SH
+    assert "MySQL (TiDB / your own host)" in DEPLOY_SH
     assert "SQLite + Litestream to S3" in DEPLOY_SH
     assert "docs/BACKUP_AND_MIGRATION.md" in DEPLOY_SH
     assert "There is no in-place migrate from stack RDS" in DEPLOY_SH
+    assert "_gh_push_from_env_file DATABASE_BACKEND" in DEPLOY_SH
+    assert "push_github_aws_ci_config" in DEPLOY_SH
+    assert "PRIMARY_WORKSPACE" in DEPLOY_SH
+    assert "env_file_assignment_value" in DEPLOY_SH
+    assert "gh_variable_set_env STAGE_NAME" not in DEPLOY_SH
+    assert "gh variable set STAGE_NAME" not in DEPLOY_SH
+    assert "gh variable set ENABLE_XRAY" not in DEPLOY_SH
+    assert "gh variable set BOOTSTRAP_STACK_NAME" not in DEPLOY_SH
+    assert "gh variable set DEPLOY_TARGET" not in DEPLOY_SH
+    assert "gh_variable_set_env AWS_DATABASE_MODE" not in DEPLOY_SH
+    assert "gh variable set AWS_DATABASE_MODE" not in DEPLOY_SH
+    delete_fn = DEPLOY_SH[DEPLOY_SH.find("gh_delete_legacy_database_vars()") : DEPLOY_SH.find("params_to_json")]
+    assert "AWS_DATABASE_MODE" not in delete_fn
+    assert "DATABASE_ENGINE" not in delete_fn
+    assert "DATABASE_ADMIN_USER" in delete_fn
 
     assert "abort_if_stack_managed_rds" in CI_SAM
-    assert "DatabaseMode=" in CI_SAM
+    assert "AWS_DATABASE_MODE" in CI_SAM
+    assert "DATABASE_ENGINE" in CI_SAM
+    assert "DatabaseBackend=" in CI_SAM
+    assert "DatabaseMode=" not in CI_SAM
+    assert "ExistingDatabaseHost=" not in CI_SAM
+    assert "resolve_database_schema" in CI_SAM
+    assert 'DATABASE_SCHEMA="${DATABASE_SCHEMA:-syncbot}"' not in CI_SAM
+    assert "DeploymentBucketName" in CI_SAM
+    assert "AWS_S3_BUCKET is empty and bootstrap" in CI_SAM
+    assert "STAGE_NAME must be test or prod" in CI_SAM
     assert "EnableKeepWarm=" in CI_SAM
     assert "ExistingDatabaseAdminUser" not in CI_SAM
     assert "DatabaseInstanceClass" not in CI_SAM
@@ -95,14 +140,63 @@ def test_deploy_scripts_modes_and_rds_abort() -> None:
     assert "docs/BACKUP_AND_MIGRATION.md" in CI_SAM
 
 
+def test_deploy_script_requires_aws_session_during_prereqs() -> None:
+    matrix_at = DEPLOY_SH.index('prereqs_print_cli_status_matrix "AWS"')
+    session_at = DEPLOY_SH.index("ensure_aws_authenticated", matrix_at)
+    split_at = DEPLOY_SH.index("Non-interactive fast path", matrix_at)
+    assert session_at < split_at
+    assert "no active AWS CLI session" in DEPLOY_SH
+    assert "prompt_yes_no \"Run 'aws" not in DEPLOY_SH
+
+
 def test_deploy_aws_workflow_drops_admin_and_passes_mode() -> None:
+    assert "DATABASE_BACKEND:" in WORKFLOW
     assert "AWS_DATABASE_MODE" in WORKFLOW
+    assert "DATABASE_ENGINE" in WORKFLOW
+    assert "vars.DATABASE_BACKEND ||" not in WORKFLOW
+    assert "vars.AWS_DATABASE_MODE ||" not in WORKFLOW
+    assert "vars.DATABASE_ENGINE ||" not in WORKFLOW
     assert "ENABLE_KEEP_WARM" in WORKFLOW
     assert "DATABASE_ADMIN_USER" not in WORKFLOW
     assert "DATABASE_ADMIN_PASSWORD" not in WORKFLOW
     assert "DATABASE_NETWORK_MODE" not in WORKFLOW
     assert "DATABASE_CREATE_APP_USER" not in WORKFLOW
     assert "DATABASE_USERNAME_PREFIX" not in WORKFLOW
+
+
+def test_deploy_aws_workflow_hardcodes_stage_and_prefers_prefixed_vars() -> None:
+    assert "vars.STAGE_NAME" not in WORKFLOW
+    assert "STAGE_NAME: test" in WORKFLOW
+    assert "STAGE_NAME: prod" in WORKFLOW
+    assert "vars.AWS_STACK_NAME || 'syncbot-test'" in WORKFLOW
+    assert "vars.AWS_STACK_NAME || 'syncbot-prod'" in WORKFLOW
+    assert "vars.AWS_BOOTSTRAP_STACK_NAME || vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap'" in WORKFLOW
+    assert "vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false'" in WORKFLOW
+    assert "vars.GITHUB_DEPLOY_TARGET || vars.DEPLOY_TARGET" in WORKFLOW
+    example = (REPO_ROOT / ".env.deploy.example").read_text(encoding="utf-8")
+    assert "AWS_STACK_NAME=" in example
+    assert "\nSTACK_NAME=" not in example
+    assert "AWS_BOOTSTRAP_STACK_NAME=" in example
+    assert "\nBOOTSTRAP_STACK_NAME=" not in example
+    assert "AWS_ENABLE_XRAY=" in example
+    assert "\nENABLE_XRAY=" not in example
+    assert "\nUPDATE_STACK=" not in example
+    assert "DEPLOYMENT_S3_BUCKET" not in example
+    assert "AWS_ROLE_ARN" not in example
+    assert "\nCLOUD_RUN_IMAGE=" not in example
+
+
+def test_deploy_aws_workflow_uses_ensure_bootstrap() -> None:
+    assert WORKFLOW.count("infra/aws/scripts/ensure_bootstrap.sh") == 2
+    assert "get-template" not in WORKFLOW
+    assert "sha256sum infra/aws/template.bootstrap.yaml" not in WORKFLOW
+
+
+def test_bootstrap_template_records_content_hash_parameter() -> None:
+    assert "TemplateContentSha256:" in BOOTSTRAP
+    assert "BootstrapTemplateSha256:" in BOOTSTRAP
+    assert "ensure_bootstrap.sh" in DEPLOY_SH
+    assert "Deploy bootstrap stack now?" not in DEPLOY_SH
 
 
 def test_initialize_database_does_not_emit_create_database() -> None:

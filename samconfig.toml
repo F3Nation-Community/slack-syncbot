@@ -24,7 +24,7 @@ use_container = true
 stack_name = "syncbot-test"
 resolve_s3 = true
 s3_prefix = "syncbot-test"
-region = "us-east-2"
+region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
 parameter_overrides = "Stage=test"
@@ -37,7 +37,7 @@ use_container = true
 stack_name = "syncbot-prod"
 resolve_s3 = true
 s3_prefix = "syncbot-prod"
-region = "us-east-2"
+region = "us-east-1"
 capabilities = "CAPABILITY_IAM"
 confirm_changeset = true
 parameter_overrides = "Stage=prod"

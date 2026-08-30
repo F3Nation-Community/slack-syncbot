@@ -1,4 +1,4 @@
-# SyncBot on GCP — Cloud Run + SQLite/Litestream (default) or existing MySQL/TiDB.
+# SyncBot on GCP — Cloud Run + SQLite/Litestream (default) or mysql/postgresql.
 # No Cloud SQL. Secrets are Terraform variables injected as Cloud Run env.
 
 terraform {
@@ -17,14 +17,24 @@ provider "google" {
 }
 
 locals {
-  name_prefix           = "syncbot-${var.stage}"
-  is_sqlite             = var.database_mode == "sqlite"
-  use_existing_database = var.database_mode == "existing"
+  name_prefix = "syncbot-${var.stage}"
+  resolved_database_backend = (
+    trimspace(var.database_backend) != "" ? trimspace(var.database_backend) : (
+      var.database_mode == "sqlite" ? "sqlite" : "mysql"
+    )
+  )
+  is_sqlite             = local.resolved_database_backend == "sqlite"
+  use_existing_database = !local.is_sqlite
+  resolved_database_host = (
+    trimspace(var.database_host) != "" ? trimspace(var.database_host) : trimspace(var.existing_db_host)
+  )
   db_user = local.use_existing_database ? (
     trimspace(var.database_user) != "" ? trimspace(var.database_user) : trimspace(var.existing_db_user)
   ) : ""
-  db_schema  = local.use_existing_database ? var.existing_db_schema : ""
-  db_backend = local.is_sqlite ? "sqlite" : var.database_backend
+  db_schema = local.use_existing_database ? (
+    trimspace(var.database_schema) != "" ? trimspace(var.database_schema) : var.existing_db_schema
+  ) : ""
+  db_backend = local.resolved_database_backend
 
   syncbot_public_url_effective = trimspace(var.syncbot_public_url_override) != "" ? trimspace(var.syncbot_public_url_override) : ""
 
@@ -48,11 +58,10 @@ locals {
 
   existing_plain_env = merge(
     {
-      DATABASE_HOST              = var.existing_db_host
+      DATABASE_HOST              = local.resolved_database_host
       DATABASE_USER              = local.db_user
       DATABASE_SCHEMA            = local.db_schema
       DATABASE_BACKEND           = local.db_backend
-      DATABASE_PORT              = var.database_port
       SLACK_USER_SCOPES          = var.slack_user_scopes
       LOG_LEVEL                  = var.log_level
       REQUIRE_ADMIN              = var.require_admin
@@ -66,6 +75,7 @@ locals {
     trimspace(var.enable_db_reset) != "" ? { ENABLE_DB_RESET = var.enable_db_reset } : {},
     var.database_tls_enabled != "" ? { DATABASE_TLS_ENABLED = var.database_tls_enabled } : {},
     trimspace(var.database_ssl_ca_path) != "" ? { DATABASE_SSL_CA_PATH = var.database_ssl_ca_path } : {},
+    trimspace(var.database_port) != "" ? { DATABASE_PORT = trimspace(var.database_port) } : {},
   )
 
   runtime_plain_env = local.is_sqlite ? local.sqlite_plain_env : local.existing_plain_env
@@ -232,7 +242,8 @@ resource "google_cloud_run_v2_service" "syncbot" {
   ingress  = "INGRESS_TRAFFIC_ALL"
 
   labels = {
-    syncbot_database_mode = var.database_mode
+    syncbot_database_backend = local.resolved_database_backend
+    syncbot_database_mode    = local.is_sqlite ? "sqlite" : "existing"
   }
 
   template {
@@ -283,8 +294,8 @@ resource "google_cloud_run_v2_service" "syncbot" {
       template[0].containers[0].image,
     ]
     precondition {
-      condition     = var.database_mode != "existing" || (trimspace(var.existing_db_host) != "" && trimspace(var.database_password) != "" && local.db_user != "")
-      error_message = "existing_db_host, database_password, and database_user (or existing_db_user) are required when database_mode is existing."
+      condition     = local.is_sqlite || (local.resolved_database_host != "" && trimspace(var.database_password) != "" && local.db_user != "")
+      error_message = "database_host, database_password, and database_user are required when database_backend is mysql or postgresql."
     }
   }
 
