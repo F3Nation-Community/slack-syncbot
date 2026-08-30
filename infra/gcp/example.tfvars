@@ -1,8 +1,8 @@
 # Example Terraform variables for infra/gcp (do not commit real secrets).
 # Copy to terraform.tfvars locally if you apply by hand instead of ./deploy.sh.
 
+# region defaults to us-central1 if omitted
 project_id = "YOUR_PROJECT_ID"
-# Terraform default if omitted is us-central1
 region     = "YOUR_GCP_REGION"
 stage      = "test"
 
