@@ -56,7 +56,7 @@ Set **`GITHUB_REPO=YOUR_GITHUB_OWNER/YOUR_REPO`** in `.env.deploy.test` or `.env
 
 **Prerequisites** (short list in the root [README](../README.md); more detail below):
 
-- **AWS:** AWS CLI v2, SAM CLI, Docker (`sam build --use-container`), Python 3 (`python3`), **`curl`** (for the Slack manifest API), and an **active AWS CLI session**. **Optional:** `gh` for GitHub Actions setup. The script prints a status line per tool (✓ / !) and Slack doc links. If `gh` is missing, it asks whether to continue. A missing cloud login fails immediately; the script does not open a login prompt.
+- **AWS:** AWS CLI v2, SAM CLI, Python 3 (`python3`), **`curl`** (for the Slack manifest API), and an **active AWS CLI session**. Docker is no longer needed: the Lambda build runs on your machine and asks pip for the runtime's wheels, so the artifact is the same whether you build on macOS, Linux, arm64, or x86_64. **Optional:** `gh` for GitHub Actions setup. The script prints a status line per tool (✓ / !) and Slack doc links. If `gh` is missing, it asks whether to continue. A missing cloud login fails immediately; the script does not open a login prompt.
 - **GCP:** Terraform, `gcloud`, Python 3, **`curl`**, an **active `gcloud` login**, and Application Default Credentials. **Optional:** `gh`, with the same behavior as AWS.
 
 **Slack install error `invalid_scope` / “Invalid permissions requested”:** The OAuth authorize URL is built from **`SLACK_BOT_SCOPES`** and **`SLACK_USER_SCOPES`** in your deployed app (Lambda / Cloud Run). They must **exactly match** the scopes on your Slack app (`slack-manifest.json` → **OAuth & Permissions** after manifest update) and `BOT_SCOPES` / `USER_SCOPES` in `syncbot/slack_manifest_scopes.py`. SAM and GCP Terraform defaults include both bot and user scope strings; if your environment has **stale** overrides, redeploy with parameters matching the manifest or update the Slack app to match. On GCP, `slack_user_scopes` must stay aligned with `oauth_config.scopes.user`. **Renames (older stacks):** `SLACK_SCOPES` → `SLACK_BOT_SCOPES`; SAM `SlackOauthScopes` → `SlackOauthBotScopes`; SAM `SlackUserOauthScopes` → `SlackOauthUserScopes` (`SLACK_USER_SCOPES` unchanged).
@@ -75,11 +75,11 @@ Set **`GITHUB_REPO=YOUR_GITHUB_OWNER/YOUR_REPO`** in `.env.deploy.test` or `.env
 
 Runs from repo root (or `./deploy.sh --env test` with `CLOUD_PROVIDER=aws`). It:
 
-1. **Prerequisites** — Verifies `aws`, `sam`, `docker`, `python3`, `curl` are on `PATH` (with install hints). Prints a status matrix; if optional `gh` is missing, shows install hints and asks whether to continue. Prints Slack app / API token / manifest API links. **Fails immediately** if there is no active AWS CLI session (`aws sts get-caller-identity`); log in with `aws login`, `aws sso login`, or `aws configure` and rerun. The script does not open a login prompt.
+1. **Prerequisites** — Verifies `aws`, `sam`, `python3`, `curl` are on `PATH` (with install hints). Prints a status matrix; if optional `gh` is missing, shows install hints and asks whether to continue. Prints Slack app / API token / manifest API links. **Fails immediately** if there is no active AWS CLI session (`aws sts get-caller-identity`); log in with `aws login`, `aws sso login`, or `aws configure` and rerun. The script does not open a login prompt.
 2. **Bootstrap** — Creates the bootstrap stack if it is missing, and syncs it when `template.bootstrap.yaml` has changed (or when you passed `--bootstrap`). Set `SYNCBOT_SKIP_BOOTSTRAP_SYNC=1` to create-if-missing only.
 3. **App stack identity** — Prompts for stage (`test`/`prod`) and stack name; detects an existing CloudFormation stack for update.
 4. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Build/Deploy** (full config + SAM), **CI/CD** (`gh` / GitHub Actions), **Slack API**. Omitting **Build/Deploy** requires an existing stack for tasks that need live outputs.
-5. **Configuration** (if Build/Deploy selected) — then **SAM build** (`--use-container`) and `sam deploy`. If the live stack still has stack-managed RDS, deploy **aborts** (see [Upgrading AWS](#upgrading-aws-stack-managed-rds-removal)).
+5. **Configuration** (if Build/Deploy selected) — then **SAM build** (`--build-in-source`) and `sam deploy`. If the live stack still has stack-managed RDS, deploy **aborts** (see [Upgrading AWS](#upgrading-aws-stack-managed-rds-removal)).
 
    | Knob | Behavior |
    |------|----------|
@@ -295,7 +295,7 @@ Map **GitHubDeployRoleArn** → `AWS_ROLE_TO_ASSUME`, **DeploymentBucketName** �
 ### 2. Build and deploy the app stack
 
 ```bash
-sam build -t infra/aws/template.yaml --use-container
+sam build -t infra/aws/template.yaml --build-in-source
 sam deploy \
   -t .aws-sam/build/template.yaml \
   --stack-name YOUR_STACK_NAME \
@@ -315,6 +315,10 @@ sam deploy \
     DatabasePassword=... \
     EnableKeepWarm=true
 ```
+
+**`--build-in-source` is required, and `--use-container` will not work.** The function's `CodeUri` is `infra/aws/lambda/`, but its `Makefile` copies the application from `syncbot/` at the repo root. SAM normally runs that Makefile from a scratch copy of `CodeUri` (inside a container, that is all it mounts), so the repo root is not reachable and the build fails with `cp: cannot stat '.../syncbot/.'`. Building in source runs the Makefile where it lives, so the relative path resolves. The `test` and `prod` profiles in [`samconfig.toml`](../samconfig.toml) already set `build_in_source`.
+
+Because the build no longer runs in a Lambda container, the Makefile asks pip for the runtime's wheels explicitly (CPython 3.12, `manylinux` x86_64) instead of the build host's. That is what keeps a macOS or arm64 laptop from producing an artifact that imports fine locally and then fails on every invocation in Lambda.
 
 Use **`sam deploy --guided`** the first time if you prefer prompts. Set `Stage` to `test` or `prod` (the [`samconfig.toml`](../samconfig.toml) profiles already do that). For **mysql** or **postgresql** set `DatabaseBackend`, `DatabaseHost`, `DatabaseUser`, `DatabasePassword`, and optional `DatabasePort` (empty uses the engine default; TiDB Cloud often uses **4000**). For **sqlite** set `DatabaseBackend=sqlite` (no host, user, or password). An empty `DatabaseHost` does **not** create RDS.
 

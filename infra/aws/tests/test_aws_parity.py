@@ -77,8 +77,43 @@ def test_bootstrap_has_no_rds_or_vpc_create() -> None:
 def test_makefile_pins_litestream_and_installs_app() -> None:
     assert "LITESTREAM_VERSION := v0.3.13" in MAKEFILE
     assert "LITESTREAM_SHA256 := eb75a3de5cab03875cdae9f5f539e6aedadd66607003d9b1e7a9077948818ba0" in MAKEFILE
-    assert 'pip install -r "$(SYNCBOT_SRC)/requirements.txt"' in MAKEFILE
+    assert 'cp -a "$(SYNCBOT_SRC)/." "$(ARTIFACTS_DIR)/"' in MAKEFILE
+    assert 'pip install -r "$(LAMBDA_REQUIREMENTS)" -t "$(ARTIFACTS_DIR)"' in MAKEFILE
     assert "sha256sum -c" in MAKEFILE
+
+
+def test_makefile_resolves_paths_independently_of_make_working_directory() -> None:
+    """SAM runs make from a scratch directory, so $(CURDIR) is not the CodeUri."""
+    assert "MAKEFILE_LIST" in MAKEFILE
+    assert "$(CURDIR)" not in MAKEFILE
+    assert 'cp "$(LAMBDA_DIR)/handler.py"' in MAKEFILE
+    assert 'cp "$(LAMBDA_DIR)/litestream.yml"' in MAKEFILE
+
+
+def test_makefile_installs_wheels_for_lambda_runtime_not_build_host() -> None:
+    """A macOS or arm64 host must not leak its own wheels into the artifact."""
+    assert "--only-binary=:all:" in MAKEFILE
+    assert "--implementation cp" in MAKEFILE
+    assert "--python-version 3.12" in MAKEFILE
+    assert "--platform manylinux2014_x86_64" in MAKEFILE
+    # pip evaluates markers against the host, so they are stripped before install.
+    assert "sed 's/ ;.*$$//'" in MAKEFILE
+
+
+def test_aws_build_is_in_source_not_containerised() -> None:
+    """syncbot/ lives above CodeUri; a container build never mounts it."""
+    samconfig = (REPO_ROOT / "samconfig.toml").read_text(encoding="utf-8")
+    root_deploy = (REPO_ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert DEPLOY_SH.count('sam build -t "$APP_TEMPLATE" --build-in-source') == 2
+    assert "--use-container" not in DEPLOY_SH
+    assert "sam build -t infra/aws/template.yaml --build-in-source" in WORKFLOW
+    assert "--use-container" not in WORKFLOW
+    assert samconfig.count("build_in_source = true") == 3
+    assert "use_container" not in samconfig
+    # Docker was only ever needed for the container build.
+    assert "prereqs_require_cmd docker" not in DEPLOY_SH
+    assert 'prereqs_print_cli_status_matrix "AWS" aws sam python3 curl' in DEPLOY_SH
+    assert "prereqs_hint_docker" not in root_deploy
 
 
 def test_wrapper_restore_then_init_then_replicate() -> None:

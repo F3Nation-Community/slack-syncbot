@@ -1058,11 +1058,10 @@ handle_unhealthy_stack_state() {
 echo "=== Prerequisites ==="
 prereqs_require_cmd aws prereqs_hint_aws_cli
 prereqs_require_cmd sam prereqs_hint_sam_cli
-prereqs_require_cmd docker prereqs_hint_docker
 prereqs_require_cmd python3 prereqs_hint_python3
 prereqs_require_cmd curl prereqs_hint_curl
 
-prereqs_print_cli_status_matrix "AWS" aws sam docker python3 curl
+prereqs_print_cli_status_matrix "AWS" aws sam python3 curl
 ensure_aws_authenticated
 
 if [[ ! -f "$APP_TEMPLATE" ]]; then
@@ -1158,7 +1157,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   )
 
   echo "=== SAM Build ==="
-  sam build -t "$APP_TEMPLATE" --use-container
+  sam build -t "$APP_TEMPLATE" --build-in-source
 
   echo "=== SAM Deploy ==="
   sam_deploy_or_fallback
@@ -1592,7 +1591,7 @@ PARAMS+=(
 
 echo "=== SAM Build ==="
 echo "Building app..."
-sam build -t "$APP_TEMPLATE" --use-container
+sam build -t "$APP_TEMPLATE" --build-in-source
 
 echo "=== SAM Deploy ==="
 echo "Deploying stack..."
