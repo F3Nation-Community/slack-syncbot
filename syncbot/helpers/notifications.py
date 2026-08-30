@@ -217,7 +217,20 @@ def purge_stale_soft_deletes() -> int:
                 except Exception as e:
                     _logger.warning(f"purge: failed to notify member {member.workspace_id}: {e}")
 
-        DbManager.delete_records(schemas.Workspace, [schemas.Workspace.id == ws.id])
+        # purge_workspace, not a bare Workspace delete: seven foreign keys across
+        # six tables still reference this row, so a parent-first delete fails on
+        # MySQL with error 1451 and the retention purge silently stops working.
+        from helpers.sync_cleanup import purge_workspace
+
+        try:
+            purge_workspace(ws.id)
+        except Exception as e:
+            _logger.error(
+                "purge_workspace_failed",
+                extra={"workspace_id": ws.id, "error": str(e)},
+            )
+            continue
+
         purged += 1
 
     if purged:

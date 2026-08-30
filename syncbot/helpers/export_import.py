@@ -222,9 +222,15 @@ def restore_full_backup(
             _restore_raw_table(table_name, rows)
             continue
         cls = table_to_schema[table_name]
+        # Backups taken before a column was dropped still carry it; passing an
+        # unknown kwarg to the model would raise. Skip anything the current
+        # schema no longer has (e.g. workspace_groups.created_by_workspace_id).
+        known_columns = {col.name for col in cls.__table__.columns}
         for row in rows:
             kwargs = {}
             for k, v in row.items():
+                if k not in known_columns:
+                    continue
                 if v is None:
                     kwargs[k] = None
                 elif isinstance(v, str) and k in datetime_keys:
@@ -236,6 +242,10 @@ def restore_full_backup(
                     kwargs[k] = Decimal(str(v))
                 else:
                     kwargs[k] = v
+            # Legacy backups use the pre-003 role name. Without this the Home tab
+            # owner label silently disappears and the workspace loses owner rights.
+            if table_name == "workspace_group_members" and kwargs.get("role") == "creator":
+                kwargs["role"] = "owner"
             rec = cls(**kwargs)
             DbManager.merge_record(rec)
             if table_name == "workspaces" and rec.team_id:
@@ -296,7 +306,8 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
     for membership in memberships:
         g = DbManager.get_record(schemas.WorkspaceGroup, membership.group_id)
         if g:
-            groups_data.append({"name": g.name, "role": membership.role})
+            role = "owner" if membership.role == "creator" else membership.role
+            groups_data.append({"name": g.name, "role": role})
 
     # Syncs that have at least one SyncChannel for W
     sync_channels_w = DbManager.find_records(

@@ -264,7 +264,6 @@ def generate_federation_code(workspace_id: int, label: str | None = None) -> tup
         invite_code=raw_code,
         status="active",
         created_at=now,
-        created_by_workspace_id=workspace_id,
     )
     DbManager.create_record(group)
 
@@ -272,7 +271,7 @@ def generate_federation_code(workspace_id: int, label: str | None = None) -> tup
         group_id=group.id,
         workspace_id=workspace_id,
         status="active",
-        role="creator",
+        role="owner",
         joined_at=now,
     )
     DbManager.create_record(member)

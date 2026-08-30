@@ -75,14 +75,24 @@ class WorkspaceGroup(BaseClass, GetDBClass):
     invite_code = Column(String(20), unique=True, nullable=False)
     status = Column(String(20), nullable=False, default="active")
     created_at = Column(DateTime, nullable=False)
-    created_by_workspace_id = Column(Integer, ForeignKey("workspaces.id"), nullable=False)
 
     def get_id():
         return WorkspaceGroup.id
 
 
 class WorkspaceGroupMember(BaseClass, GetDBClass):
-    """Membership record linking a workspace (or federated workspace) to a group."""
+    """Membership record linking a workspace (or federated workspace) to a group.
+
+    ``role`` is one of ``owner`` or ``member``. ``admin`` is reserved in the
+    vocabulary but is deliberately never written, because no permission attaches
+    to it yet and an unused value invites people to set it and expect behavior.
+
+    Only ``owner`` is load-bearing: owners may promote another workspace, may
+    leave only while another active owner remains, and may disband a group they
+    solely own and solely publish into. ``member`` is otherwise descriptive — it
+    grants no restrictions beyond the owner-gated actions above, and all
+    per-user authorization still runs through ``helpers.is_user_authorized``.
+    """
 
     __tablename__ = "workspace_group_members"
     id = Column(Integer, primary_key=True)

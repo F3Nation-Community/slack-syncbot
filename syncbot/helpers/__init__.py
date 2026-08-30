@@ -30,6 +30,20 @@ from helpers.files import (
     download_slack_files,
     upload_files_to_slack,
 )
+from helpers.group_roles import (
+    MEMBER,
+    OWNER,
+    can_disband,
+    can_workspace_leave,
+    ensure_group_has_owner,
+    get_active_members,
+    get_active_owners,
+    get_other_publisher_workspace_ids,
+    get_promotable_members,
+    get_retained_owners,
+    is_workspace_owner,
+    succeed_ownership,
+)
 from helpers.notifications import (
     get_admin_ids,
     notify_admins_dm,
@@ -58,7 +72,7 @@ from helpers.slack_api import (
     slack_retry,
     update_modal,
 )
-from helpers.sync_cleanup import purge_sync, purge_sync_channels
+from helpers.sync_cleanup import purge_sync, purge_sync_channels, purge_workspace
 from helpers.user_matching import (
     _get_user_profile,
     _normalize_name,
@@ -139,10 +153,23 @@ __all__ = [
     "notify_admins_dm_blocks",
     "notify_synced_channels",
     "parse_mentioned_users",
+    "MEMBER",
+    "OWNER",
+    "can_disband",
+    "can_workspace_leave",
+    "ensure_group_has_owner",
+    "get_active_members",
+    "get_active_owners",
+    "get_other_publisher_workspace_ids",
+    "get_promotable_members",
+    "get_retained_owners",
+    "is_workspace_owner",
     "post_message",
     "purge_stale_soft_deletes",
     "purge_sync",
     "purge_sync_channels",
+    "purge_workspace",
+    "succeed_ownership",
     "resolve_channel_name",
     "resolve_channel_references",
     "refresh_after_full",
