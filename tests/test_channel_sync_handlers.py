@@ -13,6 +13,7 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 from handlers.channel_sync import (  # noqa: E402
     handle_publish_channel_submit_ack,
     handle_publish_mode_submit_ack,
+    handle_stop_sync_confirm,
     handle_subscribe_channel_submit,
     handle_unpublish_channel,
 )
@@ -74,6 +75,67 @@ class TestUnpublishChannel:
             handle_unpublish_channel(body, MagicMock(), MagicMock(), context={})
 
         assert not purge.called
+
+
+class TestStopSyncConfirm:
+    """Stop-sync is a subscriber action; the publisher must never strand a sync."""
+
+    SYNC_ID = 42
+    PUBLISHER_WS = 1
+    SUBSCRIBER_WS = 2
+
+    def _channel(self, cid, ws):
+        return SimpleNamespace(id=cid, workspace_id=ws, channel_id=f"C_{cid}", status="active")
+
+    def _run(self, *, acting_ws, publisher_ws, all_channels):
+        workspace = SimpleNamespace(id=acting_ws, team_id="T1")
+        sync = SimpleNamespace(id=self.SYNC_ID, publisher_workspace_id=publisher_ws, group_id=None)
+
+        with (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.channel_sync._parse_private_metadata", return_value={"sync_id": self.SYNC_ID}),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=sync),
+            patch("handlers.channel_sync.DbManager.find_records", return_value=all_channels),
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
+            patch("handlers.channel_sync.helpers.get_workspace_by_id", return_value=SimpleNamespace(bot_token=None)),
+            patch("handlers.channel_sync.helpers.purge_sync_channels") as purge_channels,
+            patch("handlers.channel_sync.helpers.purge_sync") as purge_sync,
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_stop_sync_confirm({}, MagicMock(), MagicMock(), context={})
+
+        return purge_channels, purge_sync
+
+    def test_publisher_cannot_stop_sync(self):
+        """The publisher's teardown is Unpublish; stop-sync must be a no-op for them."""
+        mine = self._channel(10, self.PUBLISHER_WS)
+        other = self._channel(11, self.SUBSCRIBER_WS)
+        purge_channels, purge_sync = self._run(
+            acting_ws=self.PUBLISHER_WS, publisher_ws=self.PUBLISHER_WS, all_channels=[mine, other]
+        )
+
+        assert not purge_channels.called
+        assert not purge_sync.called
+
+    def test_subscriber_stop_keeps_the_sync_when_others_remain(self):
+        mine = self._channel(10, self.SUBSCRIBER_WS)
+        other = self._channel(11, self.PUBLISHER_WS)
+        purge_channels, purge_sync = self._run(
+            acting_ws=self.SUBSCRIBER_WS, publisher_ws=self.PUBLISHER_WS, all_channels=[mine, other]
+        )
+
+        assert purge_channels.call_args.args[0] == [mine]
+        assert not purge_sync.called
+
+    def test_last_member_stop_purges_the_empty_sync(self):
+        """A member stranded after the publisher left clears the orphan by stopping."""
+        mine = self._channel(10, self.SUBSCRIBER_WS)
+        purge_channels, purge_sync = self._run(
+            acting_ws=self.SUBSCRIBER_WS, publisher_ws=self.PUBLISHER_WS, all_channels=[mine]
+        )
+
+        assert purge_channels.call_args.args[0] == [mine]
+        purge_sync.assert_called_once_with(self.SYNC_ID)
 
 
 class TestPublishModeSubmitAck:

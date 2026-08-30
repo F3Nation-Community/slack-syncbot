@@ -636,6 +636,19 @@ def handle_stop_sync_confirm(
         _logger.warning("stop_sync_confirm: missing sync_id in metadata")
         return
 
+    sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
+    if sync_record and sync_record.publisher_workspace_id == workspace_record.id:
+        # The publisher is the channel's source: they tear a sync down with
+        # Unpublish, which removes it for everyone. Stopping here would delete
+        # only the publisher's own channel and strand the sync with a publisher
+        # that no longer has one. The Home tab routes the publisher to Unpublish;
+        # this guards forged or stale payloads.
+        _logger.warning(
+            "stop_sync_denied_publisher",
+            extra={"sync_id": sync_id, "workspace_id": workspace_record.id},
+        )
+        return
+
     admin_name, admin_label = helpers.format_admin_label(client, user_id, workspace_record)
 
     all_channels = DbManager.find_records(
@@ -675,6 +688,12 @@ def handle_stop_sync_confirm(
         except Exception as e:
             _logger.warning(f"Failed to leave channel {my_channel.channel_id}: {e}")
 
+    if not other_channels:
+        # That was the last channel, so the sync is now an empty shell — e.g. a
+        # member stranded after the publisher left. Remove it so it stops showing
+        # up as "waiting"/"available" forever.
+        helpers.purge_sync(sync_id)
+
     _logger.info(
         "sync_stopped",
         extra={
@@ -685,7 +704,6 @@ def handle_stop_sync_confirm(
     )
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
-    sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
     if sync_record and sync_record.group_id:
         _refresh_group_member_homes(sync_record.group_id, workspace_record.id, logger, context=context)
 
