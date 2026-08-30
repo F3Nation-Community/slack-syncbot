@@ -60,6 +60,21 @@ def test_gcp_module_has_no_cloud_sql() -> None:
     assert 'DATABASE_URL               = "sqlite:////data/syncbot.db"' in main_tf
 
 
+def test_wif_trusts_repository_claim_not_subject_claim() -> None:
+    """GitHub's immutable ``sub`` (repo:owner@id/repo@id) must not break WIF.
+
+    Only ``sub`` gained the embedded IDs; ``repository`` is still ``owner/repo``.
+    Matching on the subject instead would break every repository created or
+    transferred after 2026-07-15, the way the AWS trust policy did.
+    """
+    main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    assert "attribute_condition = \"assertion.repository == '${var.github_repo}'\"" in main_tf
+    assert '"attribute.repository" = "assertion.repository"' in main_tf
+    assert "attribute.repository/${var.github_repo}" in main_tf
+    assert "assertion.sub ==" not in main_tf
+    assert "google.subject/repo:" not in main_tf
+
+
 def test_dockerfile_pins_litestream_sha256() -> None:
     dockerfile = (INFRA_GCP / "Dockerfile").read_text(encoding="utf-8")
     assert "LITESTREAM_VERSION=v0.3.13" in dockerfile

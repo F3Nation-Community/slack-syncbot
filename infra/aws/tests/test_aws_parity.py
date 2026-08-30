@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import subprocess
 from pathlib import Path
 
 import db as db_mod
@@ -15,6 +16,7 @@ MAKEFILE = (INFRA_AWS / "lambda" / "Makefile").read_text(encoding="utf-8")
 HANDLER = (INFRA_AWS / "lambda" / "handler.py").read_text(encoding="utf-8")
 LITESTREAM_YML = (INFRA_AWS / "lambda" / "litestream.yml").read_text(encoding="utf-8")
 DEPLOY_SH = (INFRA_AWS / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+ENSURE = (INFRA_AWS / "scripts" / "ensure_bootstrap.sh").read_text(encoding="utf-8")
 CI_SAM = (INFRA_AWS / "scripts" / "ci_sam_deploy_with_fallback.sh").read_text(encoding="utf-8")
 WORKFLOW = (REPO_ROOT / ".github" / "workflows" / "deploy-aws.yml").read_text(encoding="utf-8")
 
@@ -72,6 +74,52 @@ def test_bootstrap_has_no_rds_or_vpc_create() -> None:
     assert "rds:" not in BOOTSTRAP.lower()
     assert "ec2:CreateVpc" not in BOOTSTRAP
     assert "AWS::RDS::" not in BOOTSTRAP
+
+
+def test_bootstrap_oidc_trust_accepts_immutable_subject_claim() -> None:
+    """Repos created or transferred after 2026-07-15 send repo:owner@id/repo@id."""
+    assert "GitHubImmutableRepository:" in BOOTSTRAP
+    assert 'HasImmutableRepository: !Not [!Equals [!Ref GitHubImmutableRepository, ""]]' in BOOTSTRAP
+    assert '- - !Sub "repo:${GitHubRepository}:*"' in BOOTSTRAP
+    assert '    - !Sub "repo:${GitHubImmutableRepository}:*"' in BOOTSTRAP
+    # A wildcard under StringEquals is compared literally and never matches.
+    assert "StringLike:" in BOOTSTRAP
+
+
+def test_ensure_bootstrap_passes_and_refreshes_immutable_repository() -> None:
+    assert "GitHubImmutableRepository=$immutable_repo" in ENSURE
+    assert "actions/oidc/customization/sub" in ENSURE
+    # A subject-claim change alone must still trigger a sync.
+    assert '"$IMMUTABLE_REPO" == "$STACK_IMMUTABLE_REPO"' in ENSURE
+
+
+def _resolve_immutable_repository(env: dict[str, str], repo: str = "owner/repo") -> str:
+    """Run ensure_bootstrap.sh's helper without executing the script body."""
+    definitions = ENSURE.split("stack_exists()")[0]
+    result = subprocess.run(
+        ["bash", "-c", f'{definitions}\nresolve_immutable_repository "{repo}"'],
+        cwd=INFRA_AWS / "scripts",
+        env={"PATH": "/usr/bin:/bin", **env},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
+
+
+def test_resolve_immutable_repository_uses_actions_runner_ids() -> None:
+    subject = _resolve_immutable_repository(
+        {
+            "GITHUB_REPOSITORY": "my-org/syncbot",
+            "GITHUB_REPOSITORY_OWNER_ID": "12345678",
+            "GITHUB_REPOSITORY_ID": "9876543210",
+        }
+    )
+    assert subject == "my-org@12345678/syncbot@9876543210"
+
+
+def test_resolve_immutable_repository_is_empty_without_ids_or_gh() -> None:
+    assert _resolve_immutable_repository({}) == ""
 
 
 def test_makefile_pins_litestream_and_installs_app() -> None:
