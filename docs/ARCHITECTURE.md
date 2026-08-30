@@ -1,8 +1,10 @@
 # Architecture
 
+This page is how SyncBot is put together: the Python packages, the message-sync path, and the reference AWS and GCP layouts. For how to deploy, see [DEPLOY.md](DEPLOY.md).
+
 ## Module Overview
 
-SyncBot is organized into five top-level packages inside `syncbot/`:
+SyncBot is organized into six top-level packages inside `syncbot/`:
 
 | Package | Responsibility |
 |---------|----------------|
@@ -66,7 +68,7 @@ For **federation**, the receiving instance resolves `@` mentions and `#` channel
 
 ## AWS Infrastructure
 
-How to deploy or update this stack (guided script, `sam`, GitHub Actions) is documented in **[DEPLOY.md](DEPLOY.md)**. The diagram below reflects the **reference** SAM template (`infra/aws/template.yaml`).
+How to deploy or update this stack (guided script, `sam`, GitHub Actions) is documented in **[DEPLOY.md](DEPLOY.md)**. The diagram below reflects the **reference** SAM template (`infra/aws/template.yaml`). The sequence diagram’s “Lambda Function URL” node is AWS-shaped; GCP uses Cloud Run with the same HTTP paths.
 
 ```mermaid
 flowchart TB
@@ -121,13 +123,13 @@ flowchart TB
     Lambda -.->|sqlite replica| S3LS
 ```
 
-All infrastructure is defined in `infra/aws/template.yaml` (AWS SAM). **Existing** (default): public Lambda talks to a database you already created (TiDB, MySQL, Postgres, or RDS you own). **Sqlite:** `/tmp/syncbot.db` + Litestream → S3, reserved concurrency 1. The stack does not create RDS or a VPC.
+All of this AWS layout is defined in `infra/aws/template.yaml` (AWS SAM). **MySQL** is the default: public Lambda talks to a database you already created (TiDB Cloud, MySQL, Postgres, or RDS you own). **Sqlite** uses `/tmp/syncbot.db` plus Litestream to S3, with reserved concurrency 1. The stack does not create RDS or a VPC.
 
-**Lambda cold start vs Slack acks:** The main function uses **256 MB** memory (faster init than 128 MB). For **existing** SQL, Alembic runs only on `{"action":"migrate"}` (post-deploy), not on every Slack cold start. For **sqlite**, the wrapper restores from S3 and runs Alembic once per execution environment (then `litestream replicate`); a true cold start can miss Slack’s 3s window — keep-warm (`ENABLE_KEEP_WARM`) makes that rare; events still retry. EventBridge keep-warm ScheduleV2 invokes are handled in `app.handler` with a trivial JSON response instead of the Slack Bolt adapter.
+**Lambda cold start vs Slack acks:** The main function uses **256 MB** memory (faster init than 128 MB). For **mysql** / **postgresql**, Alembic runs only on `{"action":"migrate"}` (post-deploy), not on every Slack cold start. For **sqlite**, the wrapper restores from S3 and runs Alembic once per execution environment (then `litestream replicate`); a true cold start can miss Slack’s 3s window — keep-warm (`ENABLE_KEEP_WARM`) makes that rare; events still retry. EventBridge keep-warm ScheduleV2 invokes are handled in `app.handler` with a trivial JSON response instead of the Slack Bolt adapter.
 
 ## GCP Infrastructure
 
-How to deploy this stack (guided script, Terraform, GitHub Actions) is documented in **[DEPLOY.md](DEPLOY.md)** and **[infra/gcp/README.md](../infra/gcp/README.md)**. The diagram reflects the reference Terraform module (`infra/gcp`). Default **`database_mode=sqlite`**: Cloud Run (scale-to-zero, `min_instances=0`) with a local SQLite file and Litestream replica in GCS. **`existing`** is TiDB / other MySQL (no GCS bucket). Cloud SQL is not created.
+How to deploy this stack (guided script, Terraform, GitHub Actions) is in **[DEPLOY.md](DEPLOY.md)** and **[infra/gcp/README.md](../infra/gcp/README.md)**. The diagram matches the reference Terraform module in `infra/gcp`. The default **`database_backend` is `sqlite`**: Cloud Run scales to zero (`min_instances=0`) with a local SQLite file and a Litestream replica in GCS. **`mysql`** or **`postgresql`** is TiDB Cloud or other SQL (no GCS bucket). Cloud SQL is not created.
 
 ```mermaid
 flowchart TB
@@ -159,10 +161,10 @@ flowchart TB
     Sched --> EP
     WIF -->|"image-only CI"| AR
     AR -->|"gcloud run services update --image"| CR
-    APP -.->|existing mode| TiDB
+    APP -.->|mysql/postgresql| TiDB
 ```
 
-GitHub Actions never runs `terraform apply`. Image updates are CI-only; Terraform `lifecycle.ignore_changes` on the container image. SQLite mode forces `max_instances=1` and concurrency 1. Keep-warm uses request-based billing (`cpu_idle=true`). Scale-to-zero (`min_instances=0`) relies on Slack retries; sync handlers are idempotent on `event_id`.
+GitHub Actions never runs `terraform apply`. Image updates are CI-only; Terraform `lifecycle.ignore_changes` keeps the container image from being overwritten on later applies. Sqlite forces `max_instances=1` and concurrency 1. Keep-warm uses request-based billing (`cpu_idle=true`). Scale-to-zero (`min_instances=0`) relies on Slack retries; sync handlers are idempotent on `event_id`.
 
 ## Security & Hardening
 

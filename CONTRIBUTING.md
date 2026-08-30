@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping to improve SyncBot!
+Thanks for helping to improve SyncBot. This page is how we take patches: branches, Conventional Commits, and what to run before you open a pull request.
 
 ## Branching (upstream vs downstream)
 

@@ -1,6 +1,6 @@
 # Development Guide
 
-How to run SyncBot locally (Dev Container, Docker Compose, native Python) and manage dependencies. For **cloud deploy** and CI/CD, see [DEPLOY.md](DEPLOY.md). For runtime env vars in any environment, see [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
+This page is how to run SyncBot on your laptop (Dev Container, Docker Compose, or native Python) and how to manage dependencies. For **cloud deploy** and CI/CD, see [DEPLOY.md](DEPLOY.md). For runtime env vars in any environment, see [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 
 ## Branching (upstream vs downstream)
 
@@ -11,18 +11,18 @@ The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/
 | **`main`** | Tracks upstream. Use it to merge PRs and to **sync with the upstream repository** (`git pull upstream main`, etc.). |
 | **`test`** / **`prod`** | On your fork, use these for **deployments**: GitHub Actions deploy workflows run on **push** to `test` and `prod` (see [DEPLOY.md](DEPLOY.md)). |
 
-Typical flow: develop on a feature branch → open a PR to **`main`** → merge → when ready to deploy, merge **`main`** into **`test`** or **`prod`** on your fork.
+Typical flow: develop on a feature branch → open a PR to **`main`** → merge → when you are ready to deploy, merge **`main`** into **`test`** or **`prod`** on your fork.
 
 ## Local development
 
 ### Dev Container (recommended)
 
-**Needs:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on Linux) + [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) in VS Code.
+**You need:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on Linux) and the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension in VS Code.
 
-1. `cp .env.example .env` and set `SLACK_BOT_TOKEN` (`xoxb-...`).
-2. **Dev Containers: Reopen in Container** — Python, MySQL, and deps run inside the container.
-3. `cd syncbot && python app.py` → app on **port 3000** (forwarded).
-4. Expose to Slack with **cloudflared** or **ngrok** from the host; set Slack **Event Subscriptions** / **Interactivity** URLs to the public URL.
+1. Run `cp .env.example .env` and set `SLACK_BOT_TOKEN` (`xoxb-...`).
+2. Use **Dev Containers: Reopen in Container** — Python, MySQL, and dependencies run inside the container.
+3. Run `cd syncbot && python app.py`. The app listens on **port 3000** (forwarded).
+4. Expose it to Slack with **cloudflared** or **ngrok** from the host, then set Slack **Event Subscriptions** and **Interactivity** URLs to that public URL.
 
 Optional **SQLite**: in `.env` set `DATABASE_BACKEND=sqlite` and `DATABASE_URL=sqlite:////app/syncbot/syncbot.db`.
 
@@ -37,7 +37,7 @@ App on port **3000**; restart the `app` service after code changes.
 
 ### Native Python
 
-**Needs:** Python 3.12+, Poetry. Run MySQL locally (e.g. `docker run ... mysql:8`) or SQLite. See [`.env.example`](../.env.example) and [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
+**You need:** Python 3.12+ and Poetry. Run MySQL locally (for example `docker run ... mysql:8`) or use SQLite. See [`.env.example`](../.env.example) and [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 
 ## Configuration reference
 

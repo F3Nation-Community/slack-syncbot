@@ -1,10 +1,10 @@
 # Infrastructure Contract (Provider-Agnostic)
 
-This document defines what any infrastructure provider (AWS, GCP, Azure, etc.) must supply so SyncBot runs correctly. Forks can swap provider-specific IaC in `infra/<provider>/` as long as they satisfy this contract.
+This document is the runtime contract: what any cloud provider (AWS, GCP, Azure, or your own) must supply so SyncBot runs. Forks can swap the IaC under `infra/<provider>/` as long as they meet this contract.
 
-**Deploy entrypoint:** From the repo root, `./deploy.sh` (macOS/Linux, or Git Bash/WSL bash) or `.\deploy.ps1` (Windows PowerShell — finds Git Bash or WSL, then bash) runs an interactive helper that delegates to `infra/<provider>/scripts/deploy.sh`. After identity/auth prompts, each provider script shows a **Deploy Tasks** menu (comma-separated numbers, default all): bootstrap (AWS only), build/deploy, CI/CD (GitHub Actions), and Slack API configuration—so operators can run subsets (e.g. CI/CD only against an existing stack) without mid-flow surprises. Non-interactive deploys use `--env <stage>` with a `.env.deploy.<stage>` file; `CLOUD_PROVIDER` in the env file makes the provider argument optional. `--bootstrap` creates/syncs the AWS bootstrap stack before app deploy. `--setup-github` pushes config to GitHub (works in both modes). `--verbose` adds extended deploy receipts (SAM/Terraform parameters, inline Slack manifest) and extra screen output for debugging. **AWS:** `--update-stack` skips `sam deploy` and uses `aws cloudformation update-stack` directly (no changeset). Normally unnecessary: the AWS deploy script and CI helper `infra/aws/scripts/ci_sam_deploy_with_fallback.sh` **auto-retry with `update-stack`** when `sam deploy` fails with `EarlyValidation::ResourceExistenceCheck`. Secrets like `DATA_ENCRYPTION_KEY` are auto-generated if empty and saved back to the env file. Optional `_SM_ID` env vars resolve secrets from AWS/GCP Secret Manager at deploy time. Step-by-step and manual alternatives: [DEPLOY.md](DEPLOY.md).
+How you deploy is in [DEPLOY.md](DEPLOY.md) (the root `./deploy.sh` / `.\deploy.ps1` flags, and GitHub vs local apply). Those details are not repeated here.
 
-**Schema:** The database schema is managed by **Alembic** (`alembic upgrade head`). **AWS Lambda:** Migrations are **not** run on every cold start (that would exceed Slack’s interaction ack budget). The Lambda handler accepts a post-deploy invoke with payload `{"action":"migrate"}` to run migrations; the reference GitHub Actions deploy workflow invokes this after `sam deploy`. **Cloud Run / local / container:** Migrations still run at process startup before the HTTP server accepts traffic (no Slack ack on that path).
+Schema changes use Alembic (`alembic upgrade head`). On **AWS Lambda**, migrations are **not** run on every Slack cold start. After deploy, invoke `{"action":"migrate"}` (GitHub Actions does this after `sam deploy`; the guided script does the same). On **Cloud Run**, local, or a container, migrations still run at process startup before HTTP (that path has no Slack ack timeout).
 
 ## Runtime Environment Variables
 
@@ -24,21 +24,21 @@ The application reads configuration from environment variables. Providers must i
 
 | Variable | Description |
 |----------|-------------|
-| `DATABASE_BACKEND` | `mysql` (default), `postgresql`, or `sqlite`. |
-| `DATABASE_URL` | Full SQLAlchemy URL. When set, overrides host/user/password/schema. **Required for SQLite** (e.g. `sqlite:///path/to/syncbot.db`). For `mysql` / `postgresql`, optional if unset (legacy vars below are used). |
+| `DATABASE_BACKEND` | `mysql`, `postgresql`, or `sqlite`. The **application** default (if unset) is `mysql`. **AWS SAM** also defaults to `mysql`. **GCP** injects `sqlite` unless you set otherwise. |
+| `DATABASE_URL` | Full SQLAlchemy URL. When set, it overrides host, user, password, and schema. **Required for SQLite** (for example `sqlite:///path/to/syncbot.db`). For `mysql` or `postgresql` you can omit it and use the host, user, password, and schema variables below. |
 | `DATABASE_HOST` | Database hostname (IP or FQDN). Required when backend is `mysql` or `postgresql` and `DATABASE_URL` is unset. |
 | `DATABASE_PORT` | Optional. Defaults to **5432** for `postgresql`, **3306** for `mysql`. Set explicitly for external providers that use a non-standard port (e.g. TiDB Cloud **4000**). |
 | `DATABASE_USER` | Username. Required when backend is `mysql` or `postgresql` and `DATABASE_URL` is unset. Some providers (e.g. TiDB Cloud Serverless) require a cluster-specific prefix on **every** SQL user — include that prefix in this value (full username). The app and deploy tooling do not prepend a prefix or create users. |
 | `DATABASE_PASSWORD` | Password. Required when backend is `mysql` or `postgresql` and `DATABASE_URL` is unset. |
-| `DATABASE_SCHEMA` | Database name (MySQL) or PostgreSQL database name (same convention as MySQL). Create this database before first migrate; the app does not `CREATE DATABASE`. |
+| `DATABASE_SCHEMA` | Database name (MySQL) or PostgreSQL database name (same convention as MySQL). Create this database before first migrate; the app does not `CREATE DATABASE`. SAM default is `syncbot` if the parameter is omitted. Empty env or GitHub reuses the live stack parameter, or infers `syncbot_test` / `syncbot_prod` only when creating a new stack. |
 | `DATABASE_TLS_ENABLED` | Optional TLS toggle (`true`/`false`). Defaults to enabled outside local dev. |
 | `DATABASE_SSL_CA_PATH` | Optional CA bundle path when TLS is enabled. If unset, the app uses the first existing file among common OS locations (Amazon Linux, Debian, Alpine); PostgreSQL omits `sslrootcert` when none exist so libpq uses the system trust store. |
 
 **SQLite:** Set `DATABASE_BACKEND=sqlite` and `DATABASE_URL=sqlite:///path/to/file.db`. Single-writer; suitable for small teams and dev. Durability is **provider-specific**: **GCP Cloud Run** injects `DATABASE_URL=sqlite:////data/syncbot.db` (four slashes = absolute `/data/syncbot.db`) plus Litestream → GCS (`LITESTREAM_GCS_BUCKET` is container/infra-only). **AWS Lambda** sqlite mode injects `DATABASE_URL=sqlite:////tmp/syncbot.db` plus Litestream → S3 (`LITESTREAM_S3_BUCKET` is wrapper/infra-only). Local sqlite has no Litestream. Horizontal scaling is not supported with SQLite (`max_instances=1` / reserved concurrency 1 on those providers).
 
-**MySQL (default for AWS existing):** Set `DATABASE_BACKEND=mysql` (or rely on the default) and either `DATABASE_URL` (`mysql+pymysql://...`) or the four host/user/password/schema vars. The AWS SAM parameter `DatabaseEngine=mysql` (default) matches this backend. Existing includes operator-owned RDS or TiDB — the SAM stack does not create RDS.
+**MySQL (default on AWS):** Set `DATABASE_BACKEND=mysql` (or rely on the AWS default) and either `DATABASE_URL` (`mysql+pymysql://...`) or the four host, user, password, and schema variables. The AWS SAM parameter `DatabaseBackend=mysql` (default) matches this. That includes operator-owned RDS or TiDB Cloud — the SAM stack does not create RDS.
 
-**PostgreSQL:** Set `DATABASE_BACKEND=postgresql` and either `DATABASE_URL` (`postgresql+psycopg2://...`) or `DATABASE_HOST`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_SCHEMA`. PostgreSQL is an engine under **existing** (not created by IaC). The runtime user must already exist; there is no admin bootstrap.
+**PostgreSQL:** Set `DATABASE_BACKEND=postgresql` and either `DATABASE_URL` (`postgresql+psycopg2://...`) or `DATABASE_HOST`, `DATABASE_USER`, `DATABASE_PASSWORD`, and `DATABASE_SCHEMA`. PostgreSQL is not created by IaC. The runtime user must already exist; there is no admin bootstrap.
 
 ### Required in production (non–local)
 
@@ -51,9 +51,26 @@ The application reads configuration from environment variables. Providers must i
 | `SLACK_USER_SCOPES` | Comma-separated OAuth **user** scopes. Must match `oauth_config.scopes.user` and `syncbot/slack_manifest_scopes.py` `USER_SCOPES`. If this env requests scopes that are not declared on the Slack app, install fails with `invalid_scope`. |
 | `DATA_ENCRYPTION_KEY` | **Required** in production; must be a strong, random value (e.g. 16+ characters). Auto-generated by the deploy script if empty and saved back to the `.env.deploy` file. Back up the key after first deploy — if lost, all workspaces must reinstall. In local dev you may set it manually or leave unset. |
 
-**Reference wiring:** AWS SAM ([`infra/aws/template.yaml`](../infra/aws/template.yaml)) maps CloudFormation parameters to Lambda env: **`SlackOauthBotScopes`** / **`SlackOauthUserScopes`** → **`SLACK_BOT_SCOPES`** / **`SLACK_USER_SCOPES`** (defaults match `BOT_SCOPES` / `USER_SCOPES`); **`LogLevel`** → **`LOG_LEVEL`**; **`RequireAdmin`** → **`REQUIRE_ADMIN`**; **`SoftDeleteRetentionDays`** → **`SOFT_DELETE_RETENTION_DAYS`**; **`SyncbotFederationEnabled`**, **`SyncbotInstanceId`**, **`SyncbotPublicUrl`** (optional override) → federation env vars; **`PrimaryWorkspace`** → **`PRIMARY_WORKSPACE`**; **`EnableDbReset`** → **`ENABLE_DB_RESET`** (boolean `true` when enabled); optional **`DatabaseTlsEnabled`** / **`DatabaseSslCaPath`** → **`DATABASE_TLS_ENABLED`** / **`DATABASE_SSL_CA_PATH`** (omit when empty so app defaults apply). **`DatabaseMode=existing`** (default): **`ExistingDatabaseHost`** / **`ExistingDatabasePort`** / **`DatabaseUser`** / **`DatabasePassword`** / **`DatabaseSchema`**. **`DatabaseMode=sqlite`:** `DATABASE_BACKEND=sqlite`, `DATABASE_URL=sqlite:////tmp/syncbot.db`, `LITESTREAM_S3_BUCKET` (wrapper-only). Deploy scripts map `DATABASE_HOST` / `DATABASE_PORT` / `DATABASE_USER` to those SAM parameters; old `EXISTING_DATABASE_HOST` / `EXISTING_DATABASE_PORT` env names are still accepted as fallbacks. **`SYNCBOT_PUBLIC_URL`** defaults to the Lambda Function URL unless **`SyncbotPublicUrl`** is set; stack output **`SyncBotPublicBaseUrl`** documents that base. GCP Terraform ([`infra/gcp`](../infra/gcp/README.md)) uses **`database_mode`**: `sqlite` (default) injects `DATABASE_BACKEND=sqlite`, `DATABASE_URL=sqlite:////data/syncbot.db`, and `LITESTREAM_GCS_BUCKET`; `existing` injects host/user/password/schema like AWS existing-host (full username, TiDB port **4000**). Cloud SQL is not created. Variables **`slack_bot_scopes`** → `SLACK_BOT_SCOPES` and **`slack_user_scopes`**, **`log_level`**, **`require_admin`**, **`database_backend`**, **`database_port`**, **`soft_delete_retention_days`**, **`syncbot_federation_enabled`**, **`syncbot_instance_id`**, **`syncbot_public_url_override`**, **`primary_workspace`**, **`enable_db_reset`**, **`database_tls_enabled`**, **`database_ssl_ca_path`** map to Cloud Run env. **`syncbot_public_url_override`** is empty by default—set it to your service’s public HTTPS base (e.g. after first deploy) if you need **`SYNCBOT_PUBLIC_URL`** for federation.
+**Reference wiring (SAM / Terraform → app env):** Slack Event / Interactivity / Redirect URLs come from the **deploy receipt** and `slack-manifest_test.json` or `slack-manifest_prod.json`. They are **not** `SYNCBOT_PUBLIC_URL`.
 
-Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTANCES`** (`0` or `1`) and **`ENABLE_KEEP_WARM`** (portable; GCP Terraform `enable_keep_warm`, AWS SAM `EnableKeepWarm`). Do not inject them into the Slack process.
+| SAM parameter / TF variable | App env | Notes |
+|-----------------------------|---------|--------|
+| `SlackOauthBotScopes` / `slack_bot_scopes` | `SLACK_BOT_SCOPES` | Defaults match `BOT_SCOPES` |
+| `SlackOauthUserScopes` / `slack_user_scopes` | `SLACK_USER_SCOPES` | Defaults match `USER_SCOPES` |
+| `LogLevel` / `log_level` | `LOG_LEVEL` | |
+| `RequireAdmin` / `require_admin` | `REQUIRE_ADMIN` | |
+| `SoftDeleteRetentionDays` / `soft_delete_retention_days` | `SOFT_DELETE_RETENTION_DAYS` | |
+| `SyncbotFederationEnabled` / `syncbot_federation_enabled` | `SYNCBOT_FEDERATION_ENABLED` | |
+| `SyncbotInstanceId` / `syncbot_instance_id` | `SYNCBOT_INSTANCE_ID` | |
+| `SyncbotPublicUrl` / `syncbot_public_url_override` | `SYNCBOT_PUBLIC_URL` | **Often empty.** Lambda is `!Ref SyncbotPublicUrl` with no Function-URL default. Stack output `SyncBotPublicBaseUrl` is **not** the runtime env. Set the override for **federation** (or after first GCP apply, the service HTTPS base). Slack does not need this. |
+| `PrimaryWorkspace` / `primary_workspace` | `PRIMARY_WORKSPACE` | Hidden Backup/Restore until set **and redeployed**. AWS `--setup-github` copies it when it is set in the env file. |
+| `EnableDbReset` / `enable_db_reset` | `ENABLE_DB_RESET` | Boolean; also gated by `PRIMARY_WORKSPACE` |
+| `DatabaseTlsEnabled` / `DatabaseSslCaPath` (and TF equivalents) | `DATABASE_TLS_*` | Omit when empty so app defaults apply |
+| `DatabaseBackend=mysql` / `postgresql` + `DatabaseHost` / port / user / password / schema | `DATABASE_*` | Deploy scripts map `DATABASE_HOST`, `DATABASE_USER`, `DATABASE_PASSWORD`, `DATABASE_SCHEMA` |
+| `DatabaseBackend=sqlite` (AWS) | `DATABASE_BACKEND=sqlite`, `DATABASE_URL=sqlite:////tmp/syncbot.db` | `LITESTREAM_S3_BUCKET` wrapper-only |
+| `database_backend=sqlite` (GCP, default) | `DATABASE_BACKEND=sqlite`, `DATABASE_URL=sqlite:////data/syncbot.db` | `LITESTREAM_GCS_BUCKET` container-only. Cloud SQL is not created. |
+
+Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTANCES`** (`0` or `1`) and **`ENABLE_KEEP_WARM`**. **AWS:** EventBridge ScheduleV2 **invokes the Lambda** (not HTTP). **GCP:** Cloud Scheduler **`GET /health`**. Do not inject these into the Slack process as if they were the same mechanism.
 
 ### Optional
 
@@ -62,14 +79,14 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | `SLACK_BOT_TOKEN` | Set by OAuth flow; placeholder until first install. |
 | `REQUIRE_ADMIN` | `true` (default) or `false`; restricts config to admins/owners. |
 | `PRIMARY_WORKSPACE` | Slack Team ID of the primary workspace. Required for backup/restore to be visible. DB reset (if enabled) is also scoped to this workspace. |
-| `ENABLE_DB_RESET` | When `true` / `1` / `yes` and `PRIMARY_WORKSPACE` matches the current workspace, shows the Reset Database button. Not prompted during deploy; set manually via infra config or GitHub Actions variable. |
+| `ENABLE_DB_RESET` | When `true` / `1` / `yes` and `PRIMARY_WORKSPACE` matches the current workspace, shows the Reset Database button. Not prompted during deploy; set it in the env file (AWS `--setup-github` copies it when present), or in SAM / Terraform. |
 | `LOCAL_DEVELOPMENT` | `true` only for local dev; disables token verification and enables dev shortcuts. |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). |
 | `PORT` | HTTP listen port for container entrypoint (`python app.py` / Cloud Run). Cloud Run injects this (typically `8080`); default `3000` when unset. |
 | `SOFT_DELETE_RETENTION_DAYS` | Days to retain soft-deleted workspace data (default `30`). |
 | `SYNCBOT_FEDERATION_ENABLED` | `true` to enable external connections (federation). |
-| `SYNCBOT_INSTANCE_ID` | UUID for this instance (optional; can be auto-generated). |
-| `SYNCBOT_PUBLIC_URL` | Public base URL of the app (required when federation is enabled). |
+| `SYNCBOT_INSTANCE_ID` | UUID for this instance (optional; can be auto-generated, should be pinned for federation). |
+| `SYNCBOT_PUBLIC_URL` | Public HTTPS base of **this** instance. **Required for federation**, not for Slack events. Not auto-set from the Function URL / Cloud Run `service_url`. |
 
 ## Platform Capabilities
 
@@ -84,13 +101,13 @@ The provider must deliver:
    Any path under `/api/federation` is used for federation when enabled.
 
 2. **Secret injection**
-   Slack and DB credentials must be available as environment variables (or equivalent) at process start. No assumption of a specific secret store; provider chooses (e.g. Lambda env, Secret Manager, Parameter Store).
+   Slack and DB credentials must be available as environment variables (or equivalent) at process start. No assumption of a specific secret store; the provider injects them (for example Lambda env or Cloud Run env).
 
 3. **Database**
    **PostgreSQL / MySQL:** In non–local environments the app uses TLS by default; allow outbound TCP to the DB host (typically **5432** for PostgreSQL, **3306** for MySQL, **4000** for TiDB Cloud). The operator creates the database and app user; the app only runs Alembic. **SQLite:** No SQL network; the app uses a local file. Single-writer; production durability is provider-specific (GCP: Litestream replica in GCS; AWS: Litestream replica in S3). Cloud SQL / stack RDS are not required.
 
 4. **Keep-warm / scheduled ping (optional but recommended)**
-   To avoid cold-start latency, the app supports a periodic HTTP GET to a configurable path. The provider should support a scheduled job (e.g. CloudWatch Events, Cloud Scheduler) that hits the service on an interval (e.g. 5 minutes). **AWS (SAM):** EventBridge Scheduler invokes the Lambda directly on a schedule; the Lambda handler returns a small JSON success for `source` `aws.scheduler` / `aws.events` without treating the payload as a Slack request. **GCP:** Cloud Scheduler `GET /health` (Terraform `enable_keep_warm`, default on). Keep `cpu_idle=true` (request-based billing) so the ping is a tiny request, not 24/7 CPU.
+   To avoid cold-start latency, the provider should ping the service on an interval (for example every 5 minutes). **AWS (SAM):** EventBridge Scheduler invokes the Lambda directly; the Lambda handler returns a small JSON success for `source` `aws.scheduler` / `aws.events` without treating the payload as a Slack request. **GCP:** Cloud Scheduler `GET /health` (Terraform `enable_keep_warm`, default on). Keep `cpu_idle=true` (request-based billing) so the ping is a tiny request, not 24/7 CPU.
 
 5. **Stateless execution**
    The app is stateless; state lives in the configured database (PostgreSQL, MySQL, or SQLite). Horizontal scaling is supported with PostgreSQL/MySQL as long as all instances share the same DB and env; SQLite is single-writer.

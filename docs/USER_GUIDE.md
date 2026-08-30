@@ -1,27 +1,27 @@
 # SyncBot User Guide
 
-This guide is for **workspace admins and end users** configuring SyncBot in Slack. For **installing or hosting** the app (AWS, GCP, Docker, GitHub Actions), see **[DEPLOY.md](DEPLOY.md)** and the root **[README](../README.md)**.
+This guide is for **workspace admins and people using SyncBot in Slack**. If you are installing or hosting the app (AWS, GCP, Docker, GitHub Actions), see **[DEPLOY.md](DEPLOY.md)** and the root **[README](../README.md)**.
 
 ## Getting Started
 
-1. Click the install link from a desktop browser (make sure you've selected the correct workspace in the upper right)
-2. Open the **SyncBot** app from the sidebar and click the **Home** tab (requires workspace admin or owner)
+1. Click the install link from a desktop browser (make sure you have selected the correct workspace in the upper right).
+2. Open the **SyncBot** app from the sidebar and click the **Home** tab (this requires a workspace admin or owner).
 3. The Home tab shows everything in one view:
-   - **SyncBot Configuration (bottom row)** — **Refresh** and **Backup/Restore** (full-instance backup download and restore from JSON)
-   - **Workspace Groups** — create or join groups of workspaces that can sync channels together
-   - **Per-group sections** — for each group you can publish channels, manage user mapping (dedicated Home tab screen), and see/manage channel syncs inline
-   - **Synced Channels** — each row shows the local channel and workspace list in brackets (e.g. _[Any: Your Workspace, Other Workspace]_), with pause/resume and stop controls, synced-since date, and tracked message count
-   - **External Connections** *(when federation is enabled)* — Generate/Enter Connection Code and **Data Migration** (export workspace data for migration to another instance, or import a migration file)
+   - **SyncBot Configuration (bottom row)** — **Refresh**, and **Backup/Restore** only if the host set `PRIMARY_WORKSPACE` (the Slack Team ID) and redeployed. If you do not see Backup/Restore, ask the operator.
+   - **Workspace Groups** — create or join groups of workspaces that can sync channels together.
+   - **Per-group sections** — for each group you can publish channels, manage user mapping (a dedicated Home tab screen), and see or manage channel syncs inline.
+   - **Synced Channels** — each row shows the local channel and workspace list in brackets (for example _[Any: Your Workspace, Other Workspace]_), with pause/resume and stop controls, a synced-since date, and a tracked message count.
+   - **External Connections** *(when federation is enabled)* — Generate or Enter a Connection Code, and **Data Migration** (export workspace data to another instance, or import a migration file).
 
 ## Things to Know
 
-- Only workspace **admins and owners** can configure syncs (set `REQUIRE_ADMIN=false` to allow all users)
-- Messages, threads, edits, deletes, reactions, images, videos, and GIFs are all synced
-- **@mentions and #channel links** in synced messages are rewritten per target workspace: mapped users are tagged with the local Slack user, and channels that are part of the same sync are shown as native local channel links; otherwise users fall back to a code-style label and channels use a link back to the source workspace (or a code-style label if that cannot be built)
-- Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops
-- Existing messages are not back-filled; syncing starts from the moment a channel is linked
-- Do not add SyncBot manually to channels. SyncBot adds itself when you configure a Sync. If it detects it was added to an unconfigured channel it will post a message and leave automatically
-- Both public and private channels are supported
+- Only workspace **admins and owners** can configure syncs (set `REQUIRE_ADMIN=false` to allow all users).
+- Messages, threads, edits, deletes, reactions, images, videos, and GIFs are all synced.
+- **@mentions and #channel links** in synced messages are rewritten per target workspace: mapped users are tagged with the local Slack user, and channels that are part of the same sync are shown as native local channel links; otherwise users fall back to a code-style label and channels use a link back to the source workspace (or a code-style label if that cannot be built).
+- Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
+- Existing messages are not back-filled; syncing starts from the moment a channel is linked.
+- Do not add SyncBot manually to channels. SyncBot adds itself when you configure a Sync. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
+- Both public and private channels are supported.
 
 ## Workspace Groups
 
@@ -71,4 +71,6 @@ Workspaces running their own SyncBot deployment can be connected via the "Extern
 
 ## Backup / Restore
 
-Use **Backup/Restore** on the Home tab to download a full-instance backup (all tables as JSON) or restore from a backup file. Intended for disaster recovery (e.g. before rebuilding AWS). See [Backup and Migration](BACKUP_AND_MIGRATION.md) for details.
+**Backup/Restore** appears on the Home tab only when the operator has set `PRIMARY_WORKSPACE` to this workspace’s Slack Team ID (env, SAM, Terraform, or GitHub variable) and **redeployed**. When it is unset, backup is hidden everywhere.
+
+Use it to download a full-instance backup (all durable tables as JSON) or restore from a backup file. Intended for disaster recovery (e.g. before rebuilding AWS). See [Backup and Migration](BACKUP_AND_MIGRATION.md).

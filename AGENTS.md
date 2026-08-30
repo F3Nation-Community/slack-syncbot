@@ -46,7 +46,13 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 4. **Secrets** — never commit real `.env`, `.env.deploy.*` (only `*.example` templates), private keys, or large artifacts. Do not commit `.aws-sam/build` output.
 5. **Deployment branches** — on a **fork**, do not push to `test` or `prod` as a casual step; those branches deploy. Canonical releases run only on **sprocktech/syncbot** `main` (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). Forks pull `main` and promote to `test`/`prod` themselves.
 6. **Conventional Commits** — PR titles must be valid Conventional Commits for squash merges; see [CONTRIBUTING.md](CONTRIBUTING.md).
-7. **Docs** — if behavior, env vars, or deploy steps change, update the relevant `docs/*.md` (and [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) if the runtime contract changes).
+7. **Docs** — if behavior, env vars, or deploy steps change, update the relevant `docs/*.md` (and [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) if the runtime contract changes). Follow **Docs voice** below.
+
+## Docs voice
+
+Operator-facing docs (README, `docs/*.md`, `.env*.example`, `infra/gcp/example.tfvars`) should read like a helpful teammate: friendly and explanatory, not clipped or telegraphic. Write full sentences (do not drop “the” or “a” to shorten a line). Prefer a short paragraph over a dense jargon pile.
+
+Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name were arbitrary. Show the real values (`--env test`, `slack-manifest_test.json`, `syncbot_test`) and mention `prod` as the other choice. Keep `YOUR_*` for values that really vary (region, host, username).
 
 ## Definition of done (AI-resolved issues)
 
@@ -61,7 +67,7 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 - **Lambda migrations**: AWS deploy invokes migrations **once post-deploy** — avoid relying on slow migration work during Slack request handling / cold start ack timeouts.
 - **SQLite vs MySQL/Postgres** — local SQLite behaves differently for locking and types; don’t assume parity without checking migration scripts.
 - **`ENABLE_DB_RESET`** — boolean (`true`/`1`/`yes`), gated by `PRIMARY_WORKSPACE`; don't treat as team-id string anymore.
-- **`DATABASE_*`** env naming — use current `DATABASE_*` vars per [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md); older `EXISTING_DATABASE_*` names are obsolete.
+- **`DATABASE_BACKEND`** + **`DATABASE_*`** — use `DATABASE_BACKEND` (`mysql` / `postgresql` / `sqlite`) and `DATABASE_HOST` / `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_SCHEMA` per [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md).
 - **Fork vs upstream** — `origin` may be your fork; open PRs against the repo you were asked to target (usually **sprocktech/syncbot** `main`). `release.yml` and Dependabot auto-merge run only on that canonical repository. Canonical GitHub bot identity is App **`sprocktech-automation`** (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)); forks do not install it.
 
 ## More detail
