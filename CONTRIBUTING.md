@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping to improve SyncBot!
+Thanks for helping to improve SyncBot. This page is how we take patches: branches, Conventional Commits, and what to run before you open a pull request.
 
 ## Branching (upstream vs downstream)
 
@@ -51,6 +51,7 @@ This repository uses [Conventional Commits](https://www.conventionalcommits.org/
 - **Minor** bump: `feat:` (user-visible additions).
 - **Major** bump: add `BREAKING CHANGE:` in the commit body/footer, or use a `feat!:` / `fix!:` subject line per Conventional Commits.
 - **Squash merges**: the PR title becomes the merge commit message — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`).
+- **Changelog / GitHub Release:** Keep a Changelog headings only (**Added** / **Changed** / **Fixed**). Copy **[1.2.0](CHANGELOG.md)** for voice. python-semantic-release drafts from `feat` / `fix` / `perf`; polish (or pre-write that version's section in the release PR) so operators do not see `### bug fixes` or a raw commit subject.
 
 Also install the commit-msg hook so local commits are checked:
 

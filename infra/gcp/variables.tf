@@ -1,6 +1,6 @@
 # GCP Terraform variables for SyncBot (see docs/INFRA_CONTRACT.md)
 #
-# Sections: project / region / stage → database_mode → Cloud Run → keep-warm →
+# Sections: project / region / stage → database_backend → Cloud Run → keep-warm →
 # GitHub WIF → sensitive app secrets → runtime plain env.
 
 variable "project_id" {
@@ -26,13 +26,14 @@ variable "stage" {
 }
 
 # ---------------------------------------------------------------------------
-# Database: sqlite (default, Litestream + GCS) or existing MySQL / TiDB
+# Database: sqlite (default, Litestream + GCS) or mysql / postgresql
+# database_mode and existing_db_* are aliases (remove in 2.0.0).
 # ---------------------------------------------------------------------------
 
 variable "database_mode" {
   type        = string
   default     = "sqlite"
-  description = "sqlite = Cloud Run local DB + Litestream to GCS. existing = TiDB Cloud or other MySQL (no Cloud SQL)."
+  description = "Alias for database_backend (sqlite or existing). Prefer database_backend."
 
   validation {
     condition     = contains(["sqlite", "existing"], var.database_mode)
@@ -43,19 +44,31 @@ variable "database_mode" {
 variable "existing_db_host" {
   type        = string
   default     = ""
-  description = "Existing MySQL host (required when database_mode = existing)"
+  description = "Alias for database_host."
 }
 
 variable "existing_db_schema" {
   type        = string
   default     = "syncbot"
-  description = "Existing MySQL schema name (when database_mode = existing)"
+  description = "Alias for database_schema."
 }
 
 variable "existing_db_user" {
   type        = string
   default     = ""
-  description = "Existing MySQL/Postgres username (when database_mode = existing). Prefer database_user for the full username (including any TiDB cluster prefix)."
+  description = "Alias for database_user."
+}
+
+variable "database_host" {
+  type        = string
+  default     = ""
+  description = "DATABASE_HOST. Required when database_backend is mysql or postgresql."
+}
+
+variable "database_schema" {
+  type        = string
+  default     = ""
+  description = "DATABASE_SCHEMA. Empty uses existing_db_schema (default syncbot)."
 }
 
 # ---------------------------------------------------------------------------
@@ -94,7 +107,7 @@ variable "cloud_run_min_instances" {
 variable "cloud_run_max_instances" {
   type        = number
   default     = 10
-  description = "Maximum Cloud Run instances (sqlite mode always forces 1)."
+  description = "Maximum Cloud Run instances (sqlite always forces 1)."
 }
 
 variable "log_level" {
@@ -182,13 +195,13 @@ variable "database_password" {
   type        = string
   sensitive   = true
   default     = ""
-  description = "DATABASE_PASSWORD for the app DB user. Required when database_mode = existing; unused for sqlite."
+  description = "DATABASE_PASSWORD for the app DB user. Required when database_backend is mysql or postgresql; unused for sqlite."
 }
 
 variable "database_user" {
   type        = string
   default     = ""
-  description = "DATABASE_USER (full username, including any TiDB cluster prefix). Required when database_mode = existing if existing_db_user is empty."
+  description = "DATABASE_USER (full username, including any TiDB cluster prefix). Required when database_backend is mysql or postgresql if existing_db_user is empty."
 }
 
 # ---------------------------------------------------------------------------
@@ -197,19 +210,19 @@ variable "database_user" {
 
 variable "database_backend" {
   type        = string
-  default     = "mysql"
-  description = "DATABASE_BACKEND for existing mode (mysql or postgresql). sqlite mode always injects sqlite."
+  default     = ""
+  description = "DATABASE_BACKEND: mysql, postgresql, or sqlite. Empty falls through to database_mode (default sqlite)."
 
   validation {
-    condition     = contains(["mysql", "postgresql", "sqlite"], var.database_backend)
-    error_message = "database_backend must be mysql, postgresql, or sqlite."
+    condition     = contains(["", "mysql", "postgresql", "sqlite"], var.database_backend)
+    error_message = "database_backend must be empty, mysql, postgresql, or sqlite."
   }
 }
 
 variable "database_port" {
   type        = string
-  default     = "3306"
-  description = "DATABASE_PORT for existing MySQL (default 3306; TiDB Cloud is 4000)."
+  default     = ""
+  description = "DATABASE_PORT. Empty uses the engine default (3306 MySQL, 5432 PostgreSQL). Set for a non-standard port (e.g. TiDB Cloud 4000). Unused for sqlite."
 }
 
 variable "require_admin" {

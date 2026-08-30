@@ -36,7 +36,7 @@ output "cloud_run_service_location" {
 }
 
 output "litestream_bucket" {
-  description = "GCS bucket for Litestream replicas (empty when database_mode is existing)"
+  description = "GCS bucket for Litestream replicas (empty when database_backend is mysql or postgresql)"
   value       = local.is_sqlite ? google_storage_bucket.litestream[0].name : ""
 }
 
@@ -46,6 +46,11 @@ output "workload_identity_provider" {
 }
 
 output "database_mode" {
-  description = "sqlite or existing"
-  value       = var.database_mode
+  description = "sqlite or existing (alias of database_backend; remove in 2.0.0)"
+  value       = local.is_sqlite ? "sqlite" : "existing"
+}
+
+output "database_backend" {
+  description = "mysql, postgresql, or sqlite"
+  value       = local.resolved_database_backend
 }

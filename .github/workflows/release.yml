@@ -85,6 +85,7 @@ jobs:
             const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
 
             function notesFromChangelog(md, ver) {
+              // GitHub Release body is this CHANGELOG section (Keep a Changelog, no version heading).
               const v = String(ver || '').replace(/^v/, '');
               const prefixes = [`## [${v}]`, `## v${v}`, `## ${v} `];
               const lines = md.split('\n');

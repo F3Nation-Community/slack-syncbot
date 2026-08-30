@@ -93,17 +93,47 @@ def test_deploy_script_sqlite_skips_required_password() -> None:
     script = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
     assert "DATABASE_PASSWORD:?" not in script
     assert "GCP_DATABASE_MODE" in script
+    assert "DATABASE_ENGINE" in script
     assert "GCP_CLOUD_RUN_MIN_INSTANCES" in script
     assert "ENABLE_KEEP_WARM" in script
     assert "GCP_CLOUD_RUN_IMAGE" in script
+    assert "-var=database_backend=" in script
+    assert "-var=database_mode=" not in script
+    assert "DATABASE_PORT:-3306" not in script
+    assert "Database TCP port is required" not in script
     vars_tf = (INFRA_GCP / "variables.tf").read_text(encoding="utf-8")
+    assert 'variable "database_mode"' in vars_tf
+    assert 'variable "existing_db_host"' in vars_tf
+    assert 'variable "existing_db_schema"' in vars_tf
+    assert 'variable "existing_db_user"' in vars_tf
     assert '"sqlite"' in vars_tf
-    assert 'default     = "sqlite"' in vars_tf
+    mode_block = vars_tf.split('variable "database_mode"', 1)[1].split("variable ", 1)[0]
+    backend_block = vars_tf.split('variable "database_backend"', 1)[1].split("variable ", 1)[0]
+    port_block = vars_tf.split('variable "database_port"', 1)[1].split("variable ", 1)[0]
+    assert 'default     = "sqlite"' in mode_block
+    assert 'default     = ""' in backend_block
+    assert 'default     = ""' in port_block
+    outputs_tf = (INFRA_GCP / "outputs.tf").read_text(encoding="utf-8")
+    assert 'output "database_mode"' in outputs_tf
+    assert 'output "database_backend"' in outputs_tf
+    main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    assert "syncbot_database_backend" in main_tf
+    assert "syncbot_database_mode" in main_tf
+    assert "DATABASE_PORT              = var.database_port" not in main_tf
+    assert "DATABASE_PORT = trimspace(var.database_port)" in main_tf
 
 
 def test_deploy_gcp_workflow_is_gated_and_not_a_stub() -> None:
     workflow = (INFRA_GCP.parents[1] / ".github" / "workflows" / "deploy-gcp.yml").read_text(encoding="utf-8")
-    assert "vars.DEPLOY_TARGET == 'gcp'" in workflow
+    assert "(vars.GITHUB_DEPLOY_TARGET || vars.DEPLOY_TARGET) == 'gcp'" in workflow
+    assert "vars.DEPLOY_TARGET == 'gcp'" not in workflow
+    gcp_deploy = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "push_github_gcp_wif" in gcp_deploy
+    assert "gh variable set GITHUB_DEPLOY_TARGET" in gcp_deploy
+    assert "gh variable set DEPLOY_TARGET" not in gcp_deploy
+    assert "gh variable set STAGE_NAME" not in gcp_deploy
+    assert "gh_variable_set_env STAGE_NAME" not in gcp_deploy
+    assert "gh variable set SLACK_CLIENT_ID" not in gcp_deploy
     assert "docker build -f infra/gcp/Dockerfile" in workflow
     assert "gcloud run services update" in workflow
     assert "GCP deploy is not implemented" not in workflow

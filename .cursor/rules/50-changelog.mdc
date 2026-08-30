@@ -1,0 +1,15 @@
+---
+description: Keep a Changelog and GitHub Release notes match 1.2.0
+globs: CHANGELOG.md,.github/semantic-release/templates/**
+alwaysApply: false
+---
+
+# Changelog and release notes
+
+[CHANGELOG.md](CHANGELOG.md) **1.2.0** is the style to copy. GitHub Release bodies are copied from that version's CHANGELOG section (see `.github/workflows/release.yml`).
+
+- Headings are only **Added**, **Changed**, **Fixed**, and **Removed** when needed. Never leave python-semantic-release's `### bug fixes` or `### Features`.
+- Write operator-facing sentences. Start each bullet with a capital letter. Prefer one idea per bullet, like 1.2.0, not a raw commit subject.
+- `feat` → Added, `fix`/`perf` → Fixed/Changed. `chore`, `ci`, `docs`, `test`, `style`, `build`, and Dependabot are excluded from the generated draft.
+- Do not bump `pyproject.toml` `version` in a feature PR. You **may** pre-write the next version's section **below** `<!-- version list -->` so the release job keeps it (the template skips a version that is already there). Otherwise polish an already-released heading after the draft lands.
+- After a release, if the GitHub Release body is still a stub, edit it to match the polished CHANGELOG section.

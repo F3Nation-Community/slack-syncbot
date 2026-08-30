@@ -1,26 +1,30 @@
 #!/usr/bin/env bash
 # Interactive AWS deploy helper for SyncBot.
-# Handles: bootstrap (optional), sam build, sam deploy (existing DB host or sqlite+Litestream).
+# Handles: bootstrap (auto create/sync), sam build, sam deploy (SQL host or sqlite+Litestream).
 #
 # Run from repo root:
 #   ./infra/aws/scripts/deploy.sh
+# Or via: ./deploy.sh --env test  (CLOUD_PROVIDER=aws in .env.deploy.test)
 #
-# Non-interactive path (ENV_FILE_LOADED=true):
-#   Sources .env.deploy.{stage}, builds SAM params from env vars, runs sam build + deploy.
+# Non-interactive path (ENV_FILE_LOADED=true, from ./deploy.sh --env <stage>):
+#   Sources .env.deploy.{stage}, ensures bootstrap, builds SAM params, sam build + deploy.
+#   --bootstrap forces a bootstrap template sync even when the hash already matches.
 #
-# Interactive path (no --env flag):
-#   1) Prerequisites: CLI checks, template paths
-#   2) Authentication: AWS region and credentials
-#   3) Bootstrap probe: read bootstrap stack outputs (create/sync runs only if task 1 selected)
-#   4) Stack identity: stage, app stack name; detect existing stack for update
-#   5) Deploy Tasks: multi-select menu (bootstrap, build/deploy, CI/CD, Slack API)
-#   6) Configuration (if build/deploy): database, Slack creds, SAM build + deploy
-#   7) Post-tasks: Slack manifest/API, GitHub Actions, deploy receipt
+# Interactive path (./deploy.sh without --env):
+#   1) Prerequisites: CLI checks, active AWS session, template paths
+#   2) Stack identity: region, stage, app stack name; detect existing stack for update
+#   3) Bootstrap: create if missing; sync if template hash changed
+#   4) Deploy Tasks: multi-select menu (build/deploy, CI/CD, Slack API)
+#   5) Configuration (if build/deploy): database, Slack creds, SAM build + deploy
+#   6) Post-tasks: Slack manifest/API, GitHub Actions, deploy receipt
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/resolve_database_backend.sh"
 
 BOOTSTRAP_TEMPLATE="$REPO_ROOT/infra/aws/template.bootstrap.yaml"
 APP_TEMPLATE="$REPO_ROOT/infra/aws/template.yaml"
@@ -115,7 +119,7 @@ Do this instead (while the old stack is still serving Slack):
   2. Delete the CloudFormation app stack. RDS DeletionProtection may block
      delete-stack until you disable protection or delete the instance in the
      RDS console — do that manually after the backup.
-  3. Redeploy a fresh stack with AWS_DATABASE_MODE=existing (TiDB / your host)
+  3. Redeploy a fresh stack with DATABASE_BACKEND=mysql (TiDB / your host)
      or sqlite. Point Slack at the new Function URL / manifest.
   4. Restore the backup JSON on the empty new database.
 
@@ -124,29 +128,7 @@ EOF
   exit 1
 }
 
-resolve_aws_database_mode() {
-  # Do not infer from DATABASE_HOST — .env.deploy.example always has a TiDB host.
-  local mode="${AWS_DATABASE_MODE:-}"
-  if [[ "${DATABASE_ENGINE:-}" == "sqlite" ]]; then
-    mode="sqlite"
-  fi
-  mode="${mode:-existing}"
-  case "$mode" in
-    sqlite|existing) echo "$mode" ;;
-    *)
-      echo "Error: AWS_DATABASE_MODE must be sqlite or existing (got '$mode')." >&2
-      return 1
-      ;;
-  esac
-}
-
-sam_database_engine() {
-  # SAM DatabaseEngine AllowedValues are mysql|postgresql even when DatabaseMode=sqlite.
-  case "${1:-mysql}" in
-    postgresql) echo postgresql ;;
-    *) echo mysql ;;
-  esac
-}
+# Aliases AWS_DATABASE_MODE / DATABASE_ENGINE / EXISTING_DATABASE_HOST: see resolve_database_backend.sh (remove in 2.0.0).
 
 gh_delete_legacy_database_vars() {
   local env_name="$1" repo="$2" name
@@ -164,6 +146,80 @@ gh_delete_legacy_database_vars() {
   gh secret delete DATABASE_ADMIN_PASSWORD --env "$env_name" -R "$repo" 2>/dev/null || true
 }
 
+
+# Always: bootstrap OIDC trio + AWS_STACK_NAME. Env-file consume list when assigned.
+# Never writes STAGE_NAME. Maps aliases to canonical GitHub names.
+push_github_aws_ci_config() {
+  local repo="$1"
+  local env_name="$2"
+  local role="${3:-}"
+  local bucket="${4:-}"
+  local region="${5:-}"
+  local stack_name="${6:-}"
+  local val k github_name scope
+
+  gh api -X PUT "repos/$repo/environments/$env_name" >/dev/null
+
+  [[ -n "$role" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$role" -R "$repo"
+  [[ -n "$bucket" ]] && gh variable set AWS_S3_BUCKET --body "$bucket" -R "$repo"
+  [[ -n "$region" ]] && gh variable set AWS_REGION --body "$region" -R "$repo"
+  [[ -n "$stack_name" ]] && gh_variable_set_env AWS_STACK_NAME "$env_name" "$repo" "$stack_name"
+
+  _gh_push_from_env_file() {
+    github_name="$1"
+    scope="$2"
+    shift 2
+    val=""
+    for k in "$@"; do
+      if val="$(env_file_assignment_value "$k")"; then
+        break
+      fi
+      val=""
+    done
+    [[ -n "$val" ]] || return 0
+    case "$scope" in
+      env) gh_variable_set_env "$github_name" "$env_name" "$repo" "$val" ;;
+      repo) gh variable set "$github_name" --body "$val" -R "$repo" ;;
+      secret) gh secret set "$github_name" --env "$env_name" --body "$val" -R "$repo" ;;
+    esac
+  }
+
+  _gh_push_from_env_file AWS_BOOTSTRAP_STACK_NAME repo AWS_BOOTSTRAP_STACK_NAME BOOTSTRAP_STACK_NAME
+  _gh_push_from_env_file DATABASE_BACKEND env DATABASE_BACKEND
+  _gh_push_from_env_file ENABLE_KEEP_WARM env ENABLE_KEEP_WARM
+  _gh_push_from_env_file DATABASE_SCHEMA env DATABASE_SCHEMA
+  _gh_push_from_env_file DATABASE_HOST env DATABASE_HOST
+  _gh_push_from_env_file DATABASE_PORT env DATABASE_PORT
+  _gh_push_from_env_file DATABASE_USER env DATABASE_USER
+  _gh_push_from_env_file DATABASE_TLS_ENABLED env DATABASE_TLS_ENABLED
+  _gh_push_from_env_file DATABASE_SSL_CA_PATH env DATABASE_SSL_CA_PATH
+  _gh_push_from_env_file LOG_LEVEL env LOG_LEVEL
+  _gh_push_from_env_file REQUIRE_ADMIN env REQUIRE_ADMIN
+  _gh_push_from_env_file SOFT_DELETE_RETENTION_DAYS env SOFT_DELETE_RETENTION_DAYS
+  _gh_push_from_env_file SYNCBOT_FEDERATION_ENABLED env SYNCBOT_FEDERATION_ENABLED
+  _gh_push_from_env_file SYNCBOT_INSTANCE_ID env SYNCBOT_INSTANCE_ID
+  _gh_push_from_env_file SYNCBOT_PUBLIC_URL env SYNCBOT_PUBLIC_URL
+  _gh_push_from_env_file PRIMARY_WORKSPACE env PRIMARY_WORKSPACE
+  _gh_push_from_env_file ENABLE_DB_RESET env ENABLE_DB_RESET
+  _gh_push_from_env_file AWS_ENABLE_XRAY env AWS_ENABLE_XRAY ENABLE_XRAY
+  _gh_push_from_env_file SLACK_CLIENT_ID env SLACK_CLIENT_ID
+  _gh_push_from_env_file DATABASE_PASSWORD secret DATABASE_PASSWORD
+  _gh_push_from_env_file SLACK_SIGNING_SECRET secret SLACK_SIGNING_SECRET
+  _gh_push_from_env_file SLACK_CLIENT_SECRET secret SLACK_CLIENT_SECRET
+  _gh_push_from_env_file DATA_ENCRYPTION_KEY secret DATA_ENCRYPTION_KEY
+
+  if ! env_file_assignment_value DATA_ENCRYPTION_KEY >/dev/null; then
+    [[ -n "${DATA_ENCRYPTION_KEY:-}" ]] && gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
+  fi
+  if ! env_file_assignment_value SLACK_SIGNING_SECRET >/dev/null; then
+    [[ -n "${SLACK_SIGNING_SECRET:-}" ]] && gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
+  fi
+  if ! env_file_assignment_value SLACK_CLIENT_SECRET >/dev/null; then
+    [[ -n "${SLACK_CLIENT_SECRET:-}" ]] && gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
+  fi
+
+  gh_delete_legacy_database_vars "$env_name" "$repo"
+}
 
 # Convert Key=Value lines (stdin or pipe) to JSON for aws cloudformation update-stack --parameters.
 params_to_json() {
@@ -214,7 +270,7 @@ deploy_via_update_stack() {
 }
 
 sam_deploy_or_fallback() {
-  if [[ "${UPDATE_STACK:-}" == "true" ]]; then
+  if [[ "${AWS_UPDATE_STACK:-}" == "true" ]]; then
     echo "=== SAM Deploy (direct update-stack; --update-stack set) ===" >&2
     deploy_via_update_stack
     return 0
@@ -323,7 +379,7 @@ required_from_env_or_prompt() {
   fi
 }
 
-# When local env overrides differ from the CloudFormation stack (e.g. GitHub-deployed TiDB vs .env RDS),
+# When local env overrides differ from the CloudFormation stack (e.g. GitHub-deployed TiDB vs .env existing host),
 # prompt the operator instead of silently preferring env.
 resolve_with_conflict_check() {
   local label="$1"
@@ -423,56 +479,20 @@ prompt_yes_no() {
 }
 
 ensure_aws_authenticated() {
-  local profile active_profile sso_start_url sso_region
-  profile="${AWS_PROFILE:-}"
-  active_profile="$profile"
-  if [[ -z "$active_profile" ]]; then
-    active_profile="$(aws configure get profile 2>/dev/null || true)"
-    [[ -z "$active_profile" ]] && active_profile="default"
-  fi
-
-  if aws sts get-caller-identity >/dev/null 2>&1; then
+  local identity profile_hint=""
+  if identity="$(aws sts get-caller-identity --query Arn --output text 2>/dev/null)"; then
+    echo "AWS session: $identity"
     return 0
   fi
-
-  sso_start_url="$(aws configure get sso_start_url --profile "$active_profile" 2>/dev/null || true)"
-  sso_region="$(aws configure get sso_region --profile "$active_profile" 2>/dev/null || true)"
-
-  echo "AWS CLI is not authenticated."
-  if [[ -n "$sso_start_url" && -n "$sso_region" ]]; then
-    if prompt_yes_no "Run 'aws sso login --profile $active_profile' now?" "y"; then
-      aws sso login --profile "$active_profile" || true
-    fi
-  else
-    echo "No complete SSO config found for profile '$active_profile'."
-    # Prefer the user's default interactive AWS login flow when available.
-    if aws login help >/dev/null 2>&1; then
-      if prompt_yes_no "Run 'aws login' now?" "y"; then
-        aws login || true
-      fi
-    fi
-
-    if ! aws sts get-caller-identity >/dev/null 2>&1; then
-      if prompt_yes_no "Run 'aws configure sso --profile $active_profile' now?" "n"; then
-        aws configure sso --profile "$active_profile" || true
-        if prompt_yes_no "Run 'aws sso login --profile $active_profile' now?" "y"; then
-          aws sso login --profile "$active_profile" || true
-        fi
-      else
-        echo "Tip: use 'aws configure' if you authenticate with access keys."
-      fi
-    fi
+  if [[ -n "${AWS_PROFILE:-}" ]]; then
+    profile_hint=" --profile $AWS_PROFILE"
   fi
-
-  if ! aws sts get-caller-identity >/dev/null 2>&1; then
-    echo "Unable to authenticate AWS CLI."
-    echo "Run one of the following, then rerun deploy:"
-    echo "  aws login"
-    echo "  aws configure sso [--profile <profile>]"
-    echo "  aws sso login [--profile <profile>]"
-    echo "  aws configure"
-    exit 1
-  fi
+  echo "Error: no active AWS CLI session." >&2
+  echo "Log in, then rerun this script:" >&2
+  echo "  aws login${profile_hint}" >&2
+  echo "  aws sso login${profile_hint}" >&2
+  echo "  aws configure" >&2
+  exit 1
 }
 
 ensure_gh_authenticated() {
@@ -630,18 +650,17 @@ output_value() {
 
 configure_github_actions_aws() {
   # $1 bootstrap outputs  $2 bootstrap stack  $3 region  $4 app stack
-  # $5 stage  $6 schema  $7 db_mode (existing|sqlite)  $8 engine  $9 host  $10 port
+  # $5 stage  $6 schema  $7 DATABASE_BACKEND  $8 host  $9 port
   local bootstrap_outputs="$1"
   local bootstrap_stack_name="$2"
   local aws_region="$3"
   local app_stack_name="$4"
   local deploy_stage="$5"
   local database_schema="$6"
-  local db_mode="$7"
-  local database_engine="${8:-mysql}"
-  local db_host="${9:-}"
-  local db_port="${10:-}"
-  [[ -z "$database_engine" ]] && database_engine="mysql"
+  local database_backend="${7:-mysql}"
+  local db_host="${8:-}"
+  local db_port="${9:-}"
+  [[ -z "$database_backend" ]] && database_backend="mysql"
   local role bucket boot_region
   role="$(output_value "$bootstrap_outputs" "GitHubDeployRoleArn")"
   bucket="$(output_value "$bootstrap_outputs" "DeploymentBucketName")"
@@ -664,8 +683,9 @@ configure_github_actions_aws() {
     echo "  AWS_ROLE_TO_ASSUME = $role"
     echo "  AWS_S3_BUCKET      = $bucket  (SAM deploy artifact bucket / DeploymentBucketName; not Slack file storage)"
     echo "  AWS_REGION         = $boot_region"
-    echo "For environment '$env_name' also set AWS_STACK_NAME, STAGE_NAME, AWS_DATABASE_MODE,"
-    echo "DATABASE_SCHEMA, DATABASE_ENGINE, DATABASE_USER, and (existing mode) DATABASE_HOST — see docs/DEPLOY.md."
+    echo "For environment '$env_name' also set AWS_STACK_NAME, DATABASE_BACKEND,"
+    echo "DATABASE_SCHEMA, DATABASE_USER, and (mysql/postgresql) DATABASE_HOST — see docs/DEPLOY.md."
+    echo "If those keys are in the env file, --setup-github copies them. The AWS job sets Stage (test or prod)."
     return 0
   fi
 
@@ -682,42 +702,16 @@ configure_github_actions_aws() {
     echo "GitHub repository variables updated."
   fi
 
-  if prompt_yes_no "Set environment variables for '$env_name' now (AWS_STACK_NAME, STAGE_NAME, DATABASE_*)?" "y"; then
-    gh_variable_set_env AWS_STACK_NAME "$env_name" "$repo" "$app_stack_name"
-    gh_variable_set_env STAGE_NAME "$env_name" "$repo" "$deploy_stage"
-    gh_variable_set_env AWS_DATABASE_MODE "$env_name" "$repo" "$db_mode"
-    gh_variable_set_env ENABLE_KEEP_WARM "$env_name" "$repo" "${ENABLE_KEEP_WARM:-true}"
-    gh_variable_set_env DATABASE_SCHEMA "$env_name" "$repo" "$database_schema"
-    gh_variable_set_env DATABASE_ENGINE "$env_name" "$repo" "$database_engine"
-    gh_variable_set_env SLACK_CLIENT_ID "$env_name" "$repo" "${SLACK_CLIENT_ID:-}"
-    if [[ "$db_mode" == "existing" ]]; then
-      gh_variable_set_env DATABASE_HOST "$env_name" "$repo" "$db_host"
-      gh_variable_set_env DATABASE_PORT "$env_name" "$repo" "$db_port"
-      gh_variable_set_env DATABASE_USER "$env_name" "$repo" "${DATABASE_USER:-}"
-    else
-      gh_variable_set_env DATABASE_HOST "$env_name" "$repo" ""
-      gh_variable_set_env DATABASE_PORT "$env_name" "$repo" ""
-      gh_variable_set_env DATABASE_USER "$env_name" "$repo" ""
+  if prompt_yes_no "Set environment variables and secrets for '$env_name' now (AWS_STACK_NAME and env-file keys AWS CI reads)?" "y"; then
+    if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
+      SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
     fi
-    gh_delete_legacy_database_vars "$env_name" "$repo"
-    echo "Environment variables updated for '$env_name'."
+    if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
+      SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
+    fi
+    push_github_aws_ci_config "$repo" "$env_name" "$role" "$bucket" "$boot_region" "$app_stack_name"
+    echo "GitHub environment '$env_name' updated."
   fi
-
-  echo "Setting GitHub environment secrets for '$env_name' (Slack, DATA_ENCRYPTION_KEY, ...)..."
-  if [[ -z "${SLACK_SIGNING_SECRET:-}" ]]; then
-    SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
-  fi
-  if [[ -z "${SLACK_CLIENT_SECRET:-}" ]]; then
-    SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
-  fi
-  gh secret set SLACK_SIGNING_SECRET --env "$env_name" --body "$SLACK_SIGNING_SECRET" -R "$repo"
-  gh secret set SLACK_CLIENT_SECRET --env "$env_name" --body "$SLACK_CLIENT_SECRET" -R "$repo"
-  gh secret set DATA_ENCRYPTION_KEY --env "$env_name" --body "$DATA_ENCRYPTION_KEY" -R "$repo"
-  if [[ "$db_mode" == "existing" ]]; then
-    gh secret set DATABASE_PASSWORD --env "$env_name" --body "$DATABASE_PASSWORD" -R "$repo"
-  fi
-  gh_delete_legacy_database_vars "$env_name" "$repo"
-  echo "Environment secrets updated for '$env_name'."
 }
 
 generate_stage_slack_manifest() {
@@ -805,10 +799,9 @@ write_deploy_receipt() {
 - Slack Manifest: ${SLACK_MANIFEST_GENERATED_PATH:-n/a}
 
 ## Configuration
-- STACK_NAME=$STACK_NAME
-- AWS_DATABASE_MODE=${AWS_DATABASE_MODE:-}
+- AWS_STACK_NAME=$STACK_NAME
+- DATABASE_BACKEND=${DATABASE_BACKEND:-}
 - ENABLE_KEEP_WARM=${ENABLE_KEEP_WARM:-true}
-- DATABASE_ENGINE=${DATABASE_ENGINE:-}
 - DATABASE_SCHEMA=${DATABASE_SCHEMA:-}
 - DATABASE_HOST=${DATABASE_HOST:-}
 - DATABASE_PORT=${DATABASE_PORT:-}
@@ -822,7 +815,7 @@ write_deploy_receipt() {
 - SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
 - PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
 - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
-- ENABLE_XRAY=${ENABLE_XRAY:-false}
+- AWS_ENABLE_XRAY=${AWS_ENABLE_XRAY:-false}
 - ENABLE_DB_RESET=${ENABLE_DB_RESET:-false}
 
 ## Secrets
@@ -934,6 +927,24 @@ sync_bootstrap_stack_from_repo() {
     --capabilities CAPABILITY_NAMED_IAM \
     --no-fail-on-empty-changeset \
     --region "$aws_region"
+}
+
+# Create bootstrap if missing; sync only when template.bootstrap.yaml hash differs
+# (stack parameter TemplateContentSha256). BOOTSTRAP=true (--bootstrap) forces a sync.
+ensure_aws_bootstrap_stack() {
+  local extra=()
+  extra+=(--create)
+  [[ "${BOOTSTRAP:-}" == "true" ]] && extra+=(--force)
+  [[ "${SYNCBOT_SKIP_BOOTSTRAP_SYNC:-}" == "1" ]] && extra+=(--skip-sync)
+  echo
+  echo "=== Bootstrap ==="
+  BOOTSTRAP_STACK_NAME="$BOOTSTRAP_STACK" \
+    AWS_BOOTSTRAP_STACK_NAME="$BOOTSTRAP_STACK" \
+    AWS_REGION="$REGION" \
+    GITHUB_REPO="${GITHUB_REPO:-}" \
+    AWS_CREATE_OIDC_PROVIDER="${AWS_CREATE_OIDC_PROVIDER:-true}" \
+    AWS_DEPLOY_BUCKET_PREFIX="${AWS_DEPLOY_BUCKET_PREFIX:-syncbot-deploy}" \
+    bash "$REPO_ROOT/infra/aws/scripts/ensure_bootstrap.sh" "${extra[@]}"
 }
 
 # Compare GitHub owner/repo from bootstrap stack to the repo chosen for gh; offer to update OIDC trust.
@@ -1052,6 +1063,7 @@ prereqs_require_cmd python3 prereqs_hint_python3
 prereqs_require_cmd curl prereqs_hint_curl
 
 prereqs_print_cli_status_matrix "AWS" aws sam docker python3 curl
+ensure_aws_authenticated
 
 if [[ ! -f "$APP_TEMPLATE" ]]; then
   echo "Error: app template not found at $APP_TEMPLATE" >&2
@@ -1063,58 +1075,37 @@ if [[ ! -f "$BOOTSTRAP_TEMPLATE" ]]; then
 fi
 
 # ====================================================================
-# Non-interactive fast path (./deploy.sh --env test|prod aws)
+# Non-interactive fast path (./deploy.sh --env test|prod)
 # ====================================================================
 if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   echo "=== SyncBot AWS Deploy (non-interactive) ==="
-  REGION="${AWS_REGION:-us-east-2}"
-  ensure_aws_authenticated
-  BOOTSTRAP_STACK="${BOOTSTRAP_STACK_NAME:-syncbot-bootstrap}"
+  apply_aws_provider_env_aliases
+  REGION="${AWS_REGION:-us-east-1}"
+  BOOTSTRAP_STACK="${AWS_BOOTSTRAP_STACK_NAME:-syncbot-bootstrap}"
 
-  if [[ "${BOOTSTRAP:-}" == "true" ]]; then
-    echo "=== Bootstrap ==="
-    BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
-    if [[ -z "$BOOTSTRAP_OUTPUTS" ]]; then
-      GITHUB_REPO="${GITHUB_REPOSITORY:-$(cd "$REPO_ROOT" && gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || echo "REPLACE_ME")}"
-      echo "Creating bootstrap stack: $BOOTSTRAP_STACK"
-      aws cloudformation deploy \
-        --template-file "$BOOTSTRAP_TEMPLATE" \
-        --stack-name "$BOOTSTRAP_STACK" \
-        --parameter-overrides \
-          "GitHubRepository=$GITHUB_REPO" \
-          "CreateOIDCProvider=${CREATE_OIDC_PROVIDER:-true}" \
-          "DeploymentBucketPrefix=${DEPLOY_BUCKET_PREFIX:-syncbot-deploy}" \
-        --capabilities CAPABILITY_NAMED_IAM \
-        --region "$REGION" \
-        --no-fail-on-empty-changeset
-    else
-      sync_bootstrap_stack_from_repo "$BOOTSTRAP_STACK" "$REGION"
-    fi
-  fi
+  ensure_aws_bootstrap_stack
 
   BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
-  S3_BUCKET="${DEPLOYMENT_S3_BUCKET:-$(output_value "$BOOTSTRAP_OUTPUTS" "DeploymentBucketName")}"
+  S3_BUCKET="${AWS_S3_BUCKET:-$(output_value "$BOOTSTRAP_OUTPUTS" "DeploymentBucketName")}"
   if [[ -z "$S3_BUCKET" ]]; then
-    echo "Error: could not determine S3 deploy bucket. Set DEPLOYMENT_S3_BUCKET in env file or deploy bootstrap first." >&2
+    echo "Error: could not determine S3 deploy bucket after bootstrap. Set AWS_S3_BUCKET in env file." >&2
     exit 1
   fi
-  STACK_NAME="${STACK_NAME:?STACK_NAME required in env file}"
+  AWS_S3_BUCKET="$S3_BUCKET"
+  STACK_NAME="${AWS_STACK_NAME:?AWS_STACK_NAME required in env file}"
   STAGE="${STAGE:?STAGE required}"
 
   handle_unhealthy_stack_state "$STACK_NAME" "$REGION"
   abort_if_stack_managed_rds "$STACK_NAME" "$REGION"
 
-  DATABASE_HOST="${DATABASE_HOST:-${EXISTING_DATABASE_HOST:-}}"
-  DATABASE_PORT="${DATABASE_PORT:-${EXISTING_DATABASE_PORT:-}}"
-  DATABASE_ENGINE="${DATABASE_ENGINE:-mysql}"
-  DATABASE_SCHEMA="${DATABASE_SCHEMA:-syncbot}"
+  resolve_database_schema "$STACK_NAME" "$REGION" "$STAGE"
   DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
   ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
-  AWS_DATABASE_MODE="$(resolve_aws_database_mode)"
-  SAM_DATABASE_ENGINE="$(sam_database_engine "${DATABASE_ENGINE:-mysql}")"
+  resolve_database_backend aws
+  require_database_credentials_for_backend
 
   if [[ -n "${ENV_FILE_PATH:-}" ]]; then
-    update_env_file "$ENV_FILE_PATH" "AWS_DATABASE_MODE" "$AWS_DATABASE_MODE"
+    update_env_file "$ENV_FILE_PATH" "DATABASE_BACKEND" "$DATABASE_BACKEND"
     update_env_file "$ENV_FILE_PATH" "ENABLE_KEEP_WARM" "$ENABLE_KEEP_WARM"
   fi
 
@@ -1129,13 +1120,9 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     fi
   fi
 
-  if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-    if [[ -z "${DATABASE_HOST:-}" ]]; then
-      echo "Error: DATABASE_HOST is required when AWS_DATABASE_MODE=existing." >&2
-      exit 1
-    fi
-    DATABASE_PASSWORD="${DATABASE_PASSWORD:?DATABASE_PASSWORD required in env file for existing mode}"
-    DATABASE_USER="${DATABASE_USER:?DATABASE_USER required in env file for existing mode}"
+  if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
+    DATABASE_PASSWORD="${DATABASE_PASSWORD:?DATABASE_PASSWORD required in env file when DATABASE_BACKEND is not sqlite}"
+    DATABASE_USER="${DATABASE_USER:?DATABASE_USER required in env file when DATABASE_BACKEND is not sqlite}"
   else
     DATABASE_PASSWORD="${DATABASE_PASSWORD:-}"
     DATABASE_USER="${DATABASE_USER:-}"
@@ -1144,8 +1131,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
 
   PARAMS=(
     "Stage=$STAGE"
-    "DatabaseMode=$AWS_DATABASE_MODE"
-    "DatabaseEngine=$SAM_DATABASE_ENGINE"
+    "DatabaseBackend=$DATABASE_BACKEND"
     "EnableKeepWarm=$ENABLE_KEEP_WARM"
     "SlackSigningSecret=${SLACK_SIGNING_SECRET:?SLACK_SIGNING_SECRET required}"
     "SlackClientSecret=${SLACK_CLIENT_SECRET:?SLACK_CLIENT_SECRET required}"
@@ -1164,9 +1150,9 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "EnableDbReset=${ENABLE_DB_RESET:-}"
     "DatabaseTlsEnabled=${DATABASE_TLS_ENABLED:-}"
     "DatabaseSslCaPath=${DATABASE_SSL_CA_PATH:-}"
-    "EnableXRay=${ENABLE_XRAY:-false}"
-    "ExistingDatabaseHost=${DATABASE_HOST:-}"
-    "ExistingDatabasePort=${DATABASE_PORT:-}"
+    "EnableXRay=${AWS_ENABLE_XRAY:-false}"
+    "DatabaseHost=${DATABASE_HOST:-}"
+    "DatabasePort=${DATABASE_PORT:-}"
     "SlackOauthBotScopes=${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
     "SlackOauthUserScopes=${SLACK_USER_SCOPES:-chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
   )
@@ -1207,36 +1193,8 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     fi
     REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
     ENV_NAME="$STAGE"
-    ROLE_ARN="${AWS_ROLE_ARN:-$(output_value "$BOOTSTRAP_OUTPUTS" "GitHubDeployRoleArn")}"
-
-    gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null
-    [[ -n "$ROLE_ARN" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$ROLE_ARN" -R "$REPO"
-    [[ -n "$S3_BUCKET" ]] && gh variable set AWS_S3_BUCKET --body "$S3_BUCKET" -R "$REPO"
-    gh variable set AWS_REGION --body "$REGION" -R "$REPO"
-    gh_variable_set_env AWS_STACK_NAME "$ENV_NAME" "$REPO" "$STACK_NAME"
-    gh_variable_set_env STAGE_NAME "$ENV_NAME" "$REPO" "$STAGE"
-    gh_variable_set_env AWS_DATABASE_MODE "$ENV_NAME" "$REPO" "$AWS_DATABASE_MODE"
-    gh_variable_set_env ENABLE_KEEP_WARM "$ENV_NAME" "$REPO" "$ENABLE_KEEP_WARM"
-    gh_variable_set_env DATABASE_SCHEMA "$ENV_NAME" "$REPO" "$DATABASE_SCHEMA"
-    gh_variable_set_env DATABASE_ENGINE "$ENV_NAME" "$REPO" "$DATABASE_ENGINE"
-    gh_variable_set_env SLACK_CLIENT_ID "$ENV_NAME" "$REPO" "$SLACK_CLIENT_ID"
-    if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-      gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" "$DATABASE_HOST"
-      gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" "${DATABASE_PORT:-}"
-      gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" "${DATABASE_USER:-}"
-    else
-      gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
-      gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" ""
-      gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" ""
-    fi
-    gh_delete_legacy_database_vars "$ENV_NAME" "$REPO"
-    echo "Setting GitHub environment secrets for '$ENV_NAME'..."
-    gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
-    gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
-    gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
-    if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-      gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
-    fi
+    ROLE_ARN="${AWS_ROLE_TO_ASSUME:-$(output_value "$BOOTSTRAP_OUTPUTS" "GitHubDeployRoleArn")}"
+    push_github_aws_ci_config "$REPO" "$ENV_NAME" "$ROLE_ARN" "$S3_BUCKET" "$REGION" "$STACK_NAME"
     echo "GitHub environment '$ENV_NAME' updated for repo $REPO."
   fi
 
@@ -1263,19 +1221,24 @@ echo "=== SyncBot AWS Deploy ==="
 echo
 
 # Backward-compatible aliases: new name primary, EXISTING_ as fallback (same as non-interactive path)
+apply_aws_provider_env_aliases
 DATABASE_HOST="${DATABASE_HOST:-${EXISTING_DATABASE_HOST:-}}"
 DATABASE_PORT="${DATABASE_PORT:-${EXISTING_DATABASE_PORT:-}}"
 DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
 ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
 
-DEFAULT_REGION="${AWS_REGION:-us-east-2}"
+DEFAULT_REGION="${AWS_REGION:-us-east-1}"
 REGION="$(prompt_default "AWS region" "$DEFAULT_REGION")"
-echo
-echo "=== Authentication ==="
-ensure_aws_authenticated
-BOOTSTRAP_STACK="$(prompt_default "Bootstrap stack name" "syncbot-bootstrap")"
+BOOTSTRAP_STACK="$(prompt_default "Bootstrap stack name" "${AWS_BOOTSTRAP_STACK_NAME:-syncbot-bootstrap}")"
 
-# Probe bootstrap outputs only; create/sync runs later if task 1 (Bootstrap) is selected.
+if ! aws cloudformation describe-stacks --stack-name "$BOOTSTRAP_STACK" --region "$REGION" >/dev/null 2>&1; then
+  if [[ -z "${GITHUB_REPO:-}" ]]; then
+    GITHUB_REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
+  fi
+fi
+ensure_aws_bootstrap_stack
+
+# Probe bootstrap outputs for suggested app stack names.
 BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
 
 SUGGESTED_TEST_STACK="$(output_value "$BOOTSTRAP_OUTPUTS" "SuggestedTestStackName")"
@@ -1293,13 +1256,15 @@ fi
 
 DEFAULT_STACK="$SUGGESTED_TEST_STACK"
 [[ "$STAGE" == "prod" ]] && DEFAULT_STACK="$SUGGESTED_PROD_STACK"
-STACK_NAME="$(prompt_default "App stack name" "$DEFAULT_STACK")"
+STACK_NAME="$(prompt_default "App stack name" "${AWS_STACK_NAME:-$DEFAULT_STACK}")"
+AWS_STACK_NAME="$STACK_NAME"
 EXISTING_STACK_STATUS="$(stack_status "$STACK_NAME" "$REGION")"
 IS_STACK_UPDATE="false"
 EXISTING_STACK_PARAMS=""
 PREV_DATABASE_HOST=""
 PREV_DATABASE_PORT=""
 PREV_DATABASE_ENGINE=""
+PREV_DATABASE_BACKEND=""
 PREV_DATABASE_SCHEMA=""
 PREV_DATABASE_MODE=""
 PREV_ENABLE_KEEP_WARM=""
@@ -1325,8 +1290,12 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   IS_STACK_UPDATE="true"
   EXISTING_STACK_PARAMS="$(stack_parameters "$STACK_NAME" "$REGION")"
   abort_if_stack_managed_rds "$STACK_NAME" "$REGION"
-  PREV_DATABASE_HOST="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseHost")"
-  PREV_DATABASE_PORT="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabasePort")"
+  PREV_DATABASE_BACKEND=""
+  PREV_DATABASE_HOST="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseHost")"
+  [[ -z "$PREV_DATABASE_HOST" ]] && PREV_DATABASE_HOST="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabaseHost")"
+  PREV_DATABASE_PORT="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabasePort")"
+  [[ -z "$PREV_DATABASE_PORT" ]] && PREV_DATABASE_PORT="$(stack_param_value "$EXISTING_STACK_PARAMS" "ExistingDatabasePort")"
+  PREV_DATABASE_BACKEND="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseBackend")"
   PREV_DATABASE_ENGINE="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseEngine")"
   PREV_DATABASE_MODE="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseMode")"
   PREV_ENABLE_KEEP_WARM="$(stack_param_value "$EXISTING_STACK_PARAMS" "EnableKeepWarm")"
@@ -1343,9 +1312,21 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   PREV_DB_SSL_CA="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseSslCaPath")"
   EXISTING_STACK_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
   PREV_DATABASE_HOST_IN_USE="$(output_value "$EXISTING_STACK_OUTPUTS" "DatabaseHostInUse")"
-  if [[ "$PREV_DATABASE_MODE" == "sqlite" || "$PREV_DATABASE_HOST_IN_USE" == "sqlite" ]]; then
-    PREV_DATABASE_MODE="sqlite"
+  if [[ -n "$PREV_DATABASE_BACKEND" ]]; then
+    :
+  elif [[ "$PREV_DATABASE_MODE" == "sqlite" || "$PREV_DATABASE_HOST_IN_USE" == "sqlite" ]]; then
+    PREV_DATABASE_BACKEND="sqlite"
   elif [[ -n "$PREV_DATABASE_HOST" || "$PREV_DATABASE_MODE" == "existing" ]]; then
+    PREV_STACK_USES_EXTERNAL_DB="true"
+    if [[ "$PREV_DATABASE_ENGINE" == "postgresql" ]]; then
+      PREV_DATABASE_BACKEND="postgresql"
+    else
+      PREV_DATABASE_BACKEND="mysql"
+    fi
+  fi
+  if [[ "$PREV_DATABASE_BACKEND" == "sqlite" ]]; then
+    PREV_DATABASE_MODE="sqlite"
+  elif [[ -n "$PREV_DATABASE_BACKEND" ]]; then
     PREV_STACK_USES_EXTERNAL_DB="true"
     PREV_DATABASE_MODE="existing"
   fi
@@ -1356,36 +1337,6 @@ fi
 
 echo
 prompt_deploy_tasks_aws
-
-if [[ "$TASK_BOOTSTRAP" == "true" ]]; then
-  echo
-  echo "=== Bootstrap Stack ==="
-  if [[ -z "$BOOTSTRAP_OUTPUTS" ]]; then
-    echo "Bootstrap stack not found (or has no outputs): $BOOTSTRAP_STACK in $REGION"
-    if prompt_yes_no "Deploy bootstrap stack now?" "y"; then
-      GITHUB_REPO="$(prompt_default "GitHub repository (owner/repo)" "REPLACE_ME_OWNER/REPLACE_ME_REPO")"
-      CREATE_OIDC="$(prompt_default "Create OIDC provider (true/false)" "true")"
-      BUCKET_PREFIX="$(prompt_default "Deployment bucket prefix" "syncbot-deploy")"
-      echo "Deploying bootstrap stack..."
-      aws cloudformation deploy \
-        --template-file "$BOOTSTRAP_TEMPLATE" \
-        --stack-name "$BOOTSTRAP_STACK" \
-        --parameter-overrides \
-          "GitHubRepository=$GITHUB_REPO" \
-          "CreateOIDCProvider=$CREATE_OIDC" \
-          "DeploymentBucketPrefix=$BUCKET_PREFIX" \
-        --capabilities CAPABILITY_NAMED_IAM \
-        --region "$REGION"
-      BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
-    else
-      echo "Skipping bootstrap. You must provide deploy bucket manually when deploying."
-    fi
-  fi
-  if [[ -n "$BOOTSTRAP_OUTPUTS" ]]; then
-    sync_bootstrap_stack_from_repo "$BOOTSTRAP_STACK" "$REGION"
-    BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
-  fi
-fi
 
 BOOTSTRAP_OUTPUTS="$(bootstrap_describe_outputs "$BOOTSTRAP_STACK" "$REGION")"
 S3_BUCKET="$(output_value "$BOOTSTRAP_OUTPUTS" "DeploymentBucketName")"
@@ -1400,7 +1351,7 @@ fi
 if [[ "$TASK_BUILD_DEPLOY" != "true" ]]; then
   if [[ "$TASK_CICD" == "true" || "$TASK_SLACK_API" == "true" ]]; then
     if [[ -z "${EXISTING_STACK_STATUS:-}" || "$EXISTING_STACK_STATUS" == "None" ]]; then
-      echo "Error: CloudFormation stack '$STACK_NAME' does not exist in $REGION. Select task 2 (Build/Deploy) first or create the stack." >&2
+      echo "Error: CloudFormation stack '$STACK_NAME' does not exist in $REGION. Select task 1 (Build/Deploy) first or create the stack." >&2
       exit 1
     fi
   fi
@@ -1409,49 +1360,31 @@ fi
 if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
 echo
 echo "=== Configuration ==="
-echo "=== Database Source ==="
-echo "  1) Existing database host (TiDB / MySQL / your own RDS) — default"
-echo "  2) SQLite + Litestream to S3 (pennies of S3; reserved concurrency 1; keep-warm recommended)"
-AWS_DATABASE_MODE="existing"
-DB_MODE_DEFAULT="1"
-if [[ "$IS_STACK_UPDATE" == "true" && "$PREV_DATABASE_MODE" == "sqlite" ]]; then
-  DB_MODE_DEFAULT="2"
-  echo "Current stack mode: sqlite"
+echo "=== Database ==="
+echo "  1) MySQL (TiDB / your own host) — default"
+echo "  2) PostgreSQL"
+echo "  3) SQLite + Litestream to S3 (pennies of S3; reserved concurrency 1; keep-warm recommended)"
+DATABASE_BACKEND="mysql"
+DB_BACKEND_DEFAULT="1"
+if [[ "$IS_STACK_UPDATE" == "true" && "$PREV_DATABASE_BACKEND" == "sqlite" ]]; then
+  DB_BACKEND_DEFAULT="3"
+  echo "Current stack: sqlite"
+elif [[ "$IS_STACK_UPDATE" == "true" && "$PREV_DATABASE_BACKEND" == "postgresql" ]]; then
+  DB_BACKEND_DEFAULT="2"
+  echo "Current stack: postgresql"
 elif [[ "$IS_STACK_UPDATE" == "true" ]]; then
-  echo "Current stack mode: existing"
+  echo "Current stack: mysql"
 fi
-DB_CHOICE="$(prompt_default "Choose database source (1 or 2)" "$DB_MODE_DEFAULT")"
-if [[ "$DB_CHOICE" == "2" ]]; then
-  AWS_DATABASE_MODE="sqlite"
-elif [[ "$DB_CHOICE" != "1" ]]; then
-  echo "Error: invalid database mode." >&2
-  exit 1
-fi
-
-DATABASE_ENGINE="mysql"
-if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-  DB_ENGINE_DEFAULT="1"
-  if [[ "$IS_STACK_UPDATE" == "true" && "$PREV_DATABASE_ENGINE" == "postgresql" ]]; then
-    DATABASE_ENGINE="postgresql"
-    DB_ENGINE_DEFAULT="2"
-  fi
-  echo
-  echo "=== Database Engine ==="
-  if [[ "$DB_ENGINE_DEFAULT" == "2" ]]; then
-    echo "  1) MySQL"
-    echo "  2) PostgreSQL (default/current)"
-  else
-    echo "  1) MySQL (default/current)"
-    echo "  2) PostgreSQL"
-  fi
-  DB_ENGINE_MODE="$(prompt_default "Choose 1 or 2" "$DB_ENGINE_DEFAULT")"
-  if [[ "$DB_ENGINE_MODE" == "2" ]]; then
-    DATABASE_ENGINE="postgresql"
-  elif [[ "$DB_ENGINE_MODE" != "1" ]]; then
-    echo "Error: invalid database engine mode." >&2
+DB_CHOICE="$(prompt_default "Choose database (1, 2, or 3)" "$DB_BACKEND_DEFAULT")"
+case "$DB_CHOICE" in
+  1) DATABASE_BACKEND="mysql" ;;
+  2) DATABASE_BACKEND="postgresql" ;;
+  3) DATABASE_BACKEND="sqlite" ;;
+  *)
+    echo "Error: invalid database choice." >&2
     exit 1
-  fi
-fi
+    ;;
+esac
 
 echo
 echo "=== Slack App Credentials ==="
@@ -1470,15 +1403,15 @@ if [[ "$IS_STACK_UPDATE" == "true" && -n "$PREV_DATABASE_SCHEMA" ]]; then
   DATABASE_SCHEMA_DEFAULT="$PREV_DATABASE_SCHEMA"
 fi
 
-if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
+if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
   echo
-  echo "=== Existing Database Host ==="
+  echo "=== Database Host ==="
   echo "Create the database and app user first (see docs/DEPLOY.md). Pass the full DATABASE_USER"
   echo "(including any TiDB cluster prefix). The host must be reachable from public Lambda (no VPC)."
-  DATABASE_HOST_DEFAULT="gateway.tidbcloud.com"
+  DATABASE_HOST_DEFAULT="YOUR_DATABASE_HOST"
   [[ -n "$PREV_DATABASE_HOST" ]] && DATABASE_HOST_DEFAULT="$PREV_DATABASE_HOST"
   DATABASE_HOST="$(resolve_with_conflict_check \
-    "DATABASE_HOST (existing database hostname)" \
+    "DATABASE_HOST (database hostname)" \
     "$ENV_DATABASE_HOST" \
     "$PREV_DATABASE_HOST" \
     "$DATABASE_HOST_DEFAULT")"
@@ -1489,7 +1422,7 @@ if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
   DATABASE_SCHEMA="$(prompt_default "DatabaseSchema" "$DATABASE_SCHEMA_DEFAULT")"
 
   echo
-  echo "=== Existing database port ==="
+  echo "=== Database port ==="
   echo "Leave port blank to use the engine default (3306 MySQL, 5432 PostgreSQL). TiDB Cloud uses 4000."
   DEFAULT_DB_PORT=""
   [[ -n "$PREV_DATABASE_PORT" ]] && DEFAULT_DB_PORT="$PREV_DATABASE_PORT"
@@ -1498,18 +1431,18 @@ if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
     "$ENV_DATABASE_PORT" \
     "$PREV_DATABASE_PORT" \
     "$DEFAULT_DB_PORT")"
-  if [[ "$DATABASE_ENGINE" == "mysql" && "$DATABASE_PORT" == "3306" ]]; then
+  if [[ "$DATABASE_BACKEND" == "mysql" && "$DATABASE_PORT" == "3306" ]]; then
     DATABASE_PORT=""
   fi
-  if [[ "$DATABASE_ENGINE" == "postgresql" && "$DATABASE_PORT" == "5432" ]]; then
+  if [[ "$DATABASE_BACKEND" == "postgresql" && "$DATABASE_PORT" == "5432" ]]; then
     DATABASE_PORT=""
   fi
   DB_EFFECTIVE_PORT="3306"
-  [[ "$DATABASE_ENGINE" == "postgresql" ]] && DB_EFFECTIVE_PORT="5432"
+  [[ "$DATABASE_BACKEND" == "postgresql" ]] && DB_EFFECTIVE_PORT="5432"
   [[ -n "$DATABASE_PORT" ]] && DB_EFFECTIVE_PORT="$DATABASE_PORT"
 
-  if [[ -z "$DATABASE_HOST" || "$DATABASE_HOST" == REPLACE_ME* ]]; then
-    echo "Error: valid DATABASE_HOST is required for existing mode." >&2
+  if [[ -z "$DATABASE_HOST" || "$DATABASE_HOST" == REPLACE_ME* || "$DATABASE_HOST" == YOUR_* ]]; then
+    echo "Error: valid DATABASE_HOST is required when DATABASE_BACKEND is not sqlite." >&2
     exit 1
   fi
 else
@@ -1541,7 +1474,7 @@ DATA_ENCRYPTION_KEY="$(required_from_env_or_prompt "DATA_ENCRYPTION_KEY" "DataEn
 
 DATABASE_PASSWORD=""
 DATABASE_USER=""
-if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
+if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
   DATABASE_PASSWORD="$(required_from_env_or_prompt "DATABASE_PASSWORD" "DatabasePassword" "secret")"
   DATABASE_USER="$(required_from_env_or_prompt "DATABASE_USER" "DatabaseUser (full app username, including any TiDB prefix)")"
 fi
@@ -1601,15 +1534,14 @@ if [[ "$SYNCBOT_FEDERATION_ENABLED" == "true" ]]; then
   [[ -n "$SYNCBOT_PUBLIC_URL" ]] && echo "Public URL:       $SYNCBOT_PUBLIC_URL"
 fi
 echo "Deploy bucket:    $S3_BUCKET"
-if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-  echo "DB mode:          existing host"
-  echo "DB engine:        $DATABASE_ENGINE"
+if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
+  echo "DB backend:       $DATABASE_BACKEND"
   echo "DB host:          $DATABASE_HOST"
   echo "DB port:          ${DB_EFFECTIVE_PORT:-engine default}"
   echo "DB schema:        $DATABASE_SCHEMA"
   echo "DB user:          $DATABASE_USER"
 else
-  echo "DB mode:          sqlite + Litestream to S3"
+  echo "DB backend:       sqlite + Litestream to S3"
 fi
 echo "Token encryption: provided (NoEcho SAM parameter)"
 echo
@@ -1628,8 +1560,7 @@ echo
 
 PARAMS=(
   "Stage=$STAGE"
-  "DatabaseMode=$AWS_DATABASE_MODE"
-  "DatabaseEngine=$(sam_database_engine "${DATABASE_ENGINE:-mysql}")"
+  "DatabaseBackend=$DATABASE_BACKEND"
   "EnableKeepWarm=$ENABLE_KEEP_WARM"
   "SlackSigningSecret=$SLACK_SIGNING_SECRET"
   "SlackClientSecret=$SLACK_CLIENT_SECRET"
@@ -1648,11 +1579,11 @@ PARAMS=(
 [[ -n "$ENABLE_DB_RESET" ]] && PARAMS+=("EnableDbReset=$ENABLE_DB_RESET")
 [[ -n "$DATABASE_TLS_ENABLED" ]] && PARAMS+=("DatabaseTlsEnabled=$DATABASE_TLS_ENABLED")
 [[ -n "$DATABASE_SSL_CA_PATH" ]] && PARAMS+=("DatabaseSslCaPath=$DATABASE_SSL_CA_PATH")
-PARAMS+=("EnableXRay=${ENABLE_XRAY:-false}")
+PARAMS+=("EnableXRay=${AWS_ENABLE_XRAY:-false}")
 [[ -n "$SLACK_CLIENT_ID" ]] && PARAMS+=("SlackClientID=$SLACK_CLIENT_ID")
-if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-  PARAMS+=("ExistingDatabaseHost=$DATABASE_HOST")
-  [[ -n "$DATABASE_PORT" ]] && PARAMS+=("ExistingDatabasePort=$DATABASE_PORT")
+if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
+  PARAMS+=("DatabaseHost=$DATABASE_HOST")
+  [[ -n "$DATABASE_PORT" ]] && PARAMS+=("DatabasePort=$DATABASE_PORT")
 fi
 PARAMS+=(
   "SlackOauthBotScopes=${SLACK_BOT_SCOPES:-app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email}"
@@ -1688,11 +1619,9 @@ else
   echo
   echo "Skipping Build/Deploy (task 2 not selected)."
   APP_OUTPUTS="${EXISTING_STACK_OUTPUTS:-}"
-  AWS_DATABASE_MODE="${PREV_DATABASE_MODE:-existing}"
+  DATABASE_BACKEND="${PREV_DATABASE_BACKEND:-mysql}"
   DATABASE_SCHEMA="${PREV_DATABASE_SCHEMA:-}"
   [[ -z "$DATABASE_SCHEMA" ]] && DATABASE_SCHEMA="syncbot_${STAGE}"
-  DATABASE_ENGINE="${PREV_DATABASE_ENGINE:-mysql}"
-  [[ -z "$DATABASE_ENGINE" ]] && DATABASE_ENGINE="mysql"
   DATABASE_HOST="${PREV_DATABASE_HOST:-}"
   DATABASE_PORT="${PREV_DATABASE_PORT:-}"
   ENABLE_KEEP_WARM="${PREV_ENABLE_KEEP_WARM:-${ENABLE_KEEP_WARM:-true}}"
@@ -1726,8 +1655,7 @@ if [[ "$TASK_CICD" == "true" ]]; then
     "$STACK_NAME" \
     "$STAGE" \
     "$DATABASE_SCHEMA" \
-    "$AWS_DATABASE_MODE" \
-    "$DATABASE_ENGINE" \
+    "$DATABASE_BACKEND" \
     "$DATABASE_HOST" \
     "${DATABASE_PORT:-}"
 fi
@@ -1740,9 +1668,9 @@ if prompt_yes_no "Save config to .env.deploy.${STAGE} for future deploys?" "y"; 
     echo "# Generated by deploy.sh on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "CLOUD_PROVIDER=aws"
     echo "AWS_REGION=$REGION"
-    echo "STACK_NAME=$STACK_NAME"
-    echo "BOOTSTRAP_STACK_NAME=$BOOTSTRAP_STACK"
-    echo "AWS_DATABASE_MODE=$AWS_DATABASE_MODE"
+    echo "AWS_STACK_NAME=$STACK_NAME"
+    echo "AWS_BOOTSTRAP_STACK_NAME=$BOOTSTRAP_STACK"
+    echo "DATABASE_BACKEND=$DATABASE_BACKEND"
     echo "ENABLE_KEEP_WARM=$ENABLE_KEEP_WARM"
     echo ""
     echo "SLACK_SIGNING_SECRET=$SLACK_SIGNING_SECRET"
@@ -1751,21 +1679,18 @@ if prompt_yes_no "Save config to .env.deploy.${STAGE} for future deploys?" "y"; 
     echo ""
     echo "DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
     echo ""
-    if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
+    if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
       echo "DATABASE_HOST=${DATABASE_HOST:-}"
       [[ -n "${DB_EFFECTIVE_PORT:-}" ]] && echo "DATABASE_PORT=$DB_EFFECTIVE_PORT"
       echo "DATABASE_USER=${DATABASE_USER:-}"
       echo "DATABASE_PASSWORD=$DATABASE_PASSWORD"
       echo "DATABASE_SCHEMA=$DATABASE_SCHEMA"
-      echo "DATABASE_ENGINE=$DATABASE_ENGINE"
       [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && echo "DATABASE_TLS_ENABLED=$DATABASE_TLS_ENABLED"
-    else
-      echo "DATABASE_ENGINE=sqlite"
     fi
   } > "$ENV_SAVE_FILE"
   chmod 600 "$ENV_SAVE_FILE"
   echo "Saved to $ENV_SAVE_FILE"
-  echo "Next time: ./deploy.sh --env $STAGE aws"
+  echo "Next time: ./deploy.sh --env $STAGE"
 fi
 
 # --- Push to GitHub (if --setup-github and TASK_CICD was not already run) ---
@@ -1779,36 +1704,8 @@ if [[ "${SETUP_GITHUB:-}" == "true" && "$TASK_CICD" != "true" ]]; then
   fi
   REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
   ENV_NAME="$STAGE"
-  ROLE_ARN="${AWS_ROLE_ARN:-$(output_value "$BOOTSTRAP_OUTPUTS" "GitHubDeployRoleArn")}"
-
-  gh api -X PUT "repos/$REPO/environments/$ENV_NAME" >/dev/null
-  [[ -n "$ROLE_ARN" ]] && gh variable set AWS_ROLE_TO_ASSUME --body "$ROLE_ARN" -R "$REPO"
-  [[ -n "$S3_BUCKET" ]] && gh variable set AWS_S3_BUCKET --body "$S3_BUCKET" -R "$REPO"
-  gh variable set AWS_REGION --body "$REGION" -R "$REPO"
-  gh_variable_set_env AWS_STACK_NAME "$ENV_NAME" "$REPO" "$STACK_NAME"
-  gh_variable_set_env STAGE_NAME "$ENV_NAME" "$REPO" "$STAGE"
-  gh_variable_set_env AWS_DATABASE_MODE "$ENV_NAME" "$REPO" "$AWS_DATABASE_MODE"
-  gh_variable_set_env ENABLE_KEEP_WARM "$ENV_NAME" "$REPO" "$ENABLE_KEEP_WARM"
-  gh_variable_set_env DATABASE_SCHEMA "$ENV_NAME" "$REPO" "$DATABASE_SCHEMA"
-  gh_variable_set_env DATABASE_ENGINE "$ENV_NAME" "$REPO" "$DATABASE_ENGINE"
-  gh_variable_set_env SLACK_CLIENT_ID "$ENV_NAME" "$REPO" "$SLACK_CLIENT_ID"
-  if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-    gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" "$DATABASE_HOST"
-    gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" "${DATABASE_PORT:-}"
-    gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" "${DATABASE_USER:-}"
-  else
-    gh_variable_set_env DATABASE_HOST "$ENV_NAME" "$REPO" ""
-    gh_variable_set_env DATABASE_PORT "$ENV_NAME" "$REPO" ""
-    gh_variable_set_env DATABASE_USER "$ENV_NAME" "$REPO" ""
-  fi
-  gh_delete_legacy_database_vars "$ENV_NAME" "$REPO"
-  echo "Setting GitHub environment secrets for '$ENV_NAME' (Slack, DATA_ENCRYPTION_KEY, ...)..."
-  gh secret set SLACK_SIGNING_SECRET --env "$ENV_NAME" --body "$SLACK_SIGNING_SECRET" -R "$REPO"
-  gh secret set SLACK_CLIENT_SECRET --env "$ENV_NAME" --body "$SLACK_CLIENT_SECRET" -R "$REPO"
-  gh secret set DATA_ENCRYPTION_KEY --env "$ENV_NAME" --body "$DATA_ENCRYPTION_KEY" -R "$REPO"
-  if [[ "$AWS_DATABASE_MODE" == "existing" ]]; then
-    gh secret set DATABASE_PASSWORD --env "$ENV_NAME" --body "$DATABASE_PASSWORD" -R "$REPO"
-  fi
+  ROLE_ARN="${AWS_ROLE_TO_ASSUME:-$(output_value "$BOOTSTRAP_OUTPUTS" "GitHubDeployRoleArn")}"
+  push_github_aws_ci_config "$REPO" "$ENV_NAME" "$ROLE_ARN" "$S3_BUCKET" "$REGION" "$STACK_NAME"
   echo "GitHub environment '$ENV_NAME' updated for repo $REPO."
 fi
 

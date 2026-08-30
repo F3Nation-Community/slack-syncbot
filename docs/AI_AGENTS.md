@@ -1,12 +1,12 @@
 # AI agents on SyncBot
 
-This repository is set up so coding agents (Cursor, GitHub Copilot, Codex, Claude) can work safely with clear boundaries.
+This repository is set up so coding agents (Cursor, GitHub Copilot, Codex, Claude) can work with clear boundaries. Start with [AGENTS.md](../AGENTS.md) for commands, pitfalls, and **docs voice**. This page is CI guardrails, issue templates, and how we review agent-authored PRs.
 
 ## Read these first
 
 | File | Purpose |
 |------|---------|
-| [AGENTS.md](../AGENTS.md) | Primary guardrails, commands, pitfalls |
+| [AGENTS.md](../AGENTS.md) | Primary guardrails, commands, pitfalls, docs voice |
 | [.github/copilot-instructions.md](../.github/copilot-instructions.md) | Short Copilot-specific checklist |
 | [.cursor/rules/](../.cursor/rules/) | Cursor rules (architecture, tests, infra, no-touch files) |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Conventional Commits + workflow |

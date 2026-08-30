@@ -1,7 +1,7 @@
 # Deploy SyncBot to AWS (SAM). See docs/DEPLOY.md and docs/INFRA_CONTRACT.md.
-# To use GCP instead: set repository variable DEPLOY_TARGET=gcp and disable this workflow.
+# To use GCP instead: set repository variable GITHUB_DEPLOY_TARGET=gcp and disable this workflow.
 #
-# Secrets are passed as SAM parameters with NoEcho — no AWS Secrets Manager dependency.
+# Secrets are passed as SAM parameters with NoEcho.
 
 name: Deploy (AWS)
 
@@ -28,10 +28,10 @@ permissions:
   id-token: write
   contents: read
 
-# Skip when using GCP (set DEPLOY_TARGET=gcp to use deploy-gcp.yml instead)
+# Skip when using GCP (set GITHUB_DEPLOY_TARGET=gcp to use deploy-gcp.yml instead)
 jobs:
   sam-build:
-    if: vars.DEPLOY_TARGET != 'gcp'
+    if: (vars.GITHUB_DEPLOY_TARGET || vars.DEPLOY_TARGET) != 'gcp'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -87,47 +87,23 @@ jobs:
           use-installer: true
           version: "1.165.0"
 
-      - name: Sync bootstrap stack (if template changed)
-        run: |
-          STACK="${{ vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}"
-          REGION="${{ vars.AWS_REGION }}"
-          if ! aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" >/dev/null 2>&1; then
-            echo "Bootstrap stack '$STACK' does not exist; skipping sync (run --bootstrap locally first)."
-            exit 0
-          fi
-          CURRENT_TEMPLATE=$(aws cloudformation get-template --stack-name "$STACK" --region "$REGION" --query TemplateBody --output json)
-          NEW_HASH=$(sha256sum infra/aws/template.bootstrap.yaml | cut -d' ' -f1)
-          OLD_HASH=$(echo "$CURRENT_TEMPLATE" | sha256sum | cut -d' ' -f1)
-          if [[ "$NEW_HASH" == "$OLD_HASH" ]]; then
-            echo "Bootstrap template unchanged; skipping sync."
-            exit 0
-          fi
-          echo "Bootstrap template changed; syncing..."
-          PARAMS=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
-            --query "Stacks[0].Parameters" --output json)
-          GH_REPO=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="GitHubRepository") | .ParameterValue')
-          CREATE_OIDC=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="CreateOIDCProvider") | .ParameterValue')
-          BUCKET_PREFIX=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="DeploymentBucketPrefix") | .ParameterValue')
-          aws cloudformation deploy \
-            --template-file infra/aws/template.bootstrap.yaml \
-            --stack-name "$STACK" \
-            --parameter-overrides \
-              "GitHubRepository=$GH_REPO" \
-              "CreateOIDCProvider=${CREATE_OIDC:-true}" \
-              "DeploymentBucketPrefix=${BUCKET_PREFIX:-syncbot-deploy}" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --region "$REGION" \
-            --no-fail-on-empty-changeset
+      - name: Ensure bootstrap stack
+        env:
+          AWS_BOOTSTRAP_STACK_NAME: ${{ vars.AWS_BOOTSTRAP_STACK_NAME || vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: bash infra/aws/scripts/ensure_bootstrap.sh
 
       - name: Deploy to test
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
           AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
-          AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
-          STAGE_NAME: ${{ vars.STAGE_NAME }}
-          AWS_DATABASE_MODE: ${{ vars.AWS_DATABASE_MODE || 'existing' }}
+          AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME || 'syncbot-test' }}
+          AWS_BOOTSTRAP_STACK_NAME: ${{ vars.AWS_BOOTSTRAP_STACK_NAME || vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}
+          STAGE_NAME: test
+          DATABASE_BACKEND: ${{ vars.DATABASE_BACKEND }}
+          AWS_DATABASE_MODE: ${{ vars.AWS_DATABASE_MODE }}
           ENABLE_KEEP_WARM: ${{ vars.ENABLE_KEEP_WARM || 'true' }}
-          DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
+          DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE }}
           DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           DATABASE_USER: ${{ vars.DATABASE_USER }}
@@ -144,7 +120,7 @@ jobs:
           SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
           PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
           ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
-          ENABLE_XRAY: ${{ vars.ENABLE_XRAY || 'false' }}
+          AWS_ENABLE_XRAY: ${{ vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false' }}
           SLACK_CLIENT_ID: ${{ vars.SLACK_CLIENT_ID }}
           SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
           SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
@@ -153,7 +129,7 @@ jobs:
       - name: Run migrations and warm up Lambda
         run: |
           FUNCTION_ARN=$(aws cloudformation describe-stacks \
-            --stack-name ${{ vars.AWS_STACK_NAME }} \
+            --stack-name ${{ vars.AWS_STACK_NAME || 'syncbot-test' }} \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotFunctionArn'].OutputValue" \
             --output text)
           aws lambda invoke \
@@ -165,7 +141,7 @@ jobs:
 
       - name: Post-deploy summary
         run: |
-          STACK=${{ vars.AWS_STACK_NAME }}
+          STACK=${{ vars.AWS_STACK_NAME || 'syncbot-test' }}
           API_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotApiUrl'].OutputValue" --output text)
           INSTALL_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
@@ -203,47 +179,23 @@ jobs:
           use-installer: true
           version: "1.165.0"
 
-      - name: Sync bootstrap stack (if template changed)
-        run: |
-          STACK="${{ vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}"
-          REGION="${{ vars.AWS_REGION }}"
-          if ! aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" >/dev/null 2>&1; then
-            echo "Bootstrap stack '$STACK' does not exist; skipping sync (run --bootstrap locally first)."
-            exit 0
-          fi
-          CURRENT_TEMPLATE=$(aws cloudformation get-template --stack-name "$STACK" --region "$REGION" --query TemplateBody --output json)
-          NEW_HASH=$(sha256sum infra/aws/template.bootstrap.yaml | cut -d' ' -f1)
-          OLD_HASH=$(echo "$CURRENT_TEMPLATE" | sha256sum | cut -d' ' -f1)
-          if [[ "$NEW_HASH" == "$OLD_HASH" ]]; then
-            echo "Bootstrap template unchanged; skipping sync."
-            exit 0
-          fi
-          echo "Bootstrap template changed; syncing..."
-          PARAMS=$(aws cloudformation describe-stacks --stack-name "$STACK" --region "$REGION" \
-            --query "Stacks[0].Parameters" --output json)
-          GH_REPO=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="GitHubRepository") | .ParameterValue')
-          CREATE_OIDC=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="CreateOIDCProvider") | .ParameterValue')
-          BUCKET_PREFIX=$(echo "$PARAMS" | jq -r '.[] | select(.ParameterKey=="DeploymentBucketPrefix") | .ParameterValue')
-          aws cloudformation deploy \
-            --template-file infra/aws/template.bootstrap.yaml \
-            --stack-name "$STACK" \
-            --parameter-overrides \
-              "GitHubRepository=$GH_REPO" \
-              "CreateOIDCProvider=${CREATE_OIDC:-true}" \
-              "DeploymentBucketPrefix=${BUCKET_PREFIX:-syncbot-deploy}" \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --region "$REGION" \
-            --no-fail-on-empty-changeset
+      - name: Ensure bootstrap stack
+        env:
+          AWS_BOOTSTRAP_STACK_NAME: ${{ vars.AWS_BOOTSTRAP_STACK_NAME || vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: bash infra/aws/scripts/ensure_bootstrap.sh
 
       - name: Deploy to prod
         env:
           AWS_REGION: ${{ vars.AWS_REGION }}
           AWS_S3_BUCKET: ${{ vars.AWS_S3_BUCKET }}
-          AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME }}
-          STAGE_NAME: ${{ vars.STAGE_NAME }}
-          AWS_DATABASE_MODE: ${{ vars.AWS_DATABASE_MODE || 'existing' }}
+          AWS_STACK_NAME: ${{ vars.AWS_STACK_NAME || 'syncbot-prod' }}
+          AWS_BOOTSTRAP_STACK_NAME: ${{ vars.AWS_BOOTSTRAP_STACK_NAME || vars.BOOTSTRAP_STACK_NAME || 'syncbot-bootstrap' }}
+          STAGE_NAME: prod
+          DATABASE_BACKEND: ${{ vars.DATABASE_BACKEND }}
+          AWS_DATABASE_MODE: ${{ vars.AWS_DATABASE_MODE }}
           ENABLE_KEEP_WARM: ${{ vars.ENABLE_KEEP_WARM || 'true' }}
-          DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE || 'mysql' }}
+          DATABASE_ENGINE: ${{ vars.DATABASE_ENGINE }}
           DATA_ENCRYPTION_KEY: ${{ secrets.DATA_ENCRYPTION_KEY }}
           DATABASE_PASSWORD: ${{ secrets.DATABASE_PASSWORD }}
           DATABASE_USER: ${{ vars.DATABASE_USER }}
@@ -260,7 +212,7 @@ jobs:
           SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
           PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
           ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
-          ENABLE_XRAY: ${{ vars.ENABLE_XRAY || 'false' }}
+          AWS_ENABLE_XRAY: ${{ vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false' }}
           SLACK_CLIENT_ID: ${{ vars.SLACK_CLIENT_ID }}
           SLACK_CLIENT_SECRET: ${{ secrets.SLACK_CLIENT_SECRET }}
           SLACK_SIGNING_SECRET: ${{ secrets.SLACK_SIGNING_SECRET }}
@@ -269,7 +221,7 @@ jobs:
       - name: Run migrations and warm up Lambda
         run: |
           FUNCTION_ARN=$(aws cloudformation describe-stacks \
-            --stack-name ${{ vars.AWS_STACK_NAME }} \
+            --stack-name ${{ vars.AWS_STACK_NAME || 'syncbot-prod' }} \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotFunctionArn'].OutputValue" \
             --output text)
           aws lambda invoke \
@@ -281,7 +233,7 @@ jobs:
 
       - name: Post-deploy summary
         run: |
-          STACK=${{ vars.AWS_STACK_NAME }}
+          STACK=${{ vars.AWS_STACK_NAME || 'syncbot-prod' }}
           API_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotApiUrl'].OutputValue" --output text)
           INSTALL_URL=$(aws cloudformation describe-stacks --stack-name "$STACK" \

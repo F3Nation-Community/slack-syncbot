@@ -7,16 +7,16 @@
   in bash — same contract as ./deploy.sh on macOS/Linux.
 
   All arguments are passed through to deploy.sh, including --env, --bootstrap, and --setup-github.
+  CLOUD_PROVIDER in .env.deploy.<stage> selects AWS vs GCP.
 
   Provider-specific prerequisite checks live in infra/<provider>/scripts/deploy.sh
   (sourcing repo-root deploy.sh for shared helpers). There are no deploy.ps1 files under infra/.
 
 .EXAMPLE
   .\deploy.ps1
-  .\deploy.ps1 aws
-  .\deploy.ps1 --env test aws
-  .\deploy.ps1 --env prod --setup-github gcp
-  .\deploy.ps1 --env test --bootstrap aws
+  .\deploy.ps1 --env test
+  .\deploy.ps1 --env prod --setup-github
+  .\deploy.ps1 --env test --bootstrap
 #>
 param(
     [Parameter(ValueFromRemainingArguments = $true)]
@@ -128,9 +128,10 @@ $RepoRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 if ($AllArgs -and ($AllArgs[0] -in @("-h", "--help", "help"))) {
     @"
-Usage: .\deploy.ps1 [--env <stage>] [--bootstrap] [--setup-github] [selection]
+Usage: .\deploy.ps1 [--env <stage>] [--bootstrap] [--setup-github] [--verbose] [--update-stack]
 
 All arguments are passed through to ./deploy.sh.
+Platform is CLOUD_PROVIDER in .env.deploy.<stage>.
 Run .\deploy.ps1 --help for full usage from the bash script.
 "@
     exit 0

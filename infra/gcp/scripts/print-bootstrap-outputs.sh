@@ -45,7 +45,7 @@ echo "Artifact Registry                 = $(terraform output -raw artifact_regis
 echo "Service URL                       = $(terraform output -raw service_url 2>/dev/null || echo '<set from output service_url>')"
 echo "Litestream bucket                 = $(terraform output -raw litestream_bucket 2>/dev/null || echo '')"
 echo ""
-echo "Set DEPLOY_TARGET=gcp on the deploying GitHub repo. Image updates are CI-only"
+echo "Set GITHUB_DEPLOY_TARGET=gcp on the deploying GitHub repo. Image updates are CI-only"
 echo "(gcloud run services update --image); terraform apply ignores the container image."
 echo ""
 echo "DATA_ENCRYPTION_KEY is provided via .env.deploy file or Terraform variable."

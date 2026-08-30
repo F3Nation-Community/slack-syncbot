@@ -1,6 +1,6 @@
 # Development Guide
 
-How to run SyncBot locally (Dev Container, Docker Compose, native Python) and manage dependencies. For **cloud deploy** and CI/CD, see [DEPLOY.md](DEPLOY.md). For runtime env vars in any environment, see [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
+This page is how to run SyncBot on your laptop (Dev Container, Docker Compose, or native Python) and how to manage dependencies. For **cloud deploy** and CI/CD, see [DEPLOY.md](DEPLOY.md). For runtime env vars in any environment, see [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 
 ## Branching (upstream vs downstream)
 
@@ -11,18 +11,18 @@ The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/
 | **`main`** | Tracks upstream. Use it to merge PRs and to **sync with the upstream repository** (`git pull upstream main`, etc.). |
 | **`test`** / **`prod`** | On your fork, use these for **deployments**: GitHub Actions deploy workflows run on **push** to `test` and `prod` (see [DEPLOY.md](DEPLOY.md)). |
 
-Typical flow: develop on a feature branch → open a PR to **`main`** → merge → when ready to deploy, merge **`main`** into **`test`** or **`prod`** on your fork.
+Typical flow: develop on a feature branch → open a PR to **`main`** → merge → when you are ready to deploy, merge **`main`** into **`test`** or **`prod`** on your fork.
 
 ## Local development
 
 ### Dev Container (recommended)
 
-**Needs:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on Linux) + [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) in VS Code.
+**You need:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) (or Docker Engine on Linux) and the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension in VS Code.
 
-1. `cp .env.example .env` and set `SLACK_BOT_TOKEN` (`xoxb-...`).
-2. **Dev Containers: Reopen in Container** — Python, MySQL, and deps run inside the container.
-3. `cd syncbot && python app.py` → app on **port 3000** (forwarded).
-4. Expose to Slack with **cloudflared** or **ngrok** from the host; set Slack **Event Subscriptions** / **Interactivity** URLs to the public URL.
+1. Run `cp .env.example .env` and set `SLACK_BOT_TOKEN` (`xoxb-...`).
+2. Use **Dev Containers: Reopen in Container** — Python, MySQL, and dependencies run inside the container.
+3. Run `cd syncbot && python app.py`. The app listens on **port 3000** (forwarded).
+4. Expose it to Slack with **cloudflared** or **ngrok** from the host, then set Slack **Event Subscriptions** and **Interactivity** URLs to that public URL.
 
 Optional **SQLite**: in `.env` set `DATABASE_BACKEND=sqlite` and `DATABASE_URL=sqlite:////app/syncbot/syncbot.db`.
 
@@ -37,7 +37,7 @@ App on port **3000**; restart the `app` service after code changes.
 
 ### Native Python
 
-**Needs:** Python 3.12+, Poetry. Run MySQL locally (e.g. `docker run ... mysql:8`) or SQLite. See [`.env.example`](../.env.example) and [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
+**You need:** Python 3.12+ and Poetry. Run MySQL locally (for example `docker run ... mysql:8`) or use SQLite. See [`.env.example`](../.env.example) and [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 
 ## Configuration reference
 
@@ -79,7 +79,7 @@ CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows
 ## Releases & Versioning
 
 - **Conventional Commits** are required for squash-merged PR titles (see [CONTRIBUTING.md](../CONTRIBUTING.md)); [.github/workflows/pr-title.yml](../.github/workflows/pr-title.yml) enforces the format (Dependabot uses `.github/dependabot.yml` prefixes).
-- On **[sprocktech/syncbot](https://github.com/sprocktech/syncbot)** only, pushes to **`main`** run [.github/workflows/release.yml](../.github/workflows/release.yml) (**python-semantic-release** 9.21.2 via `pip`, with GitPython pinned below 3.1.60). GitPython 3.1.60 removed `Actor.name_email_regex`, which PSR 9.x still reads ([upstream #1476](https://github.com/python-semantic-release/python-semantic-release/issues/1476)); the official Docker action rebuilds dependencies at job time and cannot pin that package. The job bumps `[tool.poetry] version` in `pyproject.toml`, inserts a Keep a Changelog section (`Added` / `Changed` / `Fixed`) above `<!-- version list -->` from **feat** / **fix** / **perf** subjects only (chore, ci, docs, and Dependabot bodies are excluded), copies that section onto the **GitHub Release**, and tags the repo with `X.Y.Z` (no `v` prefix). Forks should **not** run a second release stream. Polishing an already-released CHANGELOG section in a follow-up PR is OK.
+- On **[sprocktech/syncbot](https://github.com/sprocktech/syncbot)** only, pushes to **`main`** run [.github/workflows/release.yml](../.github/workflows/release.yml) (**python-semantic-release** 9.21.2 via `pip`, with GitPython pinned below 3.1.60). GitPython 3.1.60 removed `Actor.name_email_regex`, which PSR 9.x still reads ([upstream #1476](https://github.com/python-semantic-release/python-semantic-release/issues/1476)); the official Docker action rebuilds dependencies at job time and cannot pin that package. The job bumps `[tool.poetry] version` in `pyproject.toml`, inserts a Keep a Changelog section above `<!-- version list -->` from **feat** / **fix** / **perf** subjects only (`chore`, `ci`, `docs`, and Dependabot bodies are excluded), copies that section onto the **GitHub Release**, and tags the repo with `X.Y.Z` (no `v` prefix). Headings must be **Added** / **Changed** / **Fixed** (the templates map PSR's `bug fixes` / `Features`). Match **[1.2.0](../CHANGELOG.md)** for voice: operator-facing sentences with a capital first letter, not a dump of commit subjects. If that version heading is already in CHANGELOG, PSR keeps it — pre-write the notes in the release PR when you want the GitHub Release to ship polished. Otherwise polish the section (and the GitHub Release body) after the draft lands. Forks should **not** run a second release stream.
 - Release commits, tags, and GitHub Releases are created via the **GitHub git API** as **`sprocktech-automation[bot]`** (GitHub App token) so they show as **Verified** and can bypass the `main` ruleset. `GITHUB_TOKEN` / `github-actions[bot]` cannot `updateRef` on a PR-required branch. After changing [release.yml](../.github/workflows/release.yml) or rotating the App, re-run **Actions → Release → Run workflow** if a computed release was skipped.
 - Forks pull `main` and deploy **`test`** / **`prod`** themselves (see [DEPLOY.md](DEPLOY.md)). There is no automated `main` → `test` promote PR from upstream.
 

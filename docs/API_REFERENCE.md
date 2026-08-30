@@ -2,7 +2,7 @@
 
 ## HTTP Endpoints (Lambda Function URL / Cloud Run)
 
-All endpoints are served by a single Lambda function. Slack sends requests to the `/slack/*` URLs after you configure the app. The `/api/federation/*` endpoints handle cross-instance communication for external connections.
+A single public HTTPS base serves every path. On AWS that is the Lambda Function URL; on GCP it is the Cloud Run URL. After you deploy, point Slack at the `/slack/*` URLs. The `/api/federation/*` endpoints are for cross-instance communication when External Connections are enabled.
 
 | Method | Path | Purpose |
 |--------|------|---------|

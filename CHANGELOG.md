@@ -1,13 +1,3 @@
-
-
-
-
-
-
-
-
-
-
 # Changelog
 
 All notable changes to this project are documented in this file.
@@ -17,37 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [1.2.2] - 2026-08-30
 
+### Changed
 
+- Cloud deploy uses `DATABASE_BACKEND` (`mysql` / `postgresql` / `sqlite`); old alias names warn until 2.0.0
+- Provider knobs are `AWS_*` / `GCP_*`; GitHub Actions picks a provider with `GITHUB_DEPLOY_TARGET`
+- `./deploy.sh` reads `CLOUD_PROVIDER` from the env file; there is no `aws` or `gcp` command-line argument
+- AWS GitHub Actions sets stage from the job (`test` or `prod`) instead of a `STAGE_NAME` variable
+- The first AWS deploy creates the bootstrap stack when it is missing
+- GCP GitHub Actions stays image-only and prints Slack install / OAuth / event URLs in the job summary
+- First-time deploy docs and `.env.deploy.example` match the AWS and GCP paths
+- AWS region default is `us-east-1`
 
+### Fixed
 
-
+- `./deploy.sh` no longer looks up leftover Secrets Manager / Secret Manager IDs
 
 ## [1.2.1] - 2026-08-27
 
+### Fixed
 
-
-
-
-
-
-
-
-
-
-
-
-
-### bug fixes
-
-- drop stack RDS and add sqlite Litestream to S3 (#17)
-
-
-
-
-
-
-
+- Drop AWS stack RDS and add SQLite Litestream to S3 (#17)
 
 ## [1.2.0] - 2026-08-27
 

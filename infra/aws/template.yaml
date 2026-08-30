@@ -2,20 +2,18 @@ AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
 Description: >
   SyncBot - Slack app that syncs posts and replies across workspaces.
-  DatabaseMode existing (default): TiDB / public MySQL or Postgres you already created.
-  DatabaseMode sqlite: /tmp SQLite + Litestream replica on S3 (reserved concurrency 1).
+  DatabaseBackend mysql (default) or postgresql: TiDB / public SQL you already created.
+  DatabaseBackend sqlite: /tmp SQLite + Litestream replica on S3 (reserved concurrency 1).
   This stack does not create RDS or a VPC. SAM deploy uses an S3 artifact bucket for packaging.
 
 Globals:
   Function:
-    Timeout: 10
-    MemorySize: 128
     Tracing: !If [XRayEnabled, Active, PassThrough]
 
 # ================================================================
 # Parameters
 # ================================================================
-# Grouping: Stage/mode/engine → Slack → Database (app user) → app secrets → app settings.
+# Grouping: Stage/backend → Slack → Database (app user) → app secrets → app settings.
 
 Parameters:
   Stage:
@@ -26,26 +24,16 @@ Parameters:
       - test
       - prod
 
-  DatabaseMode:
+  DatabaseBackend:
     Description: >
-      existing (default) = connect to a database you already created (TiDB, public MySQL, Postgres).
-      sqlite = Lambda /tmp file + Litestream replica in S3. Do not leave ExistingDatabaseHost empty
-      to "create a database"; empty host is an error in existing mode.
-    Type: String
-    Default: existing
-    AllowedValues:
-      - existing
-      - sqlite
-
-  DatabaseEngine:
-    Description: >
-      SQL engine for DatabaseMode=existing. Ignored for sqlite (runtime always sqlite).
-      mysql (default) or postgresql.
+      mysql (default) or postgresql = connect to a database you already created (TiDB, public MySQL, Postgres).
+      sqlite = Lambda /tmp file + Litestream replica in S3. Empty DatabaseHost is an error unless sqlite.
     Type: String
     Default: mysql
     AllowedValues:
-      - postgresql
       - mysql
+      - postgresql
+      - sqlite
 
   EnableKeepWarm:
     Description: >
@@ -87,18 +75,18 @@ Parameters:
     Type: String
     Default: "chat:write,channels:history,channels:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email"
 
-  # --- Database: app credentials (existing mode) ---
+  # --- Database: app credentials (mysql / postgresql) ---
 
   DatabaseUser:
     Description: >
-      App database username (DATABASE_USER). Required when DatabaseMode=existing.
+      App database username (DATABASE_USER). Required when DatabaseBackend is mysql or postgresql.
       Use the full username (including any TiDB cluster prefix). Unused for sqlite.
     Type: String
     Default: ""
 
   DatabasePassword:
     Description: >
-      App database password (DATABASE_PASSWORD). Required when DatabaseMode=existing.
+      App database password (DATABASE_PASSWORD). Required when DatabaseBackend is mysql or postgresql.
       Unused for sqlite.
     Type: String
     NoEcho: true
@@ -111,16 +99,16 @@ Parameters:
     Type: String
     NoEcho: true
 
-  ExistingDatabaseHost:
+  DatabaseHost:
     Description: >
-      Hostname of an existing database (DATABASE_HOST), e.g. gateway.tidbcloud.com.
-      Required when DatabaseMode=existing. Unused for sqlite.
+      Hostname of the database (DATABASE_HOST). Required when DatabaseBackend is mysql or postgresql.
+      Unused for sqlite.
     Type: String
     Default: ""
 
-  ExistingDatabasePort:
+  DatabasePort:
     Description: >
-      TCP port for ExistingDatabaseHost (DATABASE_PORT). Leave empty to use engine default
+      TCP port for DatabaseHost (DATABASE_PORT). Leave empty to use engine default
       (3306 MySQL, 5432 PostgreSQL). Set for providers with a non-standard port (e.g. TiDB Cloud 4000).
       Unused for sqlite.
     Type: String
@@ -128,7 +116,7 @@ Parameters:
 
   DatabaseSchema:
     Description: >
-      Database/schema name for MySQL or PostgreSQL when DatabaseMode=existing.
+      Database/schema name for MySQL or PostgreSQL when DatabaseBackend is not sqlite.
       Each app sharing a DB instance should use a different schema name. Unused for sqlite.
     Type: String
     Default: "syncbot"
@@ -219,7 +207,7 @@ Parameters:
   EnableXRay:
     Description: >
       Enable AWS X-Ray tracing on Lambda (extra cost beyond free tier).
-      Set ENABLE_XRAY=true in deploy env to turn on.
+      Set AWS_ENABLE_XRAY=true in deploy env to turn on.
     Type: String
     Default: "false"
     AllowedValues:
@@ -231,34 +219,34 @@ Parameters:
 # ================================================================
 
 Conditions:
-  IsSqlite: !Equals [!Ref DatabaseMode, sqlite]
-  UseExistingDatabase: !Equals [!Ref DatabaseMode, existing]
-  IsMysqlEngine: !Equals [!Ref DatabaseEngine, mysql]
-  UseExistingDatabaseWithCustomPort: !And
-    - !Condition UseExistingDatabase
-    - !Not [!Equals [!Ref ExistingDatabasePort, ""]]
+  IsSqlite: !Equals [!Ref DatabaseBackend, sqlite]
+  UseRemoteDatabase: !Not [!Equals [!Ref DatabaseBackend, sqlite]]
+  IsMysqlEngine: !Equals [!Ref DatabaseBackend, mysql]
+  UseRemoteDatabaseWithCustomPort: !And
+    - !Condition UseRemoteDatabase
+    - !Not [!Equals [!Ref DatabasePort, ""]]
   KeepWarmEnabled: !Equals [!Ref EnableKeepWarm, "true"]
   HasSyncbotPublicUrlOverride: !Not [!Equals [!Ref SyncbotPublicUrl, ""]]
   HasPrimaryWorkspace: !Not [!Equals [!Ref PrimaryWorkspace, ""]]
   HasEnableDbReset: !Equals [!Ref EnableDbReset, "true"]
   HasDatabaseTlsExplicit: !And
-    - !Condition UseExistingDatabase
+    - !Condition UseRemoteDatabase
     - !Not [!Equals [!Ref DatabaseTlsEnabled, ""]]
   HasDatabaseSslCaPath: !And
-    - !Condition UseExistingDatabase
+    - !Condition UseRemoteDatabase
     - !Not [!Equals [!Ref DatabaseSslCaPath, ""]]
   XRayEnabled: !Equals [!Ref EnableXRay, "true"]
 
 Rules:
-  ExistingRequiresHost:
-    RuleCondition: !Equals [!Ref DatabaseMode, existing]
+  RemoteRequiresHost:
+    RuleCondition: !Not [!Equals [!Ref DatabaseBackend, sqlite]]
     Assertions:
-      - Assert: !Not [!Equals [!Ref ExistingDatabaseHost, ""]]
-        AssertDescription: ExistingDatabaseHost is required when DatabaseMode is existing.
+      - Assert: !Not [!Equals [!Ref DatabaseHost, ""]]
+        AssertDescription: DatabaseHost is required when DatabaseBackend is mysql or postgresql.
       - Assert: !Not [!Equals [!Ref DatabaseUser, ""]]
-        AssertDescription: DatabaseUser is required when DatabaseMode is existing.
+        AssertDescription: DatabaseUser is required when DatabaseBackend is mysql or postgresql.
       - Assert: !Not [!Equals [!Ref DatabasePassword, ""]]
-        AssertDescription: DatabasePassword is required when DatabaseMode is existing.
+        AssertDescription: DatabasePassword is required when DatabaseBackend is mysql or postgresql.
 
 Mappings:
   StagesMap:
@@ -340,23 +328,23 @@ Resources:
           SLACK_BOT_SCOPES: !Ref SlackOauthBotScopes
           SLACK_USER_SCOPES: !Ref SlackOauthUserScopes
           SLACK_CLIENT_ID: !Ref SlackClientID
-          DATABASE_BACKEND: !If [IsSqlite, sqlite, !Ref DatabaseEngine]
+          DATABASE_BACKEND: !Ref DatabaseBackend
           DATABASE_URL: !If [IsSqlite, "sqlite:////tmp/syncbot.db", !Ref AWS::NoValue]
           LITESTREAM_S3_BUCKET: !If [IsSqlite, !Ref LitestreamBucket, !Ref AWS::NoValue]
           DATABASE_PORT: !If
-            - UseExistingDatabaseWithCustomPort
-            - !Ref ExistingDatabasePort
+            - UseRemoteDatabaseWithCustomPort
+            - !Ref DatabasePort
             - !If
-              - UseExistingDatabase
+              - UseRemoteDatabase
               - !If
                 - IsMysqlEngine
                 - "3306"
                 - "5432"
               - !Ref AWS::NoValue
-          DATABASE_HOST: !If [UseExistingDatabase, !Ref ExistingDatabaseHost, !Ref AWS::NoValue]
-          DATABASE_USER: !If [UseExistingDatabase, !Ref DatabaseUser, !Ref AWS::NoValue]
-          DATABASE_PASSWORD: !If [UseExistingDatabase, !Ref DatabasePassword, !Ref AWS::NoValue]
-          DATABASE_SCHEMA: !If [UseExistingDatabase, !Ref DatabaseSchema, !Ref AWS::NoValue]
+          DATABASE_HOST: !If [UseRemoteDatabase, !Ref DatabaseHost, !Ref AWS::NoValue]
+          DATABASE_USER: !If [UseRemoteDatabase, !Ref DatabaseUser, !Ref AWS::NoValue]
+          DATABASE_PASSWORD: !If [UseRemoteDatabase, !Ref DatabasePassword, !Ref AWS::NoValue]
+          DATABASE_SCHEMA: !If [UseRemoteDatabase, !Ref DatabaseSchema, !Ref AWS::NoValue]
           DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
           REQUIRE_ADMIN: !Ref RequireAdmin
           LOG_LEVEL: !Ref LogLevel
@@ -515,7 +503,7 @@ Outputs:
     Value: !If
       - IsSqlite
       - sqlite
-      - !Ref ExistingDatabaseHost
+      - !Ref DatabaseHost
 
   LitestreamBucketName:
     Condition: IsSqlite
