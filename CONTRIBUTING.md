@@ -4,7 +4,7 @@ Thanks for helping to improve SyncBot. This page is how we take patches: branche
 
 ## Branching (upstream vs downstream)
 
-The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/syncbot)) is the shared codebase. Each deployment maintains its own **fork**:
+The **upstream** repository ([F3Nation-Community/slack-syncbot](https://github.com/F3Nation-Community/slack-syncbot)) is the shared codebase. Each deployment maintains its own **fork**:
 
 | Branch | Role |
 |--------|------|
@@ -13,7 +13,7 @@ The **upstream** repository ([sprocktech/syncbot](https://github.com/sprocktech/
 
 Typical flow: develop a fix or new feature on a branch in your repo → test and deploy to your infra → open a PR to **`upstream/main`**.
 
-**Upstream PRs:** python-semantic-release, Dependabot auto-merge, and `pr-title.yml` run on **sprocktech/syncbot** only (see [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) Fork Compatibility Policy). Forks should pull `main` and deploy `test`/`prod` themselves — do not run a second semantic-release on the fork.
+**Upstream PRs:** python-semantic-release, Dependabot auto-merge, and `pr-title.yml` run on **F3Nation-Community/slack-syncbot** only (see [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) Fork Compatibility Policy). Forks should pull `main` and deploy `test`/`prod` themselves — do not run a second semantic-release on the fork.
 
 ### Branch Naming Conventions
 
@@ -50,7 +50,7 @@ This repository uses [Conventional Commits](https://www.conventionalcommits.org/
 - **Patch** bump: `fix:`, `perf:` (and similar non-breaking fixes).
 - **Minor** bump: `feat:` (user-visible additions).
 - **Major** bump: add `BREAKING CHANGE:` in the commit body/footer, or use a `feat!:` / `fix!:` subject line per Conventional Commits.
-- **Squash merges**: the PR title becomes the merge commit message — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`).
+- **Squash merges**: the PR title becomes the merge commit **subject** — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`). CI fills a **Commits** section on the PR (no `Co-authored-by` lines); paste that block into the squash body if you want those messages on `main`. GitHub then adds a single `Co-authored-by` trailer.
 - **Changelog / GitHub Release:** Keep a Changelog headings only (**Added** / **Changed** / **Fixed**). Copy **[1.2.0](CHANGELOG.md)** for voice. python-semantic-release drafts from `feat` / `fix` / `perf`; polish (or pre-write that version's section in the release PR) so operators do not see `### bug fixes` or a raw commit subject.
 
 Also install the commit-msg hook so local commits are checked:
@@ -67,6 +67,6 @@ pre-commit install --hook-type commit-msg
 
 ## Questions
 
-Use [GitHub Issues](https://github.com/sprocktech/syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.
+Use [GitHub Issues](https://github.com/F3Nation-Community/slack-syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.
 
 **AI / coding agents:** see [docs/AI_AGENTS.md](docs/AI_AGENTS.md) and root [AGENTS.md](AGENTS.md).

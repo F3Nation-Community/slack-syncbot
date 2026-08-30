@@ -44,7 +44,7 @@ After you have set up the Slack app, you can follow the steps below to deploy to
 2. **Clone the repo and set up the env file**
 
    ```bash
-   git clone https://github.com/sprocktech/syncbot.git
+   git clone https://github.com/F3Nation-Community/slack-syncbot.git
    cd syncbot
    cp .env.deploy.example .env.deploy.test
    ```
@@ -83,7 +83,7 @@ For local development, run `cp .env.example .env` and set your Slack app variabl
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Sync flow, AWS reference architecture |
 | [BACKUP_AND_MIGRATION.md](docs/BACKUP_AND_MIGRATION.md) | Backup/restore and federation migration |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | HTTP routes and Slack events |
-| [CHANGELOG.md](CHANGELOG.md) | Release history (updated by python-semantic-release on sprocktech `main`) |
+| [CHANGELOG.md](CHANGELOG.md) | Release history (updated by python-semantic-release on F3Nation-Community `main`) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
 | [AI_AGENTS.md](docs/AI_AGENTS.md) | AI/coding-agent workflow and CI guardrails |
 

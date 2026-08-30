@@ -1,7 +1,7 @@
 # Automated semver releases via python-semantic-release. Commits/tags/releases use the
-# GitHub git API as sprocktech-automation (GitHub App) so they are Verified and can
+# GitHub git API as f3n-community-automation (GitHub App) so they are Verified and can
 # bypass the main ruleset. GITHUB_TOKEN cannot updateRef on a PR-required branch.
-# Runs only on sprocktech/syncbot — forks must not mint a second release stream.
+# Runs only on F3Nation-Community/slack-syncbot — forks must not mint a second release stream.
 # See docs/DEVELOPMENT.md — Releases & Versioning.
 
 name: Release
@@ -23,7 +23,7 @@ permissions:
 jobs:
   semantic-release:
     if: >-
-      github.repository == 'sprocktech/syncbot' &&
+      github.repository == 'F3Nation-Community/slack-syncbot' &&
       github.ref == 'refs/heads/main' && (
       github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'push' &&
@@ -61,8 +61,8 @@ jobs:
         with:
           app-id: ${{ secrets.AUTOMATION_APP_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
-          owner: sprocktech
-          repositories: syncbot
+          owner: F3Nation-Community
+          repositories: slack-syncbot
 
       - name: Commit, tag, and publish release (GitHub API)
         if: ${{ steps.psr.outputs.released == 'true' }}

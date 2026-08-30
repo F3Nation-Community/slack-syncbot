@@ -62,11 +62,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      # App token only on sprocktech/syncbot same-repo (not fork PRs). github.repository is
-      # the base repo on pull_request, so also require head.repo == this repository.
+      # App token only on F3Nation-Community/slack-syncbot same-repo (not fork PRs).
+      # github.repository is the base repo on pull_request, so also require
+      # head.repo == this repository.
       - name: Mint GitHub App token
         if: >-
-          github.repository == 'sprocktech/syncbot' &&
+          github.repository == 'F3Nation-Community/slack-syncbot' &&
           (github.event_name != 'pull_request' ||
            github.event.pull_request.head.repo.full_name == github.repository)
         id: app-token
@@ -74,8 +75,8 @@ jobs:
         with:
           app-id: ${{ secrets.AUTOMATION_APP_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
-          owner: sprocktech
-          repositories: syncbot
+          owner: F3Nation-Community
+          repositories: slack-syncbot
       - uses: actions/checkout@v6
         with:
           ref: ${{ github.head_ref || github.ref_name }}
@@ -105,7 +106,7 @@ jobs:
             if [[ -n "${PR_HEAD_REPO}" && "${PR_HEAD_REPO}" != "${GITHUB_REPOSITORY}" ]]; then
               fork_pr=true
             fi
-            if [[ "${GITHUB_REPOSITORY}" != "sprocktech/syncbot" || "${fork_pr}" == "true" ]]; then
+            if [[ "${GITHUB_REPOSITORY}" != "F3Nation-Community/slack-syncbot" || "${fork_pr}" == "true" ]]; then
               echo "::error::Requirements files are out of sync with poetry.lock. Commit with pre-commit installed (sync-requirements hook) or follow docs/DEVELOPMENT.md."
               exit 1
             fi
@@ -121,8 +122,8 @@ jobs:
           SKIP_CI: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/test' || github.ref == 'refs/heads/prod') }}
         run: |
           set -euo pipefail
-          git config user.name "sprocktech-automation[bot]"
-          git config user.email "${APP_ID}+sprocktech-automation[bot]@users.noreply.github.com"
+          git config user.name "f3n-community-automation[bot]"
+          git config user.email "${APP_ID}+f3n-community-automation[bot]@users.noreply.github.com"
           git add syncbot/requirements.txt
           subject="chore: sync requirements.txt files with poetry.lock"
           if [ "${SKIP_CI}" = "true" ]; then

@@ -19,6 +19,19 @@ def test_changelog_keeps_insertion_flag() -> None:
     assert not text.startswith("\n")
 
 
+def test_changelog_template_strips_leading_control_whitespace() -> None:
+    """PSR writes the rendered template as-is. Unstripped `{% %}` tags emit one
+    leading blank line each (1.2.2 left CHANGELOG.md starting with newlines).
+    """
+    text = (TEMPLATE_DIR / "CHANGELOG.md.j2").read_text(encoding="utf-8")
+    preamble = text.split("{{", 1)[0]
+    for line in preamble.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("{#"):
+            continue
+        assert stripped.startswith("{%-"), stripped
+
+
 def test_changelog_headings_are_keep_a_changelog() -> None:
     text = CHANGELOG.read_text(encoding="utf-8")
     assert "### bug fixes" not in text.lower()

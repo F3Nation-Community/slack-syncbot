@@ -44,7 +44,7 @@ On PRs, GitHub Actions runs the same test command (see `.github/workflows/ci.yml
 2. **Version & changelog** — do not bump `pyproject.toml`’s `version` in a feature PR. Releases on `main` are automated with **python-semantic-release**. Changelog and GitHub Release notes use Keep a Changelog headings (**Added** / **Changed** / **Fixed**) in the **1.2.0** style — operator-facing sentences, not `### bug fixes` or raw commit subjects. Polishing an already-released heading is OK. You may pre-write the next version's section below `<!-- version list -->` in a release PR so the GitHub Release copies it. See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) and [CONTRIBUTING.md](CONTRIBUTING.md).
 3. **Requirements files** — do not edit `syncbot/requirements.txt` by hand. Change dependencies in `pyproject.toml` and run the pre-commit `sync-requirements` hook or `poetry export` as in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 4. **Secrets** — never commit real `.env`, `.env.deploy.*` (only `*.example` templates), private keys, or large artifacts. Do not commit `.aws-sam/build` output.
-5. **Deployment branches** — on a **fork**, do not push to `test` or `prod` as a casual step; those branches deploy. Canonical releases run only on **sprocktech/syncbot** `main` (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). Forks pull `main` and promote to `test`/`prod` themselves.
+5. **Deployment branches** — on a **fork**, do not push to `test` or `prod` as a casual step; those branches deploy. Canonical releases run only on **F3Nation-Community/slack-syncbot** `main` (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)). Forks pull `main` and promote to `test`/`prod` themselves.
 6. **Conventional Commits** — PR titles must be valid Conventional Commits for squash merges; see [CONTRIBUTING.md](CONTRIBUTING.md).
 7. **Docs** — if behavior, env vars, or deploy steps change, update the relevant `docs/*.md` (and [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) if the runtime contract changes). Follow **Docs voice** below.
 
@@ -70,7 +70,7 @@ Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name we
 - **SQLite vs MySQL/Postgres** — local SQLite behaves differently for locking and types; don’t assume parity without checking migration scripts.
 - **`ENABLE_DB_RESET`** — boolean (`true`/`1`/`yes`), gated by `PRIMARY_WORKSPACE`; don't treat as team-id string anymore.
 - **`DATABASE_BACKEND`** + **`DATABASE_*`** — use `DATABASE_BACKEND` (`mysql` / `postgresql` / `sqlite`) and `DATABASE_HOST` / `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_SCHEMA` per [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md).
-- **Fork vs upstream** — `origin` may be your fork; open PRs against the repo you were asked to target (usually **sprocktech/syncbot** `main`). `release.yml` and Dependabot auto-merge run only on that canonical repository. Canonical GitHub bot identity is App **`sprocktech-automation`** (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)); forks do not install it.
+- **Fork vs upstream** — `origin` may be your fork; open PRs against the repo you were asked to target (usually **F3Nation-Community/slack-syncbot** `main`). `release.yml` and Dependabot auto-merge run only on that canonical repository. Canonical GitHub bot identity is App **`f3n-community-automation`** (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)); forks do not install it.
 
 ## More detail
 

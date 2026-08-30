@@ -12,7 +12,7 @@
 #   GCP_SERVICE_ACCOUNT
 #
 # github_repo in Terraform must equal owner/repo of THIS repository (the one
-# with test/prod), not sprocktech/syncbot if you deploy from a fork.
+# with test/prod), not F3Nation-Community/slack-syncbot if you deploy from a fork.
 
 name: Deploy (GCP)
 
@@ -100,7 +100,7 @@ jobs:
             --image "$IMAGE"; then
             echo "::error::gcloud run services update failed."
             echo "::error::If the service is missing, run terraform apply first: ./deploy.sh --env ${STAGE}"
-            echo "::error::If this is a WIF 403, github_repo must equal owner/repo of THIS GitHub repository (the one with test/prod), not sprocktech/syncbot when deploying from a fork."
+            echo "::error::If this is a WIF 403, github_repo must equal owner/repo of THIS GitHub repository (the one with test/prod), not F3Nation-Community/slack-syncbot when deploying from a fork."
             exit 1
           fi
 

@@ -108,7 +108,7 @@ See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and ou
 
 ## Fork-first model (recommended for forks)
 
-The **upstream** repo ([sprocktech/syncbot](https://github.com/sprocktech/syncbot)) is the shared codebase. Your **fork** is what you deploy. Use **`main`** to track upstream and merge contributions. On the fork, use **`test`** and **`prod`** for automated deploys (workflows run on push to those branches). Canonical releases are produced on sprocktech `main` only — do not run a second semantic-release on the fork. More on branching is in [CONTRIBUTING.md](../CONTRIBUTING.md).
+The **upstream** repo ([F3Nation-Community/slack-syncbot](https://github.com/F3Nation-Community/slack-syncbot)) is the shared codebase. Your **fork** is what you deploy. Use **`main`** to track upstream and merge contributions. On the fork, use **`test`** and **`prod`** for automated deploys (workflows run on push to those branches). Canonical releases are produced on F3Nation-Community `main` only — do not run a second semantic-release on the fork. More on branching is in [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 1. Keep `syncbot/` provider-neutral; use only env vars from [INFRA_CONTRACT.md](INFRA_CONTRACT.md).
 2. Put provider code in `infra/<provider>/` and `.github/workflows/deploy-<provider>.yml`.
@@ -355,7 +355,7 @@ The interactive deploy script can set the same names via `gh` when you opt in. R
 
 **Bootstrap in CI:** `deploy-aws.yml` runs `infra/aws/scripts/ensure_bootstrap.sh` (same helper as local deploy). It compares `template.bootstrap.yaml` to stack parameter `TemplateContentSha256` and skips CloudFormation when they match. The GitHub OIDC deploy role lives in the bootstrap stack, so the first create still needs local AWS credentials (`./deploy.sh --env test`). If CI runs with no bootstrap stack, that step **fails** (it does not skip). `--bootstrap` is not required on first local deploy.
 
-**Dependency hygiene:** CI **`pip-audit`** exports from `poetry.lock` in the job (it does not read the committed `*requirements.txt` files). After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates **`syncbot/requirements.txt`** when `poetry.lock` changes (`sam build` installs from that file). If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md). Same-repo CI on sprocktech/syncbot may commit the export onto the PR if the file is stale. **`./deploy.sh` does not run `poetry update`**; it installs committed pins and may warn if an export differs from that file.
+**Dependency hygiene:** CI **`pip-audit`** exports from `poetry.lock` in the job (it does not read the committed `*requirements.txt` files). After changing `pyproject.toml`, run `poetry lock` and commit; the **pre-commit `sync-requirements` hook** (see [.pre-commit-config.yaml](../.pre-commit-config.yaml)) regenerates **`syncbot/requirements.txt`** when `poetry.lock` changes (`sam build` installs from that file). If you do not use pre-commit, run the export commands documented in [DEVELOPMENT.md](DEVELOPMENT.md). Same-repo CI on F3Nation-Community/slack-syncbot may commit the export onto the PR if the file is stale. **`./deploy.sh` does not run `poetry update`**; it installs committed pins and may warn if an export differs from that file.
 
 ### 4. Ongoing local deploys (least privilege)
 
@@ -381,7 +381,7 @@ GCP-only knobs use a `GCP_` prefix. Shared contract names and portable deploy sw
 
 ### Upgrading GCP (Cloud SQL removal)
 
-If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database. Tulsa/sprocktech GCP was unused in production; forks that did apply Cloud SQL must backup before upgrading.
+If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database. Early Tulsa/sprocktech GCP was unused in production; forks that did apply Cloud SQL must backup before upgrading.
 
 ---
 
@@ -411,7 +411,7 @@ docker build -f infra/gcp/Dockerfile --platform linux/amd64 .
 
 ### 2. GitHub Actions (GCP)
 
-1. `github_repo` in Terraform must equal `YOUR_GITHUB_OWNER/YOUR_REPO` of **this** GitHub repository (the one with `test`/`prod`), not `sprocktech/syncbot` if you deploy from a fork. WIF is created in the same apply when that variable is set.
+1. `github_repo` in Terraform must equal `YOUR_GITHUB_OWNER/YOUR_REPO` of **this** GitHub repository (the one with `test`/`prod`), not `F3Nation-Community/slack-syncbot` if you deploy from a fork. WIF is created in the same apply when that variable is set.
 2. Set **`GITHUB_DEPLOY_TARGET=gcp`** at repo level so `deploy-gcp.yml` runs and `deploy-aws.yml` is skipped. Unset `GITHUB_DEPLOY_TARGET` skips Deploy (GCP) (AWS-only forks stay green).
 3. Set variables: `GCP_PROJECT_ID`, `GCP_REGION`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, `GCP_SERVICE_ACCOUNT`.
 

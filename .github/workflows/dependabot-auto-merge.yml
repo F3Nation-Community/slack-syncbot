@@ -1,7 +1,7 @@
 # Enable squash auto-merge for Dependabot patch/minor version updates and
 # security updates (including semver-major when an advisory requires it).
-# Version-only majors are closed. sprocktech/syncbot only.
-# Uses sprocktech-automation (GitHub App) so merge retriggers workflows;
+# Version-only majors are closed. F3Nation-Community/slack-syncbot only.
+# Uses f3n-community-automation (GitHub App) so merge retriggers workflows;
 # GITHUB_TOKEN merges do not. See docs/DEVELOPMENT.md.
 name: Dependabot auto-merge
 
@@ -19,8 +19,8 @@ permissions:
 
 jobs:
   automerge:
-    # PR author, not github.actor: requirements-sync commits as sprocktech-automation[bot].
-    if: github.repository == 'sprocktech/syncbot' && github.event.pull_request.user.login == 'dependabot[bot]'
+    # PR author, not github.actor: requirements-sync commits as f3n-community-automation[bot].
+    if: github.repository == 'F3Nation-Community/slack-syncbot' && github.event.pull_request.user.login == 'dependabot[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Mint GitHub App token
@@ -29,8 +29,8 @@ jobs:
         with:
           app-id: ${{ secrets.AUTOMATION_APP_ID }}
           private-key: ${{ secrets.AUTOMATION_APP_PRIVATE_KEY }}
-          owner: sprocktech
-          repositories: syncbot
+          owner: F3Nation-Community
+          repositories: slack-syncbot
 
       - uses: dependabot/fetch-metadata@v2
         id: meta
