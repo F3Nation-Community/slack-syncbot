@@ -87,7 +87,7 @@ CI **`pip-audit`** exports from `poetry.lock` in the job (see [.github/workflows
 
 These cannot be set from a PR — configure once on **F3Nation-Community/slack-syncbot** under **Settings**:
 
-- **Allow auto-merge**; default merge method **Squash** (use the PR title as the squash commit subject).
+- **Allow auto-merge**; default merge method **Squash**. Default squash **title** is the PR title; default squash **message** is **blank** (Settings → General → Pull Requests). GitHub still appends a single `Co-authored-by` trailer when the PR has co-authors. Do **not** use “PR title and commit details”: that pastes every commit body (including Cursor’s `Co-authored-by`) and then adds the same trailer again.
 - **Branch protection / ruleset** on `main`: require a pull request; required checks **`ci-gate`** and **`conventional`** (the job name from [pr-title.yml](../.github/workflows/pr-title.yml), not “PR title / conventional”). Do **not** require Code Owners or resolved conversations. Prefer not requiring “branch must be up to date” until Dependabot rebase is confirmed.
 - **Bypass list:** **Organization admin** (humans) and the GitHub App **`f3n-community-automation`** (see below). Do **not** add Dependabot, Write, or Maintain — Dependabot auto-merge already merges *through the PR* when checks pass; a Dependabot bypass would allow pushing to `main` without a PR. The built-in `github-actions[bot]` does **not** appear in the bypass picker (it is not an installable App).
 - Dependabot **version updates** (from `.github/dependabot.yml`) and **security updates** enabled. Disable Dependabot on deploy forks (e.g. `f3-tulsa/syncbot`) so they do not open a second pile of PRs.
