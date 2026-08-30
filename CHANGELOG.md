@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.2.5] - 2026-08-30
+
+### Fixed
+
+- Authorize group invite accept, decline, and cancel (#24)
+
+
+
 ## [1.2.4] - 2026-08-30
 
 ### Fixed
