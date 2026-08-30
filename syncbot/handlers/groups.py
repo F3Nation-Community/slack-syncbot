@@ -593,7 +593,13 @@ def handle_accept_group_invite(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Accept a pending group invite from a DM button."""
+    """Accept a pending group invite from a DM button.
+
+    Only the invited workspace may accept. ``member_id`` comes from the button
+    value, so the acting workspace is resolved from the request and compared
+    against ``member.workspace_id`` — without that check any signed interaction
+    carrying an arbitrary integer could activate any pending invite.
+    """
     raw_member_id = helpers.safe_get(body, "actions", 0, "value")
     try:
         member_id = int(raw_member_id)
@@ -601,9 +607,25 @@ def handle_accept_group_invite(
         _logger.warning(f"accept_group_invite: invalid member_id: {raw_member_id!r}")
         return
 
+    auth_result = _get_authorized_workspace(body, client, context, "accept_group_invite")
+    if not auth_result:
+        return
+    _, acting_workspace = auth_result
+
     member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
     if not member or member.status != "pending":
         _logger.info(f"accept_group_invite: member {member_id} not pending")
+        return
+
+    if not member.workspace_id or member.workspace_id != acting_workspace.id:
+        _logger.warning(
+            "authorization_denied",
+            extra={
+                "action": "accept_group_invite",
+                "member_id": member_id,
+                "acting_workspace_id": acting_workspace.id,
+            },
+        )
         return
 
     group = DbManager.get_record(schemas.WorkspaceGroup, id=member.group_id)
@@ -676,7 +698,14 @@ def handle_decline_group_invite(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Handle Decline (invited workspace) or Cancel Invite (inviting workspace) for a pending group invite."""
+    """Handle Decline (invited workspace) or Cancel Invite (inviting workspace) for a pending group invite.
+
+    Decline is an invitee action, so the acting workspace must be the invited one.
+    Cancel is an inviter action, so the acting workspace must be the one that sent
+    the invite (``invited_by_workspace_id``). Both destroy a membership row, so
+    without these checks any signed interaction carrying an arbitrary integer
+    could cancel or decline any pending invite on the instance.
+    """
     raw_member_id = helpers.safe_get(body, "actions", 0, "value")
     try:
         member_id = int(raw_member_id)
@@ -684,17 +713,35 @@ def handle_decline_group_invite(
         _logger.warning(f"decline_group_invite: invalid member_id: {raw_member_id!r}")
         return
 
+    action_id = helpers.safe_get(body, "actions", 0, "action_id") or ""
+    is_cancel = action_id.startswith(actions.CONFIG_CANCEL_GROUP_REQUEST)
+    outcome = "canceled" if is_cancel else "declined"
+    action_name = "cancel_group_request" if is_cancel else "decline_group_invite"
+
+    auth_result = _get_authorized_workspace(body, client, context, action_name)
+    if not auth_result:
+        return
+    _, acting_workspace = auth_result
+
     member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
     if not member or member.status != "pending":
         _logger.info(f"decline_group_invite: member {member_id} not pending")
         return
 
+    expected_workspace_id = member.invited_by_workspace_id if is_cancel else member.workspace_id
+    if not expected_workspace_id or expected_workspace_id != acting_workspace.id:
+        _logger.warning(
+            "authorization_denied",
+            extra={
+                "action": action_name,
+                "member_id": member_id,
+                "acting_workspace_id": acting_workspace.id,
+            },
+        )
+        return
+
     group = DbManager.get_record(schemas.WorkspaceGroup, id=member.group_id)
     group_name = group.name if group else "the group"
-
-    action_id = helpers.safe_get(body, "actions", 0, "action_id") or ""
-    is_cancel = action_id.startswith(actions.CONFIG_CANCEL_GROUP_REQUEST)
-    outcome = "canceled" if is_cancel else "declined"
 
     target_ws = helpers.get_workspace_by_id(member.workspace_id) if member.workspace_id else None
 
