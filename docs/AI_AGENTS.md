@@ -24,7 +24,7 @@ On pull requests, [.github/workflows/ci.yml](../.github/workflows/ci.yml) includ
 - **`docker-build-gcp`** — `docker build -f infra/gcp/Dockerfile --platform linux/amd64 .` from the repo root, no push (path-filtered).
 - **`test`** — `pytest` over `tests/` and infra tests (same as local command in [AGENTS.md](../AGENTS.md)).
 - **`ci-gate`** — aggregator; the check to require on `main`. Skipped path-filtered jobs count as success.
-- **`requirements-sync`** — on same-repo PRs to sprocktech/syncbot, may commit `*requirements.txt` from `poetry.lock` as **`sprocktech-automation[bot]`** **without** `[skip ci]` so `ci-gate` / `conventional` re-run on HEAD. Forks must export themselves.
+- **`requirements-sync`** — on same-repo PRs to F3Nation-Community/slack-syncbot, may commit `*requirements.txt` from `poetry.lock` as **`f3n-community-automation[bot]`** **without** `[skip ci]` so `ci-gate` / `conventional` re-run on HEAD. Forks must export themselves.
 
 Release automation and signed bot commits are described in [DEVELOPMENT.md](DEVELOPMENT.md) — Releases & Versioning and **Automation GitHub App**. `release.yml` uses the App token for `git.updateRef`; `GITHUB_TOKEN` cannot bypass the `main` ruleset. Dependabot auto-merge also uses the App token so merge can retrigger workflows.
 
@@ -40,16 +40,16 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 
 ## Fork compatibility
 
-`release.yml`, Dependabot auto-merge, and semantic-release config apply to **sprocktech/syncbot** only. Deploy forks keep `test`/`prod` Environments and must not mint duplicate GitHub Releases. CODEOWNERS handles are organization-specific; replace `@sprocktech-dev` on other orgs. See [INFRA_CONTRACT.md](INFRA_CONTRACT.md) Fork Compatibility Policy.
+`release.yml`, Dependabot auto-merge, and semantic-release config apply to **F3Nation-Community/slack-syncbot** only. Deploy forks keep `test`/`prod` Environments and must not mint duplicate GitHub Releases. CODEOWNERS handles are organization-specific; replace `@sprocktech-dev` on other orgs. See [INFRA_CONTRACT.md](INFRA_CONTRACT.md) Fork Compatibility Policy.
 
-## Branch protection (sprocktech/syncbot)
+## Branch protection (F3Nation-Community/slack-syncbot)
 
 Configure in GitHub **Settings → Rulesets / Branches** for `main`:
 
 - Require a pull request before merging
 - Required checks: **`ci-gate`**, **`conventional`**
 - Do **not** require review from Code Owners (that would block Dependabot auto-merge)
-- Do **not** add Dependabot, Write, or Maintain to the ruleset bypass list; `github-actions[bot]` cannot be added here. Organization admin bypass is for humans. Add GitHub App **`sprocktech-automation`** so Release `updateRef` and leftover requirements-sync pushes can land on `main` (see [DEVELOPMENT.md](DEVELOPMENT.md)).
+- Do **not** add Dependabot, Write, or Maintain to the ruleset bypass list; `github-actions[bot]` cannot be added here. Organization admin bypass is for humans. Add GitHub App **`f3n-community-automation`** so Release `updateRef` and leftover requirements-sync pushes can land on `main` (see [DEVELOPMENT.md](DEVELOPMENT.md)).
 - Allow auto-merge; squash only; do not require conversation resolution
 
 Exact job names come from `.github/workflows/ci.yml` and `pr-title.yml`.

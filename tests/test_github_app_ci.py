@@ -12,11 +12,26 @@ def test_release_uses_app_token_for_git_api() -> None:
     assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in text
 
 
+def test_canonical_upstream_gates_use_community_repo() -> None:
+    release = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    automerge = (REPO_ROOT / ".github" / "workflows" / "dependabot-auto-merge.yml").read_text()
+    canonical = "F3Nation-Community/slack-syncbot"
+    assert f"github.repository == '{canonical}'" in release
+    assert f"github.repository == '{canonical}'" in ci
+    assert f"github.repository == '{canonical}'" in automerge
+    assert "owner: F3Nation-Community" in release
+    assert "repositories: slack-syncbot" in release
+    assert "sprocktech/syncbot" not in release
+    assert "sprocktech-automation" not in ci.split("forbidden-edits:", 1)[0]
+    assert "sprocktech/syncbot" not in automerge
+
+
 def test_requirements_sync_pushes_with_app_token() -> None:
     ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
     req, _rest = ci.split("forbidden-edits:", 1)
     assert "actions/create-github-app-token@v3" in req
-    assert "sprocktech-automation[bot]" in req
+    assert "f3n-community-automation[bot]" in req
     assert "git push" in req
     assert "actions/github-script" not in req
 
