@@ -21,7 +21,9 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 - Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
 - Existing messages are not back-filled; syncing starts from the moment a channel is linked.
 - Do not add SyncBot manually to channels. SyncBot adds itself when you configure a Sync. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
-- Both public and private channels are supported.
+- When you pick a channel to publish or sync, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
+- A channel can belong to only one Channel Sync at a time. If you pick one that is already syncing, SyncBot tells you so in the dialog and asks for a different channel rather than quietly doing nothing. A channel you previously unpublished is free to use again.
+- Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. Keep in mind that SyncBot cannot add itself to a private channel, so you need to invite it there first.
 
 ## Workspace Groups
 

@@ -84,7 +84,7 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). |
 | `PORT` | HTTP listen port for container entrypoint (`python app.py` / Cloud Run). Cloud Run injects this (typically `8080`); default `3000` when unset. |
 | `SOFT_DELETE_RETENTION_DAYS` | Days to retain soft-deleted workspace data (default `30`). Seed/fallback for the Settings modal — see [Settings modal overrides](#settings-modal-overrides). |
-| `ALLOW_PRIVATE_CHANNELS` | `true` to let operators publish private channels (default `false`). Seed/fallback for the Settings modal. Recorded now; it starts gating the channel picker in a later release. |
+| `ALLOW_PRIVATE_CHANNELS` | `true` to let operators publish private channels (default `false`). Seed/fallback for the Settings modal. This gates the channel picker: when it is off, private channels are filtered out and rejected on submit. |
 | `BROADCAST_ALLOWED_WORKSPACES` | Comma-separated Slack Team IDs allowed to publish broadcasts. Empty (the default) means any installed workspace may. Seed/fallback for the Settings modal. Recorded now; it takes effect when broadcast channels ship. |
 | `SYNCBOT_FEDERATION_ENABLED` | `true` to enable external connections (federation). |
 | `SYNCBOT_INSTANCE_ID` | UUID for this instance (optional; can be auto-generated, should be pinned for federation). |
@@ -96,7 +96,7 @@ Three of the variables above are operational policy that an operator may reasona
 
 The resolution order is database first, then the environment variable, then a built-in default. In other words, the environment variable is what the instance starts out with; once someone saves a value in the Settings modal, the saved value wins and changing the environment variable no longer has any effect on that setting. If you need the environment variable to take over again, clear the setting in the modal.
 
-Of the three, only `SOFT_DELETE_RETENTION_DAYS` changes behavior today. `ALLOW_PRIVATE_CHANNELS` and `BROADCAST_ALLOWED_WORKSPACES` are editable and stored now so the policy is in place ahead of the features that read them (the channel picker rework and broadcast channels); setting them has no effect until those ship.
+`SOFT_DELETE_RETENTION_DAYS` and `ALLOW_PRIVATE_CHANNELS` both change behavior today. Turning `ALLOW_PRIVATE_CHANNELS` off keeps private channels out of the channel picker and rejects one if a payload names it anyway; turning it on lets a private channel be synced, with a warning in the dialog that its messages will be copied into the other workspaces in the group. `BROADCAST_ALLOWED_WORKSPACES` is editable and stored now so the policy is in place ahead of broadcast channels, but setting it has no effect until those ship.
 
 Everything else in the table stays environment-only. In particular `PRIMARY_WORKSPACE`, `ENABLE_DB_RESET`, and `REQUIRE_ADMIN` are deliberately not exposed in the modal: they are the controls that decide who is allowed to reach the modal and the destructive actions beside it, so they should only be changeable by whoever can deploy the instance.
 

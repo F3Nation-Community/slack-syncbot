@@ -492,10 +492,11 @@ Schema lives under `syncbot/db/alembic/`. **`alembic upgrade head`** runs:
 
 After deploying a build that changes Slack listener wiring, verify **in the deployed workspace** (not only local dev) that modals using custom interaction responses still work. These flows rely on `view_submission` acks (`response_action`: `update`, `errors`, or `push`) being returned in the **first** Lambda response:
 
-1. **Sync Channel (publish)** — Open **Sync Channel**, choose sync mode, press **Next**; confirm step 2 (channel picker) appears. Submit with an invalid state to confirm field errors if applicable.
-2. **Backup / Restore** — Open Backup/Restore; try restore validation (e.g. missing file) and, if possible, the integrity-warning confirmation path (`push`).
-3. **Data migration** (if federation enabled) — Same style of checks for import validation and confirmation.
-4. **Optional** — Trigger a Home tab action that opens a modal via **`views_open`** (uses `trigger_id`) after a cold start to spot-check latency.
+1. **Sync Channel (publish)** — Open **Sync Channel**, choose sync mode, press **Next**; confirm step 2 (channel picker) appears. Submit a channel that is already syncing to confirm the field error appears instead of the modal closing.
+2. **Sync Channel (subscribe)** — Open the subscribe picker from a published channel and submit a channel that is already syncing; confirm the field error appears in the dialog.
+3. **Backup / Restore** — Open Backup/Restore; try restore validation (e.g. missing file) and, if possible, the integrity-warning confirmation path (`push`).
+4. **Data migration** (if federation enabled) — Same style of checks for import validation and confirmation.
+5. **Optional** — Trigger a Home tab action that opens a modal via **`views_open`** (uses `trigger_id`) after a cold start to spot-check latency.
 
 ---
 
