@@ -52,6 +52,22 @@ USER_SCOPES: tuple[str, ...] = (
     "users:read.email",
 )
 
+# Plain-language groups for the Home tab Authorize section. A group is already
+# allowed only when every scope in it is on the stored user token; otherwise it
+# is still needed. Related read/write pairs are folded together so the list is
+# short enough to scan. Labels are for people, not the Slack API names.
+USER_PERMISSION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("Post messages", ("chat:write",)),
+    ("View public Channels", ("channels:history", "channels:read")),
+    ("View private Channels", ("groups:history", "groups:read")),
+    ("Manage private Channels", ("groups:write",)),
+    ("Share files", ("files:read", "files:write")),
+    ("Send direct messages", ("im:write",)),
+    ("Use emoji reactions", ("reactions:read", "reactions:write")),
+    ("View workspace info", ("team:read",)),
+    ("View people", ("users:read", "users:read.email")),
+)
+
 
 def bot_scopes_comma_separated() -> str:
     """Return the bot scope string for SLACK_BOT_SCOPES / CloudFormation."""

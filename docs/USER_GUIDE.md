@@ -27,11 +27,13 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 
 ## Authorize SyncBot
 
-Slack does not allow an app to add itself to a private channel. Only someone who is already in that channel can add it, acting as themselves. So the first time you use SyncBot, you may see an **Authorize SyncBot** section at the top of the Home tab with a short explanation and a button.
+Slack does not allow an app to add itself to a private channel. Only someone who is already in that channel can add it, acting as themselves. So the first time you use SyncBot, you may see an **Authorize SyncBot** section at the top of the Home tab with a short explanation, a list of the permissions it is asking for, and a button.
 
-Clicking the button walks you through the same install screen you saw when SyncBot was added to the workspace, and it takes a few seconds. The screen arrives with this workspace already selected, so if you belong to several you do not have to hunt for the right one. It does not ask for any new permissions from your workspace; it simply records that SyncBot may act on your behalf. Once that is done, the section disappears for you, and publishing or subscribing a private channel works without any extra steps.
+Clicking the button walks you through the same install screen you saw when SyncBot was added to the workspace, and it takes a few seconds. The screen arrives with this workspace already selected, so if you belong to several you do not have to hunt for the right one. It does not ask for any new permissions from your workspace beyond the list on the Home tab; it simply records that SyncBot may act on your behalf. Once that is done, the section disappears for you, and publishing or subscribing a private channel works without any extra steps.
 
-Everyone sees this section until they have authorized, whether or not they are an admin. Whoever installed SyncBot originally will usually never see it, because that first install already stored their own permission. A colleague's authorization is not reused: SyncBot only invites itself into a private channel as the person who picked it. If you pick a private channel before authorizing, SyncBot tells you in the dialog and points you here rather than failing after the dialog closes.
+If SyncBot later needs an additional permission, the section comes back. Permissions you already granted stay listed with checkmarks under **Already allowed permissions**, and only what is new appears under **Needed permissions**, so it is an update rather than starting over. The already-allowed list is omitted the first time, when nothing has been granted yet.
+
+Everyone sees this section until they have granted every current permission, whether or not they are an admin. Whoever installed SyncBot originally will usually never see it, because that first install already stored their own permission. A colleague's authorization is not reused: SyncBot only invites itself into a private channel as the person who picked it. If you pick a private channel before authorizing, SyncBot tells you in the dialog and points you here rather than failing after the dialog closes.
 
 ## Workspace Groups
 

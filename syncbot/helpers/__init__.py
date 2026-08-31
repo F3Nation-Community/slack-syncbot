@@ -19,7 +19,10 @@ from helpers.conversations import (
     ConversationAccessError,
     authorize_url,
     ensure_bot_in_conversation,
+    granted_user_scopes,
     has_user_token,
+    needs_user_authorization,
+    user_permission_lists,
 )
 from helpers.core import (
     format_admin_label,
@@ -125,7 +128,10 @@ __all__ = [
     "ConversationAccessError",
     "authorize_url",
     "ensure_bot_in_conversation",
+    "granted_user_scopes",
     "has_user_token",
+    "needs_user_authorization",
+    "user_permission_lists",
     "_CACHE",
     "_CACHE_TTL_SECONDS",
     "_USER_INFO_CACHE_TTL",

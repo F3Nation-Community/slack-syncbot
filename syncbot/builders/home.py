@@ -41,10 +41,12 @@ def _home_tab_content_hash(workspace_record: Workspace, user_id: str | None = No
     visible on Home changes (including PRIMARY_WORKSPACE / ENABLE_DB_RESET for Reset).
 
     *user_id* is part of the payload because one block on Home is per person: the
-    Authorize SyncBot section, which disappears once that user has a user token.
-    Without it, a Refresh right after authorizing would replay cached blocks that
-    still show the button. Workspace-level changes still bust every user's hash,
-    because the workspace payload is hashed in too.
+    Authorize SyncBot section, which disappears once that user has granted every
+    current user-scope group. Without it, a Refresh right after authorizing would
+    replay cached blocks that still show the button. Granted scopes are hashed too,
+    so adding a scope later busts the cache and the section comes back with the
+    already-allowed list filled in. Workspace-level changes still bust every user's
+    hash, because the workspace payload is hashed in too.
     """
     workspace_id = workspace_record.id
     workspace_name = (workspace_record.workspace_name or "") or ""
@@ -121,7 +123,7 @@ def _home_tab_content_hash(workspace_record: Workspace, user_id: str | None = No
         pending_ids,
         reset_visible,
         user_id or "",
-        helpers.has_user_token(workspace_record.team_id, user_id) if user_id else False,
+        tuple(helpers.user_permission_lists(workspace_record.team_id, user_id)) if user_id else ((), ()),
     )
     return hashlib.sha256(repr(payload).encode()).hexdigest()
 
@@ -137,14 +139,19 @@ def home_tab_hash_key(team_id: str, user_id: str) -> str:
 
 
 def _build_authorize_section(blocks: list, team_id: str, user_id: str) -> bool:
-    """Prepend the Authorize SyncBot section when this user has not authorized yet.
+    """Prepend the Authorize SyncBot section when this user still needs to authorize.
 
     Slack will not let a bot add itself to a private channel; only a member can,
-    with that member's own user token. This button is the one-time OAuth install
-    that mints it. Shown to everyone, admin or not, because authorization is
-    about acting as that person rather than about configuring SyncBot.
+    with that member's own user token. This button is the OAuth install that mints
+    it (or refreshes it when we add scopes later). Shown to everyone, admin or not,
+    because authorization is about acting as that person rather than about
+    configuring SyncBot.
+
+    When they already granted some permissions, those stay listed with checkmarks
+    so a later scope change looks like an addition rather than a redo. A first-time
+    visitor has nothing granted yet, so that list is omitted.
     """
-    if helpers.has_user_token(team_id, user_id):
+    if not helpers.needs_user_authorization(team_id, user_id):
         return False
 
     url = helpers.authorize_url(team_id)
@@ -153,8 +160,16 @@ def _build_authorize_section(blocks: list, team_id: str, user_id: str) -> bool:
         # link to and a button would be a dead end.
         return False
 
+    already, needed = helpers.user_permission_lists(team_id, user_id)
+
     blocks.append(header("Authorize SyncBot"))
     blocks.append(block_context("_Allow SyncBot to act on your behalf in this Slack Workspace._"))
+    if already:
+        checks = "\n".join(f":white_check_mark: {label}" for label in already)
+        blocks.append(block_context(f"*Already allowed permissions:*\n{checks}"))
+    if needed:
+        dashes = "\n".join(f"- {label}" for label in needed)
+        blocks.append(block_context(f"*Needed permissions:*\n{dashes}"))
     blocks.append(
         orm.ActionsBlock(
             elements=[

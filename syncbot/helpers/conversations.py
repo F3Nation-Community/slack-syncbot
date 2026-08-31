@@ -36,6 +36,7 @@ import constants
 from helpers.core import safe_get
 from helpers.settings import allow_private_channels
 from helpers.slack_api import get_own_bot_user_id
+from slack_manifest_scopes import USER_PERMISSION_GROUPS
 
 _logger = logging.getLogger(__name__)
 
@@ -78,23 +79,75 @@ def _installation_store():
     return oauth_flow.settings.installation_store
 
 
-def get_user_token(team_id: str | None, user_id: str | None) -> str | None:
-    """Return *user_id*'s own Slack user token, or ``None``.
-
-    Only users who completed the OAuth install have one. Never log the return
-    value.
-    """
+def _find_user_installation(team_id: str | None, user_id: str | None):
+    """Return Bolt's installation row for this person, or ``None``."""
     if not team_id or not user_id:
         return None
     store = _installation_store()
     if store is None:
         return None
     try:
-        installation = store.find_installation(enterprise_id=None, team_id=team_id, user_id=user_id)
+        return store.find_installation(enterprise_id=None, team_id=team_id, user_id=user_id)
     except Exception as exc:
         _logger.warning(f"find_installation failed for team {team_id}: {exc}")
         return None
+
+
+def get_user_token(team_id: str | None, user_id: str | None) -> str | None:
+    """Return *user_id*'s own Slack user token, or ``None``.
+
+    Only users who completed the OAuth install have one. Never log the return
+    value.
+    """
+    installation = _find_user_installation(team_id, user_id)
     return _clean_token(getattr(installation, "user_token", None) if installation else None)
+
+
+def granted_user_scopes(team_id: str | None, user_id: str | None) -> frozenset[str]:
+    """Return the user scopes stored for this person, or empty.
+
+    Used to split the Home tab permission lists into already-allowed vs still
+    needed. A missing row, a blank ``user_scopes`` column, or a token with no
+    scopes all mean "none yet" so the already-allowed list stays hidden.
+    """
+    installation = _find_user_installation(team_id, user_id)
+    if installation is None:
+        return frozenset()
+    raw = getattr(installation, "user_scopes", None)
+    if not raw:
+        return frozenset()
+    if isinstance(raw, str):
+        return frozenset(s.strip() for s in raw.split(",") if s.strip())
+    return frozenset(str(s).strip() for s in raw if str(s).strip())
+
+
+def user_permission_lists(team_id: str | None, user_id: str | None) -> tuple[list[str], list[str]]:
+    """Return ``(already_allowed_labels, needed_labels)`` for the Home tab.
+
+    A group is already allowed only when every scope in it is on the stored
+    token. That is what makes a later scope change look like an addition rather
+    than a redo: people see what they already granted, then what is new.
+    """
+    granted = granted_user_scopes(team_id, user_id)
+    already: list[str] = []
+    needed: list[str] = []
+    for label, scopes in USER_PERMISSION_GROUPS:
+        if all(scope in granted for scope in scopes):
+            already.append(label)
+        else:
+            needed.append(label)
+    return already, needed
+
+
+def needs_user_authorization(team_id: str | None, user_id: str | None) -> bool:
+    """Whether the Home tab should show *Authorize SyncBot* for this person.
+
+    True when any current user-scope group is not fully granted, including a
+    first-time visitor with no token and someone whose token predates a scope
+    we added later.
+    """
+    _already, needed = user_permission_lists(team_id, user_id)
+    return bool(needed)
 
 
 def _clean_token(token) -> str | None:
@@ -107,10 +160,10 @@ def _clean_token(token) -> str | None:
 def has_user_token(team_id: str | None, user_id: str | None) -> bool:
     """Whether this specific user has authorized SyncBot to act as them.
 
-    Drives whether the Home tab shows *Authorize SyncBot*, and whether a private
-    channel pick can succeed. There is deliberately no team-level variant: a
-    private channel is reachable only through the membership of the person who
-    picked it.
+    Drives whether a private channel pick can succeed. There is deliberately no
+    team-level variant: a private channel is reachable only through the membership
+    of the person who picked it. The Home tab Authorize section uses
+    :func:`needs_user_authorization` instead, so it can reappear when we add scopes.
     """
     return bool(get_user_token(team_id, user_id))
 

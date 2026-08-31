@@ -6,6 +6,7 @@ from pathlib import Path
 
 from slack_manifest_scopes import (
     BOT_SCOPES,
+    USER_PERMISSION_GROUPS,
     USER_SCOPES,
     bot_scopes_comma_separated,
     user_scopes_comma_separated,
@@ -60,3 +61,21 @@ def test_bot_scopes_comma_separated_roundtrip():
 def test_user_scopes_comma_separated_roundtrip():
     s = user_scopes_comma_separated()
     assert [x.strip() for x in s.split(",") if x.strip()] == list(USER_SCOPES)
+
+
+def test_every_user_scope_is_in_exactly_one_permission_group():
+    """The Home tab lists groups, not raw scopes, so the catalog must cover USER_SCOPES."""
+    grouped: list[str] = []
+    for _label, scopes in USER_PERMISSION_GROUPS:
+        grouped.extend(scopes)
+    assert sorted(grouped) == sorted(USER_SCOPES)
+    assert len(grouped) == len(set(grouped))
+
+
+def test_permission_group_labels_are_plain_language():
+    """People should not have to read Slack API names on the Home tab."""
+    for label, scopes in USER_PERMISSION_GROUPS:
+        assert ":" not in label
+        assert label[0].isupper()
+        assert 1 <= len(label.split()) <= 4
+        assert scopes
