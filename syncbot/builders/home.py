@@ -382,6 +382,17 @@ def _build_group_section(
             value=str(group.id),
         ),
     )
+    # Disband is only offered when it can actually succeed, so the destructive
+    # button never appears to a workspace that would just be rejected.
+    if is_owner and helpers.can_disband(group.id, workspace_record.id)[0]:
+        group_actions.append(
+            orm.ButtonElement(
+                label="Disband Group",
+                action=f"{actions.CONFIG_DISBAND_GROUP}_{group.id}",
+                style="danger",
+                value=str(group.id),
+            ),
+        )
     blocks.append(orm.ActionsBlock(elements=group_actions))
 
     syncs_for_group = DbManager.find_records(Sync, [Sync.group_id == group.id])

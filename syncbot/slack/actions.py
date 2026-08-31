@@ -103,6 +103,12 @@ CONFIG_PROMOTE_TO_OWNER = "promote_to_owner"
 CONFIG_DEMOTE_SELF = "demote_self"
 """Action: an owner gave up its own ownership (prefix-matched with member_id). Self-demotion only."""
 
+CONFIG_DISBAND_GROUP = "disband_group"
+"""Action: sole owner clicked "Disband Group" (prefix-matched with group_id)."""
+
+CONFIG_DISBAND_GROUP_CONFIRM = "disband_group_confirm"
+"""Callback: disband-group confirmation modal submitted."""
+
 # ---------------------------------------------------------------------------
 # Channel Sync actions
 # ---------------------------------------------------------------------------

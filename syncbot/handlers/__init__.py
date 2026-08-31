@@ -44,6 +44,8 @@ from handlers.federation_cmds import (
 )
 from handlers.group_manage import (
     handle_demote_self,
+    handle_disband_group,
+    handle_disband_group_confirm,
     handle_leave_group,
     handle_leave_group_confirm,
     handle_promote_to_owner,
@@ -120,6 +122,8 @@ __all__ = [
     "handle_join_group_submit",
     "handle_join_sync_submission",
     "handle_demote_self",
+    "handle_disband_group",
+    "handle_disband_group_confirm",
     "handle_leave_group",
     "handle_leave_group_confirm",
     "handle_promote_to_owner",

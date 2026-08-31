@@ -1,4 +1,4 @@
-"""Authorization tests for the group ownership handlers.
+"""Authorization tests for the ownership and disband handlers.
 
 These use the mocked-DbManager style of the other handler tests; the real-DB
 rule semantics live in ``test_group_roles.py``.
@@ -16,6 +16,7 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from handlers.group_manage import (  # noqa: E402
     handle_demote_self,
+    handle_disband_group_confirm,
     handle_leave_group_confirm,
     handle_promote_to_owner,
 )
@@ -102,6 +103,43 @@ class TestDemoteSelf:
     def test_an_owner_may_not_demote_a_peer(self):
         """Self-demotion only: letting owners demote each other invites ownership fights."""
         assert not self._run(target_workspace_id=OTHER_WS_ID, owner_count=2).called
+
+
+class TestDisbandConfirm:
+    def _run(self, *, can_disband, blocked=False):
+        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+        group = SimpleNamespace(id=GROUP_ID, name="G")
+        meta = {"group_id": GROUP_ID}
+        if blocked:
+            meta["blocked"] = True
+
+        with (
+            patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
+            patch("handlers.group_manage.helpers.is_user_authorized", return_value=True),
+            patch("handlers._common._parse_private_metadata", return_value=meta),
+            patch("handlers.group_manage.helpers.get_workspace_record", return_value=acting),
+            patch(
+                "handlers.group_manage.helpers.can_disband",
+                return_value=(can_disband, "" if can_disband else "co_owner_exists"),
+            ),
+            patch("handlers.group_manage.DbManager.find_records", return_value=[group]),
+            patch("handlers.group_manage.helpers.format_admin_label", return_value=("A", "A from WS")),
+            patch("handlers.group_manage._notify_group_admins"),
+            patch("handlers.group_manage.DbManager.delete_records") as delete_records,
+            patch("handlers.group_manage.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_disband_group_confirm({"view": {"team_id": "T1"}}, MagicMock(), MagicMock(), context={})
+        return delete_records
+
+    def test_disband_proceeds_when_both_gates_pass(self):
+        assert self._run(can_disband=True).called
+
+    def test_disband_is_rejected_on_submit_when_a_gate_fails(self):
+        """main_response has no auth gate, so the modal-time check is bypassable."""
+        assert not self._run(can_disband=False).called
+
+    def test_the_blocked_explanation_modal_does_not_disband(self):
+        assert not self._run(can_disband=True, blocked=True).called
 
 
 class TestLeaveGroupConfirmOwnerGuard:
