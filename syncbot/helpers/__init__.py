@@ -19,7 +19,6 @@ from helpers.conversations import (
     ConversationAccessError,
     authorize_url,
     ensure_bot_in_conversation,
-    has_usable_user_token,
     has_user_token,
 )
 from helpers.core import (
@@ -126,7 +125,6 @@ __all__ = [
     "ConversationAccessError",
     "authorize_url",
     "ensure_bot_in_conversation",
-    "has_usable_user_token",
     "has_user_token",
     "_CACHE",
     "_CACHE_TTL_SECONDS",

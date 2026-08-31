@@ -104,37 +104,67 @@ class TestEnsureBotInConversation:
         ):
             ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
 
-    def test_private_channel_without_any_user_token_points_at_authorize(self, client):
+    def test_private_channel_without_the_acting_user_token_points_at_authorize(self, client):
         client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
 
         with (
             patch("helpers.conversations.allow_private_channels", return_value=True),
             patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
             patch("helpers.conversations.get_user_token", return_value=None),
-            patch("helpers.conversations._team_user_token", return_value=None),
+            patch("helpers.conversations.WebClient") as web_client,
             pytest.raises(ConversationAccessError) as exc,
         ):
             ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
 
         assert "Authorize SyncBot" in str(exc.value)
+        web_client.assert_not_called()
 
-    def test_installer_token_is_used_when_the_acting_admin_has_none(self, client):
+    def test_only_the_acting_user_token_is_ever_looked_up(self, client):
+        """Another member's token must not be borrowed to reach a private channel.
+
+        The picker only offers a private channel to someone who belongs to it, so
+        the acting user's membership is what makes the invite legitimate. Using a
+        colleague's token would reach channels the publisher cannot see.
+        """
         client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
-        user_client = MagicMock()
+        tokens = {"U_AUTHORIZED": "xoxp-somebody-else"}
+        asked_for: list = []
+
+        def get_user_token(_team_id, user_id):
+            asked_for.append(user_id)
+            return tokens.get(user_id)
 
         with (
             patch("helpers.conversations.allow_private_channels", return_value=True),
             patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
-            patch("helpers.conversations.get_user_token", return_value=None),
-            patch("helpers.conversations._team_user_token", return_value="xoxp-installer"),
-            patch("helpers.conversations.WebClient", return_value=user_client) as web_client,
+            patch("helpers.conversations.get_user_token", side_effect=get_user_token),
+            patch("helpers.conversations.WebClient") as web_client,
+            pytest.raises(ConversationAccessError) as exc,
         ):
-            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U_NO_TOKEN")
 
-        assert web_client.call_args.kwargs["token"] == "xoxp-installer"
+        assert asked_for == ["U_NO_TOKEN"]
+        assert "Authorize SyncBot" in str(exc.value)
+        web_client.assert_not_called()
 
-    def test_inviter_outside_the_channel_gets_an_explicit_message(self, client):
-        """The installer fallback only works when that person is in the channel."""
+    def test_installation_lookup_is_scoped_to_the_acting_user(self):
+        """``find_installation`` is always called with a ``user_id``.
+
+        Without one it returns the team's most recent install row, which is
+        somebody else's token.
+        """
+        from helpers.conversations import get_user_token
+
+        store = MagicMock()
+        store.find_installation.return_value = SimpleNamespace(user_token="xoxp-acting-user")
+
+        with patch("helpers.conversations._installation_store", return_value=store):
+            assert get_user_token("T1", "U1") == "xoxp-acting-user"
+
+        assert store.find_installation.call_args.kwargs["user_id"] == "U1"
+
+    def test_acting_user_outside_the_channel_gets_an_explicit_message(self, client):
+        """Only reachable via a stale or hand-built payload, since the picker filters."""
         client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
         user_client = MagicMock()
         user_client.conversations_invite.side_effect = _slack_error("not_in_channel")
@@ -142,14 +172,13 @@ class TestEnsureBotInConversation:
         with (
             patch("helpers.conversations.allow_private_channels", return_value=True),
             patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
-            patch("helpers.conversations.get_user_token", return_value=None),
-            patch("helpers.conversations._team_user_token", return_value="xoxp-installer"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
             patch("helpers.conversations.WebClient", return_value=user_client),
             pytest.raises(ConversationAccessError) as exc,
         ):
             ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
 
-        assert "not a member" in str(exc.value)
+        assert "you are not a member of it" in str(exc.value)
 
     def test_private_channel_is_refused_when_the_policy_is_off(self, client):
         client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}

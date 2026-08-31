@@ -33,9 +33,17 @@ def _channel_picker_block(label: str, action_id: str) -> orm.InputBlock:
 
     Slack renders ``conversations_select`` as a searchable list over all of the
     user's conversations with no app-side enumeration, so workspaces with more
-    than ~100 channels can reach all of them. Because the native picker cannot
-    pre-exclude already-synced channels, that check moves to submit-time
-    validation in :func:`_validate_channel_selection`.
+    than ~100 channels can reach all of them. It is scoped to the viewer, which
+    means the private channels it offers are exactly the ones that person belongs
+    to — they cannot pick a private channel they are not in.
+
+    That is a client-side guarantee, so it is not relied on alone. The submitted
+    payload could still name any channel, and the answer to that is not a second
+    membership lookup but the token used to act on it: a private channel is
+    reached only by inviting the bot as the acting user, so a channel that person
+    is not in fails at Slack. See :func:`helpers.ensure_bot_in_conversation`.
+    Already-synced channels, which the picker also cannot pre-exclude, are
+    rejected in :func:`_validate_channel_selection`.
     """
     return orm.InputBlock(
         label=label,
@@ -148,7 +156,7 @@ def _validate_channel_selection(
 
     # Private channels are allowed. Adding the bot to one needs a user token, so
     # when there is none, only a public pick can succeed.
-    if helpers.has_usable_user_token(team_id, acting_user_id):
+    if helpers.has_user_token(team_id, acting_user_id):
         return None
     if _looks_private(client, channel_id):
         return {

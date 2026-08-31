@@ -9,9 +9,15 @@ Slack draws a hard line between the two channel types:
   user token (``xoxp``, ``groups:write``).
 
 The person publishing or subscribing is by definition a member of the channel
-they just picked, so their user token is the one that works. Those tokens are
-already written to ``slack_installations`` by Bolt for anyone who completed the
-OAuth install; this module is the only place that reads them.
+they just picked, because Slack's channel picker only offers a private channel
+to someone who belongs to it. So their user token is the one that works, and it
+is the **only** token this module will use: never another member's, never the
+installer's. Acting as one person to reach a private channel they chose is
+authorization the picker already established; borrowing someone else's token
+would let a publish reach a channel the publisher cannot see.
+
+Those tokens are already written to ``slack_installations`` by Bolt for anyone
+who completed the OAuth install; this module is the only place that reads them.
 
 Imports submodules only (``constants``, ``helpers._cache``, ``helpers.core``,
 ``helpers.oauth``, ``helpers.settings``, ``helpers.slack_api``) and never the
@@ -101,36 +107,12 @@ def _clean_token(token) -> str | None:
 def has_user_token(team_id: str | None, user_id: str | None) -> bool:
     """Whether this specific user has authorized SyncBot to act as them.
 
-    Drives whether the Home tab shows *Authorize SyncBot*. Deliberately ignores
-    the team-level fallback in :func:`_team_user_token`: someone else's token
-    happening to work is not this user's authorization.
+    Drives whether the Home tab shows *Authorize SyncBot*, and whether a private
+    channel pick can succeed. There is deliberately no team-level variant: a
+    private channel is reachable only through the membership of the person who
+    picked it.
     """
     return bool(get_user_token(team_id, user_id))
-
-
-def _team_user_token(team_id: str | None) -> str | None:
-    """Return any user token recorded for *team_id*, usually the installer's.
-
-    A fallback for the case where the acting admin has not authorized but the
-    installer is also in the private channel. When they are not, Slack answers
-    ``not_in_channel`` and the caller reports that explicitly.
-    """
-    if not team_id:
-        return None
-    store = _installation_store()
-    if store is None:
-        return None
-    try:
-        installation = store.find_installation(enterprise_id=None, team_id=team_id)
-    except Exception as exc:
-        _logger.warning(f"find_installation (team-level) failed for team {team_id}: {exc}")
-        return None
-    return _clean_token(getattr(installation, "user_token", None) if installation else None)
-
-
-def has_usable_user_token(team_id: str | None, user_id: str | None) -> bool:
-    """Whether *some* user token exists that could invite the bot for this team."""
-    return bool(get_user_token(team_id, user_id) or _team_user_token(team_id))
 
 
 def _slack_error(exc: SlackApiError) -> str:
@@ -176,8 +158,9 @@ def ensure_bot_in_conversation(
     """Make SyncBot a member of *channel_id*, whichever type it is.
 
     Public channels are joined with the bot token. Private channels are joined by
-    inviting the bot as *acting_user_id* (falling back to the installer), because
-    a bot cannot add itself to one.
+    inviting the bot as *acting_user_id* and no one else, because a bot cannot
+    add itself to one and because that person's own membership is the only thing
+    that makes reaching the channel legitimate.
 
     Raises :class:`ConversationAccessError` with admin-facing text on failure. The
     caller is expected to undo whatever it wrote before calling, so a channel is
@@ -209,7 +192,7 @@ def ensure_bot_in_conversation(
     if not bot_user_id:
         raise ConversationAccessError("SyncBot could not determine its own identity. Please try again.")
 
-    token = get_user_token(team_id, acting_user_id) or _team_user_token(team_id)
+    token = get_user_token(team_id, acting_user_id)
     if not token:
         raise ConversationAccessError(AUTHORIZE_HINT)
 
@@ -220,10 +203,11 @@ def ensure_bot_in_conversation(
         if error in _ALREADY_THERE_ERRORS:
             return
         if error == "not_in_channel":
+            # The picker only offers private channels the user belongs to, so
+            # this means a stale or hand-built payload rather than a normal pick.
             raise ConversationAccessError(
-                "SyncBot could not be added to that private Channel, because the account that "
-                "authorized SyncBot is not a member of it. Open the SyncBot Home tab, click "
-                "*Authorize SyncBot* as yourself, and try again."
+                "SyncBot could not be added to that private Channel, because you are not a "
+                "member of it. Open the Channel, then publish or subscribe it again."
             ) from exc
         raise ConversationAccessError(
             f"SyncBot could not be added to that private Channel (`{error or 'unknown error'}`)."

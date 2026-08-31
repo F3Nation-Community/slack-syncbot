@@ -117,7 +117,7 @@ class TestValidateChannelSelection:
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
-            patch("handlers.channel_sync.helpers.has_usable_user_token", return_value=True),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=True),
         ):
             assert _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1") is None
 
@@ -129,7 +129,7 @@ class TestValidateChannelSelection:
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
-            patch("handlers.channel_sync.helpers.has_usable_user_token", return_value=False),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
         ):
             result = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
 
@@ -141,7 +141,7 @@ class TestValidateChannelSelection:
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
-            patch("handlers.channel_sync.helpers.has_usable_user_token", return_value=False),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
         ):
             assert _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1") is None
 
@@ -151,7 +151,7 @@ class TestValidateChannelSelection:
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
-            patch("handlers.channel_sync.helpers.has_usable_user_token", return_value=False),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
         ):
             result = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
 
