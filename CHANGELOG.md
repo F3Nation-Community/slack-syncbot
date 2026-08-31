@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Channel pickers no longer stop at the first 100 channels. Publishing and subscribing now use Slack's own channel search, so every channel in the workspace is reachable by typing a few letters, however many channels you have.
 - Picking a channel that is already part of a Channel Sync now explains the problem in the dialog and asks for a different channel, instead of closing the modal as though it had worked. Subscribing reports this the same way publishing already did.
+- Publishing or subscribing a private Channel that SyncBot has not been invited to now explains that in the dialog, instead of closing as though it had worked and then failing when SyncBot cannot join.
 
 ### Changed
 

@@ -106,22 +106,29 @@ def _validate_channel_selection(
             "errors": {action_id: "That Channel is already part of a Channel Sync. Pick a different Channel."},
         }
 
-    if not helpers.allow_private_channels():
-        try:
-            conv_info = client.conversations_info(channel=channel_id)
-            is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
-        except Exception as e:
-            # Fail closed: an unreadable channel is one the bot cannot join either.
-            _logger.warning(f"_validate_channel_selection: conversations_info failed for {channel_id}: {e}")
-            return {
-                "response_action": "errors",
-                "errors": {action_id: "SyncBot could not read that Channel. Pick a public Channel it can join."},
-            }
-        if is_private:
-            return {
-                "response_action": "errors",
-                "errors": {action_id: "Private Channels cannot be synced. Pick a public Channel."},
-            }
+    try:
+        conv_info = client.conversations_info(channel=channel_id)
+        is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
+        is_member = bool(helpers.safe_get(conv_info, "channel", "is_member"))
+    except Exception as e:
+        # Fail closed: an unreadable channel is one the bot cannot join either.
+        _logger.warning(f"_validate_channel_selection: conversations_info failed for {channel_id}: {e}")
+        return {
+            "response_action": "errors",
+            "errors": {action_id: "SyncBot could not read that Channel. Pick a public Channel it can join."},
+        }
+
+    if is_private and not helpers.allow_private_channels():
+        return {
+            "response_action": "errors",
+            "errors": {action_id: "Private Channels cannot be synced. Pick a public Channel."},
+        }
+
+    if is_private and not is_member:
+        return {
+            "response_action": "errors",
+            "errors": {action_id: "SyncBot is not in that Channel. Invite it first, then try again."},
+        }
 
     return None
 

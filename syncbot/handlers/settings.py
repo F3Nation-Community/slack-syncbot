@@ -75,7 +75,8 @@ def _build_settings_form() -> orm.BlockView:
                     "When this is on, an Admin can publish a private Channel, and its messages will "
                     "then be copied into other Workspaces. Anyone who can see the synced Channel in "
                     "those Workspaces will be able to read that content, so the Channel is no longer "
-                    "really private. Broadcasts always require a public Channel regardless of this setting."
+                    "really private. SyncBot cannot add itself to a private Channel, so invite it "
+                    "there first. Broadcasts always require a public Channel regardless of this setting."
                 ),
             ),
         ),

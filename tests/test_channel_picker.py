@@ -108,15 +108,33 @@ class TestValidateChannelSelection:
 
         assert "Private Channels cannot be synced" in result["errors"][self.ACTION]
 
-    def test_private_channel_allowed_when_setting_is_on(self, client):
+    def test_private_channel_allowed_when_setting_is_on_and_bot_is_a_member(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": True}}
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
         ):
             assert _validate_channel_selection(client, "C1", self.ACTION) is None
 
-        # The policy is permissive, so there is no reason to spend an API call.
-        client.conversations_info.assert_not_called()
+    def test_private_channel_rejected_when_bot_is_not_a_member(self, client):
+        """The native picker shows channels the user can see; the bot may not be in them."""
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        with (
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
+        ):
+            result = _validate_channel_selection(client, "C1", self.ACTION)
+
+        assert "Invite it first" in result["errors"][self.ACTION]
+
+    def test_public_channel_passes_even_if_bot_is_not_yet_a_member(self, client):
+        """conversations.join can add the bot to a public Channel in the work phase."""
+        client.conversations_info.return_value = {"channel": {"is_private": False, "is_member": False}}
+        with (
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False),
+        ):
+            assert _validate_channel_selection(client, "C1", self.ACTION) is None
 
     def test_unreadable_channel_fails_closed(self, client):
         """A channel SyncBot cannot inspect is one it cannot join either."""
