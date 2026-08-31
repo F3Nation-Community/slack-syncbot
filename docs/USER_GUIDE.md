@@ -29,7 +29,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 
 Slack does not allow an app to add itself to a private channel. Only someone who is already in that channel can add it, acting as themselves. So the first time you use SyncBot, you may see an **Authorize SyncBot** section at the top of the Home tab with a short explanation and a button.
 
-Clicking the button walks you through the same install screen you saw when SyncBot was added to the workspace, and it takes a few seconds. It does not ask for any new permissions from your workspace; it simply records that SyncBot may act on your behalf. Once that is done, the section disappears for you, and publishing or subscribing a private channel works without any extra steps.
+Clicking the button walks you through the same install screen you saw when SyncBot was added to the workspace, and it takes a few seconds. The screen arrives with this workspace already selected, so if you belong to several you do not have to hunt for the right one. It does not ask for any new permissions from your workspace; it simply records that SyncBot may act on your behalf. Once that is done, the section disappears for you, and publishing or subscribing a private channel works without any extra steps.
 
 Everyone sees this section until they have authorized, whether or not they are an admin, and whoever installed SyncBot originally will usually never see it at all. If you pick a private channel before authorizing, SyncBot tells you in the dialog and points you here rather than failing after the dialog closes.
 

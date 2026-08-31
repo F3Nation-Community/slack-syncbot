@@ -147,14 +147,14 @@ def _build_authorize_section(blocks: list, team_id: str, user_id: str) -> bool:
     if helpers.has_user_token(team_id, user_id):
         return False
 
-    url = helpers.authorize_url()
+    url = helpers.authorize_url(team_id)
     if not url:
         # Single-workspace/local mode has no OAuth flow, so there is nothing to
         # link to and a button would be a dead end.
         return False
 
     blocks.append(header("Authorize SyncBot"))
-    blocks.append(block_context("_Authorize this app to act on your behalf to add SyncBot to private Channels._"))
+    blocks.append(block_context("_Allow SyncBot to act on your behalf in this Slack Workspace._"))
     blocks.append(
         orm.ActionsBlock(
             elements=[

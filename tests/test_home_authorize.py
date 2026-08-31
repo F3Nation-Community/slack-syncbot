@@ -52,10 +52,21 @@ class TestAuthorizeSection:
         rendered = _rendered(blocks)
         assert shown is True
         assert rendered[0]["text"]["text"] == "Authorize SyncBot"
-        assert "add SyncBot to private Channels" in rendered[1]["elements"][0]["text"]
+        assert "act on your behalf in this Slack Workspace" in rendered[1]["elements"][0]["text"]
         button = rendered[2]["elements"][0]
         assert button["url"] == AUTHORIZE_URL
         assert button["action_id"] == actions.CONFIG_AUTHORIZE_SYNCBOT
+
+    def test_install_link_pre_selects_this_workspace(self):
+        """Most people are in several workspaces, and Slack otherwise guesses."""
+        blocks: list = []
+        with (
+            patch("builders.home.helpers.has_user_token", return_value=False),
+            patch("builders.home.helpers.authorize_url", return_value=AUTHORIZE_URL) as authorize_url,
+        ):
+            _build_authorize_section(blocks, "T1", "U1")
+
+        assert authorize_url.call_args.args == ("T1",)
 
     def test_copy_does_not_promise_reactions_yet(self):
         """User-token reactions are a later release; the copy must not imply them."""

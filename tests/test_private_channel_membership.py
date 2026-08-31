@@ -15,7 +15,7 @@ import pytest
 from slack_sdk.errors import SlackApiError
 
 from handlers.channel_sync import handle_publish_channel_submit_work
-from helpers.conversations import ConversationAccessError, ensure_bot_in_conversation
+from helpers.conversations import ConversationAccessError, authorize_url, ensure_bot_in_conversation
 
 
 def _slack_error(code: str) -> SlackApiError:
@@ -161,6 +161,40 @@ class TestEnsureBotInConversation:
             ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
 
         assert "Private Channels cannot be synced" in str(exc.value)
+
+
+class TestAuthorizeUrl:
+    """Slack's authorize screen defaults to whichever workspace the browser used
+    last, so the team is pinned on both the Bolt install path and the fallback."""
+
+    def test_install_path_carries_the_team(self, monkeypatch):
+        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://syncbot.example.com/")
+        monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
+
+        assert authorize_url("T1") == "https://syncbot.example.com/slack/install?team=T1"
+
+    def test_install_path_without_a_team_is_unchanged(self, monkeypatch):
+        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://syncbot.example.com")
+        monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
+
+        assert authorize_url() == "https://syncbot.example.com/slack/install"
+
+    def test_fallback_authorize_endpoint_carries_the_team(self, monkeypatch):
+        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "")
+        monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
+
+        with patch("helpers.conversations._issue_oauth_state", return_value="state-123"):
+            url = authorize_url("T1")
+
+        assert url.startswith("https://slack.com/oauth/v2/authorize?")
+        assert "team=T1" in url
+        assert "state=state-123" in url
+
+    def test_no_client_id_means_no_link(self, monkeypatch):
+        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://syncbot.example.com")
+        monkeypatch.setenv("SLACK_CLIENT_ID", "")
+
+        assert authorize_url("T1") is None
 
 
 class TestPublishWritesRowsBeforeAddingTheBot:

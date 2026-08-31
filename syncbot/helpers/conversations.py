@@ -230,7 +230,7 @@ def ensure_bot_in_conversation(
         ) from exc
 
 
-def authorize_url() -> str | None:
+def authorize_url(team_id: str | None = None) -> str | None:
     """Return the URL that starts an OAuth install for the current user.
 
     Prefers this deployment's own ``/slack/install`` so Bolt issues and verifies
@@ -238,6 +238,11 @@ def authorize_url() -> str | None:
     authorize endpoint with a state from the same store Bolt uses. Returns
     ``None`` when neither is possible, so the Home tab can hide the button rather
     than render a dead link.
+
+    *team_id* pre-selects the workspace on Slack's authorize screen, which
+    matters because most people belong to several and the screen otherwise
+    defaults to whichever one their browser used last. Bolt passes the ``team``
+    query parameter through to the same place.
     """
     client_id = os.environ.get(constants.SLACK_CLIENT_ID, "").strip()
     if not client_id:
@@ -245,7 +250,10 @@ def authorize_url() -> str | None:
 
     base = os.environ.get(constants.SYNCBOT_PUBLIC_URL, "").strip().rstrip("/")
     if base:
-        return f"{base}/slack/install"
+        install_url = f"{base}/slack/install"
+        if team_id:
+            install_url += "?" + urllib.parse.urlencode({"team": team_id})
+        return install_url
 
     from slack_manifest_scopes import USER_SCOPES
 
@@ -256,6 +264,8 @@ def authorize_url() -> str | None:
     state = _issue_oauth_state()
     if state:
         params["state"] = state
+    if team_id:
+        params["team"] = team_id
     return "https://slack.com/oauth/v2/authorize?" + urllib.parse.urlencode(params)
 
 
