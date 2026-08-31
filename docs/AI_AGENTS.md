@@ -51,6 +51,12 @@ The 1.3.2 list was built as follows; keep new rows on the same rails:
 
 `tests/test_slack_manifest_scopes.py` asserts every `USER_SCOPE` sits in exactly one group. The recipe also lives as comments on `USER_PERMISSION_GROUPS`.
 
+## Public origin and OAuth install
+
+This instance's public HTTPS origin is the Host of incoming Slack requests (the same URL Slack already uses for events). `helpers.oauth.get_public_base_url` / `capture_public_base` serve Authorize SyncBot (`/slack/install?team=`) and federation webhooks. Do not read `SYNCBOT_PUBLIC_URL`; if that leftover env var is set, the app logs a warning and ignores it.
+
+Bolt OAuth must start at **this instance's** `GET /slack/install`. A Home-tab URL that points at Slack's authorize page skips the state cookie and fails after Allow with `invalid_browser`. On Lambda, Function URL payload 2.0 needs the OAuth cookie in the `cookies` array, and stray GETs such as `/favicon.ico` must not be treated as a second install. After a successful callback, call `refresh_home_after_oauth_install` so that user's Home tab updates without a manual Refresh.
+
 ## Fork compatibility
 
 `release.yml`, Dependabot auto-merge, and semantic-release config apply to **F3Nation-Community/slack-syncbot** only. Deploy forks keep `test`/`prod` Environments and must not mint duplicate GitHub Releases. CODEOWNERS handles are organization-specific; replace `@sprocktech-dev` on other orgs. See [INFRA_CONTRACT.md](INFRA_CONTRACT.md) Fork Compatibility Policy.

@@ -89,7 +89,7 @@ Runs from repo root (or `./deploy.sh --env test` with `CLOUD_PROVIDER=aws`). It:
    | Keep-warm | `ENABLE_KEEP_WARM` defaults on (EventBridge ScheduleV2 invoke — not HTTP `/health`) |
    | Abort | Leftover `RDSInstance*` stops the deploy; there is no `--force` |
 
-6. **Post-deploy** — stack outputs, `slack-manifest_test.json` or `slack-manifest_prod.json`, Slack API, optional **`gh`**, and a receipt under `deploy-receipts/` (gitignored). The receipt has config, secrets, and Slack **Event**, **Interactivity**, **Redirect**, and **Install** URLs. Those Slack URLs are **not** `SYNCBOT_PUBLIC_URL` (federation only; Lambda env is often empty unless you set `SyncbotPublicUrl`). `--verbose` adds SAM parameters and an inline manifest.
+6. **Post-deploy** — stack outputs, `slack-manifest_test.json` or `slack-manifest_prod.json`, Slack API, optional **`gh`**, and a receipt under `deploy-receipts/` (gitignored). The receipt has config, secrets, and Slack **Event**, **Interactivity**, **Redirect**, and **Install** URLs. Those Slack URLs are the public origin SyncBot uses for OAuth install and federation (the app reads the Host of incoming Slack requests). `--verbose` adds SAM parameters and an inline manifest.
 
 ### GCP: `infra/gcp/scripts/deploy.sh`
 
@@ -206,7 +206,7 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 | `SYNCBOT_FEDERATION_ENABLED` | `true` to enable federation to other SyncBot instances (default `false`). |
 | `SYNCBOT_INSTANCE_ID` | This instance's UUID. Pin it when federation is on — Lambda mints a new one per cold start if it is empty. |
-| `SYNCBOT_PUBLIC_URL` | This instance's public HTTPS base. Required for federation; not a Slack app URL. |
+| `SYNCBOT_PUBLIC_URL` | Leftover. Ignored if set (a warning is logged). OAuth and federation use the Host of incoming Slack requests. |
 
 How long uninstalled workspace data is kept, whether private Channels may be published, and which workspaces may publish a Broadcast are set in the **Settings** modal on the Home tab (visible to `PRIMARY_WORKSPACE`), not as environment variables.
 

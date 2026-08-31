@@ -18,8 +18,9 @@ poetry run pytest -q tests/ infra/aws/tests infra/gcp/tests
 
 ## Do not
 
-- Bump `pyproject.toml` `version` or add a new CHANGELOG version heading in a PR (releases own those). Do not hand-edit `*requirements.txt` (exports handle those).
+- Bump `pyproject.toml` `version` in a feature PR. You may pre-write the next CHANGELOG section **below** `<!-- version list -->` (releases own the version bump). Do not hand-edit `*requirements.txt` (exports handle those).
 - Commit `.env` secrets or `.aws-sam/` build output.
+- Link OAuth at `slack.com/oauth/v2/authorize`, or treat `SYNCBOT_PUBLIC_URL` as required. Use `/slack/install` and `get_public_base_url`.
 
 ## PR rules
 

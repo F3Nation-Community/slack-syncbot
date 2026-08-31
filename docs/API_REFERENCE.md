@@ -7,8 +7,8 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/slack/events` | Receives all Slack events (messages, actions, view submissions) and slash commands |
-| `GET` | `/slack/install` | OAuth install page — redirects the user to Slack's authorization screen |
-| `GET` | `/slack/oauth_redirect` | OAuth callback — Slack redirects here after the user approves the app |
+| `GET` | `/slack/install` | Starts OAuth: sets Bolt's state cookie and redirects the browser to Slack's authorization screen |
+| `GET` | `/slack/oauth_redirect` | OAuth callback after the user approves. On success, SyncBot publishes that user's Home tab so **Authorize SyncBot** can disappear without a Refresh |
 | `POST` | `/api/federation/pair` | Accept an incoming external connection request |
 | `POST` | `/api/federation/message` | Receive a forwarded message from a connected instance; resolves `@` mentions and `#` channel references locally before posting |
 | `POST` | `/api/federation/message/edit` | Receive a message edit from a connected instance; applies the same local mention and channel resolution before updating |
