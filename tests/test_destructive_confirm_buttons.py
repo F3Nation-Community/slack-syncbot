@@ -103,6 +103,38 @@ class TestLeaveGroupConfirmModal:
         assert buttons[0]["action_id"] == actions.CONFIG_LEAVE_GROUP_CONFIRM
 
 
+class TestSoleOwnerBlockedModal:
+    """The sole-owner explanation only does one thing (dismiss), so it has one button."""
+
+    def _view(self):
+        from handlers import group_manage
+
+        client = MagicMock()
+        body = {
+            "user": {"id": "U1", "team_id": "T1"},
+            "team": {"id": "T1"},
+            "actions": [{"action_id": f"{actions.CONFIG_LEAVE_GROUP}_5"}],
+            "trigger_id": "tr",
+        }
+        group = SimpleNamespace(id=5, name="G")
+        workspace = SimpleNamespace(id=2, team_id="T1", bot_token=None, deleted_at=None)
+        with (
+            patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
+            patch("handlers.group_manage.helpers.is_user_authorized", return_value=True),
+            patch("handlers.group_manage.DbManager.find_records", return_value=[group]),
+            patch("handlers.group_manage.helpers.get_workspace_record", return_value=workspace),
+            patch("handlers.group_manage.helpers.can_workspace_leave", return_value=(False, "sole_owner")),
+        ):
+            group_manage.handle_leave_group(body, client, MagicMock(), context={})
+        return client.views_open.call_args.kwargs["view"]
+
+    def test_has_exactly_one_dismiss_button(self):
+        view = self._view()
+        assert "submit" not in view
+        assert view["close"]["text"] == "Close"
+        assert _danger_buttons(view) == []
+
+
 class TestDisbandGroupConfirmModal:
     def _view(self):
         from handlers import group_manage
