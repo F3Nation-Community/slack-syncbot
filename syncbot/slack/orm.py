@@ -310,9 +310,20 @@ class ChannelsSelectElement(BaseElement):
 
 @dataclass
 class ConversationsSelectElement(BaseElement):
-    """Channel picker that includes both public and private channels."""
+    """Slack's native channel picker, searchable over all of the user's conversations.
+
+    Unlike a ``static_select`` populated from ``conversations_list``, this has no
+    app-side enumeration and therefore no option cap, so it works in workspaces
+    with thousands of channels.
+
+    ``include_private`` only controls the client-side filter, which is advisory:
+    the payload can still name a private channel, so callers must also validate
+    on submit. It defaults to ``False`` to match the default of the
+    ``allow_private_channels`` setting; set it from that setting at render time.
+    """
 
     initial_value: str = None
+    include_private: bool = False
 
     def get_selected_value(self, input_data, action):
         return safe_get(input_data, action, action, "selected_conversation")
@@ -322,7 +333,7 @@ class ConversationsSelectElement(BaseElement):
             "type": "conversations_select",
             "action_id": action,
             "filter": {
-                "include": ["public", "private"],
+                "include": ["public", "private"] if self.include_private else ["public"],
                 "exclude_bot_users": True,
                 "exclude_external_shared_channels": True,
             },
@@ -514,6 +525,18 @@ class BlockView:
         for block in self.blocks:
             if block.action in options:
                 block.element.options = options[block.action]
+
+    def set_conversations_include_private(self, include_private: bool):
+        """Apply the private-channel policy to every conversations picker in this view.
+
+        The form templates in :mod:`slack.forms` are module-level constants, so the
+        policy cannot be baked into them at import time — it would go stale as soon
+        as an operator changed the setting. Call this on the deep copy instead.
+        """
+        for block in self.blocks:
+            element = getattr(block, "element", None)
+            if isinstance(element, ConversationsSelectElement):
+                element.include_private = include_private
 
     def as_form_field(self) -> list[dict]:
         return [b.as_form_field() for b in self.blocks]
