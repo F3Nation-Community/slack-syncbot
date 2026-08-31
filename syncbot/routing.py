@@ -92,6 +92,7 @@ VIEW_MAPPER = {
 VIEW_ACK_MAPPER = {
     actions.CONFIG_PUBLISH_MODE_SUBMIT: handlers.handle_publish_mode_submit_ack,
     actions.CONFIG_PUBLISH_CHANNEL_SUBMIT: handlers.handle_publish_channel_submit_ack,
+    actions.CONFIG_SUBSCRIBE_CHANNEL_SUBMIT: handlers.handle_subscribe_channel_submit_ack,
     actions.CONFIG_BACKUP_RESTORE_SUBMIT: handlers.handle_backup_restore_submit_ack,
     actions.CONFIG_DATA_MIGRATION_SUBMIT: handlers.handle_data_migration_submit_ack,
 }
