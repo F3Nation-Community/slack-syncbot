@@ -234,6 +234,13 @@ def build_home_tab(
             action=actions.CONFIG_REFRESH_HOME,
         ),
     ]
+    if helpers.is_settings_visible_for_workspace(workspace_record.team_id):
+        config_buttons.append(
+            orm.ButtonElement(
+                label="Settings",
+                action=actions.CONFIG_OPEN_SETTINGS,
+            ),
+        )
     if helpers.is_backup_visible_for_workspace(workspace_record.team_id):
         config_buttons.append(
             orm.ButtonElement(

@@ -91,6 +91,23 @@ def is_db_reset_visible_for_workspace(team_id: str | None) -> bool:
     return True
 
 
+def is_settings_visible_for_workspace(team_id: str | None) -> bool:
+    """Return True if the operator Settings modal is allowed for this workspace.
+
+    Mirrors :func:`is_backup_visible_for_workspace`: requires PRIMARY_WORKSPACE
+    to be set and to match *team_id*. Settings are instance-wide operator
+    policy, so they are deliberately not exposed to member workspaces.
+    """
+    primary = (os.environ.get(constants.PRIMARY_WORKSPACE) or "").strip()
+    if not primary:
+        _logger.debug("settings hidden: PRIMARY_WORKSPACE not set")
+        return False
+    visible = (team_id or "") == primary
+    if not visible:
+        _logger.debug("settings hidden: team_id %r does not match PRIMARY_WORKSPACE", team_id)
+    return visible
+
+
 def format_admin_label(client, user_id: str, workspace) -> tuple[str, str]:
     """Return ``(display_name, full_label)`` for an admin."""
     from .slack_api import get_user_info

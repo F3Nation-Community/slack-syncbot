@@ -110,6 +110,25 @@ CONFIG_DISBAND_GROUP_CONFIRM = "disband_group_confirm"
 """Callback: disband-group confirmation modal submitted."""
 
 # ---------------------------------------------------------------------------
+# Instance settings (PRIMARY_WORKSPACE only)
+# ---------------------------------------------------------------------------
+
+CONFIG_OPEN_SETTINGS = "open_settings"
+"""Action: operator clicked "Settings" in the SyncBot Configuration row."""
+
+CONFIG_SETTINGS_SUBMIT = "settings_submit"
+"""Callback: instance settings modal submitted."""
+
+CONFIG_SETTINGS_ALLOW_PRIVATE_CHANNELS = "settings_allow_private_channels"
+"""Input: whether private channels may be selected for a normal sync."""
+
+CONFIG_SETTINGS_BROADCAST_WORKSPACES = "settings_broadcast_workspaces"
+"""Input: Workspaces permitted to publish a broadcast. Empty means any."""
+
+CONFIG_SETTINGS_RETENTION_DAYS = "settings_retention_days"
+"""Input: days a soft-deleted Workspace is retained before permanent removal."""
+
+# ---------------------------------------------------------------------------
 # Channel Sync actions
 # ---------------------------------------------------------------------------
 
