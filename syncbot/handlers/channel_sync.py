@@ -47,10 +47,20 @@ def _channel_picker_block(label: str, action_id: str) -> orm.InputBlock:
     )
 
 
-def _channel_picker_help_text() -> str:
+def _channel_picker_help_text(*, subscribe: bool = False) -> str:
     """Explain what may be selected, including the private-channel warning when relevant."""
-    base = "Search for a Channel in your Workspace to make available for Syncing."
+    if subscribe:
+        base = "Search for a Channel in your Workspace to receive the published Channel."
+    else:
+        base = "Search for a Channel in your Workspace to publish."
     if helpers.allow_private_channels():
+        if subscribe:
+            return (
+                f"{base} :warning: Private Channels are currently allowed. Messages from the "
+                "published Channel will be copied into it, so anyone who can see your Channel "
+                "will be able to read them. SyncBot must already be a member of a private Channel, "
+                "because it cannot add itself to one."
+            )
         return (
             f"{base} :warning: Private Channels are currently allowed. If you publish one, its "
             "messages will be copied into the other Workspaces in this Group, where anyone who can "
@@ -175,17 +185,17 @@ def handle_publish_channel(
 
     mode_options = [
         orm.SelectorOption(
-            name="Available to All Workspaces\nAny current or future Workspace Group Member can Sync.",
+            name="Available to All Workspaces\nAny current or future Workspace Group Member can subscribe.",
             value="group",
         ),
         orm.SelectorOption(
-            name="Only with Specific Workspace\nChoose a specific Workspace Group Member to allow Syncing.",
+            name="Only with Specific Workspace\nChoose a specific Workspace Group Member to allow to subscribe.",
             value="direct",
         ),
     ]
     step1_blocks: list[orm.BaseBlock] = [
         orm.InputBlock(
-            label="Channel Sync Mode",
+            label="Who can subscribe",
             action=actions.CONFIG_PUBLISH_SYNC_MODE,
             element=orm.RadioButtonsElement(
                 initial_value="group",
@@ -201,7 +211,7 @@ def handle_publish_channel(
         client=client,
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_PUBLISH_MODE_SUBMIT,
-        title_text="Sync Channel",
+        title_text="Publish Channel",
         submit_button_text="Next",
         parent_metadata={"group_id": group_id, "workspace_id": workspace_record.id},
         new_or_add="new",
@@ -242,7 +252,7 @@ def handle_publish_mode_submit_ack(
     step2 = _build_publish_step2(sync_mode, other_members)
     updated_view = step2.as_ack_update(
         callback_id=actions.CONFIG_PUBLISH_CHANNEL_SUBMIT,
-        title_text="Sync Channel",
+        title_text="Publish Channel",
         submit_button_text="Publish",
         parent_metadata={"group_id": group_id, "sync_mode": sync_mode},
     )
@@ -744,17 +754,17 @@ def handle_subscribe_channel(
             pub_ch = publisher_channels[0]
             pub_ws = helpers.get_workspace_by_id(pub_ch.workspace_id)
             ch_ref = _format_channel_ref(pub_ch.channel_id, pub_ws, is_local=False)
-            blocks.append(section(f"Syncing with: {ch_ref}"))
+            blocks.append(section(f"Published Channel: {ch_ref}"))
 
-    blocks.append(_channel_picker_block("Channel for Sync", actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT))
-    blocks.append(block_context(_channel_picker_help_text()))
+    blocks.append(_channel_picker_block("Channel to Subscribe", actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT))
+    blocks.append(block_context(_channel_picker_help_text(subscribe=True)))
 
     orm.BlockView(blocks=blocks).post_modal(
         client=client,
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_SUBSCRIBE_CHANNEL_SUBMIT,
-        title_text="Sync Channel",
-        submit_button_text="Sync Channel",
+        title_text="Subscribe",
+        submit_button_text="Subscribe",
         parent_metadata={"sync_id": int(sync_id)} if sync_id else None,
         new_or_add="new",
     )

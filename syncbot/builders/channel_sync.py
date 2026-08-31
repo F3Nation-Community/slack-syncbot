@@ -32,7 +32,7 @@ def _build_inline_channel_sync(
     - Active synced channels with Pause/Stop buttons
     - Paused synced channels with Resume/Stop buttons
     - Channels waiting for a subscriber with Stop Syncing button
-    - Available channels from other members with Start Syncing button
+    - Available channels from other members with Subscribe button
     """
     syncs_for_group = DbManager.find_records(
         Sync,
@@ -187,13 +187,13 @@ def _build_inline_channel_sync(
         else:
             mode_tag = "Available to Any"
 
-        blocks.append(section(":inbox_tray: New Sync Available"))
+        blocks.append(section(":inbox_tray: Published Channel Available"))
         blocks.append(block_context(f"Type: `{mode_tag}`\nPublisher: `{publisher_name}`\nChannel Name: `{sync.title}`"))
         blocks.append(
             orm.ActionsBlock(
                 elements=[
                     orm.ButtonElement(
-                        label="Start Syncing",
+                        label="Subscribe",
                         action=f"{actions.CONFIG_SUBSCRIBE_CHANNEL}_{sync.id}",
                         value=str(sync.id),
                     ),

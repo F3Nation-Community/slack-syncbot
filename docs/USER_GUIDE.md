@@ -9,7 +9,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 3. The Home tab shows everything in one view:
    - **SyncBot Configuration (bottom row)** — **Refresh**, plus **Backup/Restore** and **Settings** only if the host set `PRIMARY_WORKSPACE` (the Slack Team ID) and redeployed. If you do not see them, ask the operator. **Settings** is where the operator adjusts instance-wide policy, such as how long the data of a workspace that uninstalled is kept before it is deleted for good.
    - **Workspace Groups** — create or join groups of workspaces that can sync channels together.
-   - **Per-group sections** — for each group you can publish channels, manage user mapping (a dedicated Home tab screen), and see or manage channel syncs inline.
+   - **Per-group sections** — for each group you can **Publish Channel**, manage user mapping (a dedicated Home tab screen), and see or manage channel syncs inline. Other workspaces in the group see published channels as **Subscribe**.
    - **Synced Channels** — each row shows the local channel and workspace list in brackets (for example _[Any: Your Workspace, Other Workspace]_), with pause/resume and stop controls, a synced-since date, and a tracked message count.
    - **External Connections** *(when federation is enabled)* — Generate or Enter a Connection Code, and **Data Migration** (export workspace data to another instance, or import a migration file).
 
@@ -21,7 +21,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 - Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
 - Existing messages are not back-filled; syncing starts from the moment a channel is linked.
 - Do not add SyncBot manually to channels. SyncBot adds itself when you configure a Sync. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
-- When you pick a channel to publish or sync, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
+- When you pick a channel to publish or subscribe, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
 - A channel can belong to only one Channel Sync at a time. If you pick one that is already syncing, SyncBot tells you so in the dialog and asks for a different channel rather than quietly doing nothing. A channel you previously unpublished is free to use again.
 - Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. Keep in mind that SyncBot cannot add itself to a private channel, so you need to invite it there first.
 
@@ -47,7 +47,7 @@ Disbanding always asks for confirmation before anything is removed, and tells yo
 
 ## Sync Modes
 
-When publishing a channel inside a group, admins choose either **1-to-1** (only a specific workspace can subscribe) or **group-wide** (any group member can subscribe independently).
+When publishing a channel inside a group, use **Publish Channel**. The first step chooses either **1-to-1** (only a specific workspace can subscribe) or **group-wide** (any group member can subscribe independently). Other workspaces then use **Subscribe** to pick a local channel that receives the published one.
 
 ## Pause / Resume / Stop
 

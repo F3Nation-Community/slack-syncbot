@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - A channel may belong to only one Channel Sync at a time, and this is now enforced instance-wide rather than per workspace. Two syncs sharing a channel had no defined message routing. Channels that were previously unpublished are still free to reuse.
 - The `ALLOW_PRIVATE_CHANNELS` setting now takes effect. When it is off, which is the default, private channels are left out of the picker and rejected on submit; when an operator turns it on in **Settings**, the dialog warns that a private channel's messages will be copied into the other workspaces in the group. The new and join sync dialogs follow the same policy.
+- **Publish Channel** vs **Subscribe** — The group button that used to say Sync Channel is now **Publish Channel**, matching the Unpublish teardown on the publishing side. Other workspaces join with **Subscribe** rather than Start Syncing. Pause, Resume, and Stop Syncing are unchanged: they still describe a live two-way link, not the join action.
 - A channel SyncBot cannot read is rejected rather than accepted and then failing during setup, which is also a clearer signal when SyncBot has not been invited to a private channel yet.
 
 

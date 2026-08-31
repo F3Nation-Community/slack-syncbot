@@ -141,7 +141,7 @@ CONFIG_SETTINGS_RETENTION_DAYS = "settings_retention_days"
 # ---------------------------------------------------------------------------
 
 CONFIG_PUBLISH_CHANNEL = "publish_channel"
-"""Action: user clicked "Sync Channel" button (value carries group_id)."""
+"""Action: user clicked "Publish Channel" button (value carries group_id)."""
 
 CONFIG_PUBLISH_CHANNEL_SELECT = "publish_channel_select"
 """Input: channel picker in the publish channel modal."""
@@ -177,7 +177,7 @@ Not ``stop_sync_confirm``: that string is prefix-matched onto
 ``CONFIG_STOP_SYNC`` and would misroute to the modal-opening handler."""
 
 CONFIG_SUBSCRIBE_CHANNEL = "subscribe_channel"
-"""Action: user clicked "Start Syncing" on an available channel (prefix-matched with sync_id)."""
+"""Action: user clicked "Subscribe" on a published channel (prefix-matched with sync_id)."""
 
 CONFIG_SUBSCRIBE_CHANNEL_SELECT = "subscribe_channel_select"
 """Input: channel picker in the subscribe channel modal."""

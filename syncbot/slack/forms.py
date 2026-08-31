@@ -82,7 +82,7 @@ PUBLISH_CHANNEL_FORM = orm.BlockView(
         ),
         orm.ContextBlock(
             element=orm.ContextElement(
-                initial_value="Select a Channel from your Workspace to make available for Syncing.",
+                initial_value="Select a Channel from your Workspace to publish.",
             ),
         ),
     ]
@@ -92,9 +92,9 @@ PUBLISH_CHANNEL_FORM = orm.BlockView(
 SUBSCRIBE_CHANNEL_FORM = orm.BlockView(
     blocks=[
         orm.InputBlock(
-            label="Channel for Sync",
+            label="Channel to Subscribe",
             action=actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT,
-            element=orm.ConversationsSelectElement(placeholder="Select a Channel to sync into"),
+            element=orm.ConversationsSelectElement(placeholder="Select a Channel to subscribe"),
             optional=False,
         ),
         orm.ContextBlock(

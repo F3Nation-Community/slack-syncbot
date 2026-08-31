@@ -371,7 +371,7 @@ def _build_group_section(
             value=str(group.id),
         ),
         orm.ButtonElement(
-            label="Sync Channel",
+            label="Publish Channel",
             action=actions.CONFIG_PUBLISH_CHANNEL,
             value=str(group.id),
         ),

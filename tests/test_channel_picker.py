@@ -47,6 +47,9 @@ class TestPickerBlock:
         with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False):
             assert "Only public Channels can be synced" in _channel_picker_help_text()
 
+        with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False):
+            assert "receive the published Channel" in _channel_picker_help_text(subscribe=True)
+
 
 class TestValidateChannelSelection:
     ACTION = actions.CONFIG_PUBLISH_CHANNEL_SELECT
