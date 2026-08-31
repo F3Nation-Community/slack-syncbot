@@ -13,6 +13,7 @@ from builders._common import _format_channel_ref, _get_group_members
 from db import DbManager, schemas
 from handlers._common import (
     _close_modal_done,
+    _ensure_membership_or_rollback,
     _extract_team_id,
     _get_authorized_workspace,
     _get_selected_conversation_or_option,
@@ -58,34 +59,55 @@ def _channel_picker_help_text(*, subscribe: bool = False) -> str:
             return (
                 f"{base} :warning: Private Channels are currently allowed. Messages from the "
                 "published Channel will be copied into it, so anyone who can see your Channel "
-                "will be able to read them. SyncBot must already be a member of a private Channel, "
-                "because it cannot add itself to one."
+                "will be able to read them. If you pick a private Channel, SyncBot is added to it "
+                "for you, using your permission to invite it."
             )
         return (
             f"{base} :warning: Private Channels are currently allowed. If you publish one, its "
             "messages will be copied into the other Workspaces in this Group, where anyone who can "
-            "see the synced Channel will be able to read them. SyncBot must already be a member of "
-            "a private Channel, because it cannot add itself to one."
+            "see the synced Channel will be able to read them. If you pick a private Channel, "
+            "SyncBot is added to it for you, using your permission to invite it."
         )
     return f"{base} Only public Channels can be synced."
+
+
+def _looks_private(client: WebClient, channel_id: str) -> bool:
+    """Whether a channel is private as far as the bot token can tell.
+
+    A private channel SyncBot has never been in is invisible to the bot token, so
+    an unreadable channel is treated as private rather than as a lookup failure.
+    """
+    try:
+        conv_info = client.conversations_info(channel=channel_id)
+    except Exception as exc:
+        _logger.debug(f"_looks_private: conversations_info failed for {channel_id}: {exc}")
+        return True
+    return bool(helpers.safe_get(conv_info, "channel", "is_private"))
 
 
 def _validate_channel_selection(
     client: WebClient,
     channel_id: str | None,
     action_id: str,
+    *,
+    team_id: str | None = None,
+    acting_user_id: str | None = None,
 ) -> dict | None:
     """Validate a selected channel on submit, returning a Slack errors response or None.
 
-    Two rules, both enforced here rather than only in the picker filter, which is
+    Three rules, all enforced here rather than only in the picker filter, which is
     advisory and bypassable:
 
-    * Private channels are rejected unless the ``allow_private_channels`` setting
-      is on. ``conversations.join`` only works on public channels anyway — a bot
-      has to be invited to a private one manually.
     * A channel already in an active sync is rejected. This is a **global** rule,
       not per-group: ``get_sync_list`` resolves a channel to the first matching
       sync, so a channel in two syncs has undefined send fan-out.
+    * Private channels are rejected unless the ``allow_private_channels`` setting
+      is on.
+    * A private channel is also rejected when SyncBot has no user token it could
+      invite itself with, because only a member of that channel can add an app.
+      The check is a local installation-store lookup, cheap enough for the ack
+      phase, and it fails here as a field error instead of failing after the
+      modal has closed.
     """
     if not channel_id or channel_id == "__none__":
         return {
@@ -122,6 +144,17 @@ def _validate_channel_selection(
                 "response_action": "errors",
                 "errors": {action_id: "Private Channels cannot be synced. Pick a public Channel."},
             }
+        return None
+
+    # Private channels are allowed. Adding the bot to one needs a user token, so
+    # when there is none, only a public pick can succeed.
+    if helpers.has_usable_user_token(team_id, acting_user_id):
+        return None
+    if _looks_private(client, channel_id):
+        return {
+            "response_action": "errors",
+            "errors": {action_id: helpers.AUTHORIZE_HINT},
+        }
 
     return None
 
@@ -289,7 +322,13 @@ def handle_publish_channel_submit_ack(
 
     channel_id = _get_selected_conversation_or_option(body, actions.CONFIG_PUBLISH_CHANNEL_SELECT)
 
-    return _validate_channel_selection(client, channel_id, actions.CONFIG_PUBLISH_CHANNEL_SELECT)
+    return _validate_channel_selection(
+        client,
+        channel_id,
+        actions.CONFIG_PUBLISH_CHANNEL_SELECT,
+        team_id=_extract_team_id(body) or workspace_record.team_id,
+        acting_user_id=helpers.safe_get(body, "user", "id"),
+    )
 
 
 def handle_publish_channel_submit_work(
@@ -302,7 +341,7 @@ def handle_publish_channel_submit_work(
     auth_result = _get_authorized_workspace(body, client, context, "publish_channel_submit")
     if not auth_result:
         return
-    _, workspace_record = auth_result
+    user_id, workspace_record = auth_result
 
     metadata = _parse_private_metadata(body)
     group_id = metadata.get("group_id")
@@ -324,7 +363,13 @@ def handle_publish_channel_submit_work(
 
     # The ack phase already surfaced any error; this keeps the work phase from
     # writing on a payload it should reject.
-    if _validate_channel_selection(client, channel_id, actions.CONFIG_PUBLISH_CHANNEL_SELECT):
+    if _validate_channel_selection(
+        client,
+        channel_id,
+        actions.CONFIG_PUBLISH_CHANNEL_SELECT,
+        team_id=_extract_team_id(body) or workspace_record.team_id,
+        acting_user_id=helpers.safe_get(body, "user", "id") or user_id,
+    ):
         return
 
     try:
@@ -334,9 +379,10 @@ def handle_publish_channel_submit_work(
         _logger.debug(f"handle_publish_channel_submit_work: conversations_info failed for {channel_id}: {exc}")
         channel_name = channel_id
 
-    try:
-        client.conversations_join(channel=channel_id)
+    acting_user_id = helpers.safe_get(body, "user", "id") or user_id
+    team_id = _extract_team_id(body) or workspace_record.team_id
 
+    try:
         sync_record = schemas.Sync(
             title=_sanitize_text(channel_name),
             description=None,
@@ -354,19 +400,34 @@ def handle_publish_channel_submit_work(
             created_at=datetime.now(UTC),
         )
         DbManager.create_record(sync_channel_record)
-
-        _logger.info(
-            "channel_published",
-            extra={
-                "workspace_id": workspace_record.id,
-                "channel_id": channel_id,
-                "group_id": group_id,
-                "sync_id": sync_record.id,
-                "sync_mode": sync_mode,
-            },
-        )
     except Exception as e:
         _logger.error(f"Failed to publish channel {channel_id}: {e}")
+        return
+
+    # Membership comes after the rows exist: Slack fires ``member_joined_channel``
+    # as soon as the bot is added, and that handler leaves any channel with no
+    # SyncChannel. Writing first is what lets a private channel work at all.
+    if not _ensure_membership_or_rollback(
+        client,
+        channel_id,
+        team_id=team_id,
+        acting_user_id=acting_user_id,
+        rollback=lambda: helpers.purge_sync(sync_record.id),
+        log_event="publish_channel_membership_failed",
+        log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_record.id},
+    ):
+        return
+
+    _logger.info(
+        "channel_published",
+        extra={
+            "workspace_id": workspace_record.id,
+            "channel_id": channel_id,
+            "group_id": group_id,
+            "sync_id": sync_record.id,
+            "sync_mode": sync_mode,
+        },
+    )
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
     _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
@@ -518,8 +579,21 @@ def _toggle_sync_status(
             if channel_ws and channel_ws.bot_token:
                 ws_client = WebClient(token=helpers.decrypt_bot_token(channel_ws.bot_token))
                 if target_status == "active":
-                    with contextlib.suppress(Exception):
-                        ws_client.conversations_join(channel=sync_channel.channel_id)
+                    # Resume re-adds the bot if it was removed while paused. The
+                    # row already exists, so nothing to roll back — a private
+                    # channel simply needs the invite path instead of join.
+                    try:
+                        helpers.ensure_bot_in_conversation(
+                            ws_client,
+                            sync_channel.channel_id,
+                            team_id=channel_ws.team_id,
+                            acting_user_id=user_id,
+                        )
+                    except Exception as exc:
+                        _logger.warning(
+                            "resume_sync_membership_failed",
+                            extra={"channel_id": sync_channel.channel_id, "error": str(exc)},
+                        )
                 name = (
                     admin_name if workspace_record and sync_channel.workspace_id == workspace_record.id else admin_label
                 )
@@ -784,6 +858,7 @@ def handle_subscribe_channel_submit_ack(
     auth_result = _get_authorized_workspace(body, client, context, "subscribe_channel_submit")
     if not auth_result:
         return None
+    user_id, workspace_record = auth_result
 
     metadata = _parse_private_metadata(body)
     if not metadata.get("sync_id"):
@@ -792,7 +867,13 @@ def handle_subscribe_channel_submit_ack(
 
     channel_id = _get_selected_conversation_or_option(body, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT)
 
-    return _validate_channel_selection(client, channel_id, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT)
+    return _validate_channel_selection(
+        client,
+        channel_id,
+        actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT,
+        team_id=_extract_team_id(body) or workspace_record.team_id,
+        acting_user_id=helpers.safe_get(body, "user", "id") or user_id,
+    )
 
 
 def handle_subscribe_channel_submit(
@@ -818,7 +899,13 @@ def handle_subscribe_channel_submit(
 
     # The ack phase already surfaced any error; this keeps the work phase from
     # writing on a payload it should reject.
-    if _validate_channel_selection(client, channel_id, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT):
+    if _validate_channel_selection(
+        client,
+        channel_id,
+        actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT,
+        team_id=_extract_team_id(body) or workspace_record.team_id,
+        acting_user_id=helpers.safe_get(body, "user", "id") or user_id,
+    ):
         return
 
     sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
@@ -854,10 +941,9 @@ def handle_subscribe_channel_submit(
     acting_user_id = helpers.safe_get(body, "user", "id") or user_id
     admin_name, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
-    publisher_channels: list = []
-    try:
-        client.conversations_join(channel=channel_id)
+    team_id = _extract_team_id(body) or workspace_record.team_id
 
+    try:
         sync_channel_record = schemas.SyncChannel(
             sync_id=sync_id,
             channel_id=channel_id,
@@ -865,7 +951,25 @@ def handle_subscribe_channel_submit(
             created_at=datetime.now(UTC),
         )
         DbManager.create_record(sync_channel_record)
+    except Exception as e:
+        _logger.error(f"Failed to subscribe to channel sync {sync_id}: {e}")
+        return
 
+    # Same ordering as publish: the row has to exist before Slack announces the
+    # bot joined, or the unconfigured-channel handler shows it the door.
+    if not _ensure_membership_or_rollback(
+        client,
+        channel_id,
+        team_id=team_id,
+        acting_user_id=acting_user_id,
+        rollback=lambda: helpers.purge_sync_channels([sync_channel_record]),
+        log_event="subscribe_channel_membership_failed",
+        log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_id},
+    ):
+        return
+
+    publisher_channels: list = []
+    try:
         publisher_channels = DbManager.find_records(
             schemas.SyncChannel,
             [

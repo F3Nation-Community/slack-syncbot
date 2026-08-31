@@ -192,6 +192,14 @@ CONFIG_SUBSCRIBE_CHANNEL_SUBMIT = "subscribe_channel_submit"
 CONFIG_REFRESH_HOME = "refresh_home"
 """Action: user clicked the "Refresh" button on the Home tab."""
 
+CONFIG_AUTHORIZE_SYNCBOT = "authorize_syncbot"
+"""Action: user clicked "Authorize SyncBot" on the Home tab.
+
+The button carries a ``url``, so Slack opens the OAuth install itself. Slack
+still delivers a ``block_actions`` payload for it, which is why this needs a
+registered (no-op) handler.
+"""
+
 CONFIG_BACKUP_RESTORE = "backup_restore"
 """Action: user clicked "Backup/Restore" on the Home tab (opens modal)."""
 

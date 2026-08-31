@@ -65,6 +65,7 @@ _SENSITIVE_KEYS = frozenset(
     {
         "token",
         "bot_token",
+        "user_token",
         "access_token",
         "shared_secret",
         "public_key",

@@ -71,6 +71,7 @@ from handlers.settings import handle_open_settings, handle_settings_submit
 from handlers.sync import (
     check_join_sync_channel,
     handle_app_home_opened,
+    handle_authorize_syncbot,
     handle_db_reset,
     handle_db_reset_proceed,
     handle_join_sync_submission,
@@ -138,6 +139,7 @@ __all__ = [
     "handle_publish_channel_submit_ack",
     "handle_publish_channel_submit_work",
     "handle_publish_mode_submit_ack",
+    "handle_authorize_syncbot",
     "handle_refresh_home",
     "handle_remove_federation_connection",
     "handle_remove_sync",

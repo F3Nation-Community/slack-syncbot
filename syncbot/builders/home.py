@@ -33,12 +33,18 @@ from slack.blocks import divider, header, section
 _logger = logging.getLogger(__name__)
 
 
-def _home_tab_content_hash(workspace_record: Workspace) -> str:
+def _home_tab_content_hash(workspace_record: Workspace, user_id: str | None = None) -> str:
     """Compute a stable hash of the data that drives the Home tab.
 
     Includes groups, members, syncs, sync channels (id/workspace/status), mapped counts,
     pending invite ids, and reset-button visibility so the hash changes when anything
     visible on Home changes (including PRIMARY_WORKSPACE / ENABLE_DB_RESET for Reset).
+
+    *user_id* is part of the payload because one block on Home is per person: the
+    Authorize SyncBot section, which disappears once that user has a user token.
+    Without it, a Refresh right after authorizing would replay cached blocks that
+    still show the button. Workspace-level changes still bust every user's hash,
+    because the workspace payload is hashed in too.
     """
     workspace_id = workspace_record.id
     workspace_name = (workspace_record.workspace_name or "") or ""
@@ -114,8 +120,54 @@ def _home_tab_content_hash(workspace_record: Workspace) -> str:
         tuple(group_payload),
         pending_ids,
         reset_visible,
+        user_id or "",
+        helpers.has_user_token(workspace_record.team_id, user_id) if user_id else False,
     )
     return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+
+def home_tab_hash_key(team_id: str, user_id: str) -> str:
+    """Cache key for a Home tab content hash.
+
+    Per user, since the Authorize SyncBot section is per user. Restore-time
+    invalidation still works: ``invalidate_home_tab_caches_for_team`` deletes by
+    the ``home_tab_hash:{team_id}`` prefix.
+    """
+    return f"home_tab_hash:{team_id}:{user_id}"
+
+
+def _build_authorize_section(blocks: list, team_id: str, user_id: str) -> bool:
+    """Prepend the Authorize SyncBot section when this user has not authorized yet.
+
+    Slack will not let a bot add itself to a private channel; only a member can,
+    with that member's own user token. This button is the one-time OAuth install
+    that mints it. Shown to everyone, admin or not, because authorization is
+    about acting as that person rather than about configuring SyncBot.
+    """
+    if helpers.has_user_token(team_id, user_id):
+        return False
+
+    url = helpers.authorize_url()
+    if not url:
+        # Single-workspace/local mode has no OAuth flow, so there is nothing to
+        # link to and a button would be a dead end.
+        return False
+
+    blocks.append(header("Authorize SyncBot"))
+    blocks.append(block_context("_Authorize this app to act on your behalf to add SyncBot to private Channels._"))
+    blocks.append(
+        orm.ActionsBlock(
+            elements=[
+                orm.ButtonElement(
+                    label="Authorize SyncBot",
+                    action=actions.CONFIG_AUTHORIZE_SYNCBOT,
+                    url=url,
+                ),
+            ]
+        )
+    )
+    blocks.append(divider())
+    return True
 
 
 def refresh_home_tab_for_workspace(workspace: Workspace, logger: Logger, context: dict | None = None) -> None:
@@ -167,6 +219,12 @@ def build_home_tab(
 
     blocks: list[orm.BaseBlock] = []
 
+    # Authorize is not a configuration action, so REQUIRE_ADMIN does not hide it:
+    # a non-admin still needs to authorize SyncBot to act as them. Everything
+    # below it remains admin-only, and every configure handler keeps its own
+    # authorization check.
+    _build_authorize_section(blocks, workspace_record.team_id, user_id)
+
     if not is_admin:
         blocks.append(block_context(":lock: Only Workspace Admins can configure SyncBot."))
         block_dicts = orm.BlockView(blocks=blocks).as_form_field()
@@ -176,7 +234,7 @@ def build_home_tab(
         return None
 
     # Compute hash for admin view so we can update cache after publish (manual or automatic)
-    current_hash = _home_tab_content_hash(workspace_record)
+    current_hash = _home_tab_content_hash(workspace_record, user_id)
 
     # ── Workspace Groups ──────────────────────────────────────
     blocks.append(header("Workspace Groups"))
@@ -264,7 +322,7 @@ def build_home_tab(
     client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})
     # Update cache so next manual Refresh skips full rebuild when data unchanged
     helpers.refresh_after_full(
-        f"home_tab_hash:{team_id}",
+        home_tab_hash_key(team_id, user_id),
         f"home_tab_blocks:{team_id}:{user_id}",
         f"refresh_at:home:{team_id}:{user_id}",
         current_hash,

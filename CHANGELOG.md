@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.3.2] - 2026-08-31
+
+### Fixed
+
+- Private Channels can now actually be synced when an operator allows them in **Settings**. Publishing or subscribing a private Channel adds SyncBot to it for you, using the permission of the admin who picked it, because Slack does not let an app add itself to a private Channel. Previously the Channel was silently never published and SyncBot never appeared in it.
+- Adding SyncBot to a private Channel by hand no longer backfires. SyncBot is now recorded as belonging to the Channel before it joins, so it stays instead of announcing that the Channel is not part of a Channel Sync and leaving.
+- If SyncBot cannot be added to the Channel after all, the half-finished Channel Sync is removed and the admin is sent a direct message explaining why, rather than leaving a Channel on the Home tab that SyncBot cannot read.
+
+### Added
+
+- **Authorize SyncBot** on the Home tab: a short section, shown to anyone who has not authorized yet, that records permission for SyncBot to act on their behalf so it can be added to their private Channels. It disappears once that person has authorized, and whoever installed SyncBot never needs it. Picking a private Channel without it now explains the problem in the dialog instead of failing after the dialog closes.
+
+### Changed
+
+- `REQUIRE_ADMIN` no longer blanks the whole Home tab for non-admins. It restricts configuration — creating groups, publishing, Settings — while every user can open Home and authorize SyncBot.
+
+
 ## [1.3.1] - 2026-08-31
 
 ### Fixed

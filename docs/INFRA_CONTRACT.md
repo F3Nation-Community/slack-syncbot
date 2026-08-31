@@ -76,7 +76,7 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | Variable | Description |
 |----------|-------------|
 | `SLACK_BOT_TOKEN` | Set by OAuth flow; placeholder until first install. |
-| `REQUIRE_ADMIN` | `true` (default) or `false`; restricts config to admins/owners. |
+| `REQUIRE_ADMIN` | `true` (default) or `false`; restricts who can configure SyncBot (groups, publishing, Settings) to admins and owners. It does not decide whether the Home tab opens: every user can open it and authorize SyncBot to act as them. |
 | `PRIMARY_WORKSPACE` | Slack Team ID of the primary workspace. Required for backup/restore to be visible. DB reset (if enabled) is also scoped to this workspace. |
 | `ENABLE_DB_RESET` | When `true` / `1` / `yes` and `PRIMARY_WORKSPACE` matches the current workspace, shows the Reset Database button. Not prompted during deploy; set it in the env file (AWS `--setup-github` copies it when present), or in SAM / Terraform. |
 | `LOCAL_DEVELOPMENT` | `true` only for local dev; disables token verification and enables dev shortcuts. |
@@ -89,6 +89,8 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 ### Settings modal
 
 Operational policy is edited in the **Settings** modal on the SyncBot Home tab, visible only to `PRIMARY_WORKSPACE`. That is how you change how long uninstalled workspace data is kept (default 30 days), whether private Channels may be published (default off), and which workspaces may publish a Broadcast (empty means any; this list is stored now and is used when broadcast channels ship). Saving a value writes it to the database, so it takes effect without a redeploy.
+
+Private Channels also need per-user authorization, which is not a configuration value and needs no new environment variable. Slack will not let an app add itself to a private Channel, so SyncBot invites itself using the Slack user token of the person publishing or subscribing. Those tokens come from the OAuth install this instance already serves and are stored by Bolt in `slack_installations`; the **Authorize SyncBot** button on the Home tab is that same install flow for one more person.
 
 `PRIMARY_WORKSPACE`, `ENABLE_DB_RESET`, and `REQUIRE_ADMIN` stay environment-only: they are the controls that decide who is allowed to reach the modal and the destructive actions beside it, so they should only be changeable by whoever can deploy the instance.
 

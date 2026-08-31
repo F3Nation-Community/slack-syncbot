@@ -65,6 +65,59 @@ def _close_modal_done(client, body: dict, message: str) -> None:
         _logger.warning("modal_close_failed", extra={"error": str(exc)})
 
 
+def _dm_user(client, user_id: str | None, message: str) -> None:
+    """Send *message* to *user_id* as a DM, ignoring failures.
+
+    Used to report work-phase failures. By then the modal is closed, so a field
+    error is no longer possible and silence would look like success.
+    """
+    if not user_id:
+        return
+    try:
+        client.chat_postMessage(channel=user_id, text=message)
+    except Exception as exc:
+        _logger.warning("admin_dm_failed", extra={"user_id": user_id, "error": str(exc)})
+
+
+def _ensure_membership_or_rollback(
+    client,
+    channel_id: str,
+    *,
+    team_id: str | None,
+    acting_user_id: str | None,
+    rollback,
+    log_event: str,
+    log_extra: dict | None = None,
+) -> bool:
+    """Add SyncBot to *channel_id*, undoing the caller's rows if that fails.
+
+    Callers write their ``Sync`` / ``SyncChannel`` rows first so the
+    unconfigured-channel leave handlers see a configured channel, which is what
+    makes a private-channel invite survive. The flip side is that a failed
+    join or invite would leave a Channel listed on Home that SyncBot cannot
+    read, so the rows are removed again and the admin is told why.
+
+    Returns *True* when SyncBot is in the channel.
+    """
+    try:
+        helpers.ensure_bot_in_conversation(client, channel_id, team_id=team_id, acting_user_id=acting_user_id)
+        return True
+    except helpers.ConversationAccessError as exc:
+        message = str(exc)
+        _logger.warning(log_event, extra={**(log_extra or {}), "error": message})
+    except Exception as exc:
+        _logger.error(log_event, extra={**(log_extra or {}), "error": str(exc)})
+        message = "SyncBot could not be added to that Channel. Please try again."
+
+    try:
+        rollback()
+    except Exception as rollback_exc:
+        _logger.error(f"{log_event}_rollback_failed", extra={"channel_id": channel_id, "error": str(rollback_exc)})
+
+    _dm_user(client, acting_user_id, f":warning: {message}")
+    return False
+
+
 def _extract_team_id(body: dict) -> str | None:
     """Return a workspace/team ID from common Slack payload locations."""
     return (

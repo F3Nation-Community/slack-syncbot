@@ -1,0 +1,249 @@
+"""Tests for getting SyncBot into the channel it is about to sync.
+
+Slack rejects ``conversations.join`` on a private channel outright, so the bot
+has to be invited by a member using that member's own user token. These tests
+pin the two paths apart, and pin the ordering that makes the private path work
+at all: the ``SyncChannel`` row is written *before* the bot is added, so the
+unconfigured-channel handlers do not show it the door.
+"""
+
+from contextlib import ExitStack
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
+import pytest
+from slack_sdk.errors import SlackApiError
+
+from handlers.channel_sync import handle_publish_channel_submit_work
+from helpers.conversations import ConversationAccessError, ensure_bot_in_conversation
+
+
+def _slack_error(code: str) -> SlackApiError:
+    return SlackApiError(code, {"ok": False, "error": code})
+
+
+@pytest.fixture
+def client():
+    return MagicMock()
+
+
+class TestEnsureBotInConversation:
+    def test_public_channel_is_joined_with_the_bot_token(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": False, "is_member": False}}
+
+        ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        client.conversations_join.assert_called_once_with(channel="C1")
+        client.conversations_invite.assert_not_called()
+
+    def test_existing_membership_needs_no_api_call(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": True}}
+
+        ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        client.conversations_join.assert_not_called()
+        client.conversations_invite.assert_not_called()
+
+    def test_public_join_that_says_already_in_channel_is_success(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": False, "is_member": False}}
+        client.conversations_join.side_effect = _slack_error("already_in_channel")
+
+        ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+    def test_public_join_failure_is_reported(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": False, "is_member": False}}
+        client.conversations_join.side_effect = _slack_error("is_archived")
+
+        with pytest.raises(ConversationAccessError) as exc:
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert "is_archived" in str(exc.value)
+
+    def test_private_channel_is_invited_as_the_acting_user(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client) as web_client,
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert web_client.call_args.kwargs["token"] == "xoxp-acting-user"
+        user_client.conversations_invite.assert_called_once_with(channel="C1", users="UBOT")
+        client.conversations_join.assert_not_called()
+
+    def test_channel_the_bot_cannot_see_takes_the_invite_path(self, client):
+        """A private channel SyncBot has never been in is invisible to the bot token."""
+        client.conversations_info.side_effect = _slack_error("channel_not_found")
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        user_client.conversations_invite.assert_called_once()
+        client.conversations_join.assert_not_called()
+
+    def test_invite_that_says_already_in_channel_is_success(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+        user_client.conversations_invite.side_effect = _slack_error("already_in_channel")
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+    def test_private_channel_without_any_user_token_points_at_authorize(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.conversations.get_user_token", return_value=None),
+            patch("helpers.conversations._team_user_token", return_value=None),
+            pytest.raises(ConversationAccessError) as exc,
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert "Authorize SyncBot" in str(exc.value)
+
+    def test_installer_token_is_used_when_the_acting_admin_has_none(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.conversations.get_user_token", return_value=None),
+            patch("helpers.conversations._team_user_token", return_value="xoxp-installer"),
+            patch("helpers.conversations.WebClient", return_value=user_client) as web_client,
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert web_client.call_args.kwargs["token"] == "xoxp-installer"
+
+    def test_inviter_outside_the_channel_gets_an_explicit_message(self, client):
+        """The installer fallback only works when that person is in the channel."""
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+        user_client.conversations_invite.side_effect = _slack_error("not_in_channel")
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOT"),
+            patch("helpers.conversations.get_user_token", return_value=None),
+            patch("helpers.conversations._team_user_token", return_value="xoxp-installer"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+            pytest.raises(ConversationAccessError) as exc,
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert "not a member" in str(exc.value)
+
+    def test_private_channel_is_refused_when_the_policy_is_off(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=False),
+            pytest.raises(ConversationAccessError) as exc,
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert "Private Channels cannot be synced" in str(exc.value)
+
+
+class TestPublishWritesRowsBeforeAddingTheBot:
+    """Ordering is the whole fix: rows first, membership second."""
+
+    WORKSPACE = SimpleNamespace(id=10, team_id="T1")
+    BODY = {"view": {"team_id": "T1"}, "user": {"id": "U1"}}
+
+    def _enter_publish_patches(self, stack: ExitStack, created: list) -> None:
+        def create_record(record):
+            record.id = 99 + len(created)
+            created.append(record)
+
+        for patcher in (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", self.WORKSPACE)),
+            patch("handlers.channel_sync._parse_private_metadata", return_value={"group_id": 7}),
+            patch("handlers.channel_sync._get_selected_conversation_or_option", return_value="C1"),
+            patch("handlers.channel_sync._get_selected_option_value", return_value=None),
+            patch("handlers.channel_sync._validate_channel_selection", return_value=None),
+            patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
+            patch("handlers.channel_sync._refresh_group_member_homes"),
+        ):
+            stack.enter_context(patcher)
+
+    def test_sync_channel_exists_before_the_bot_is_added(self):
+        created: list = []
+        order: list[str] = []
+        client = MagicMock()
+
+        def ensure(*_args, **_kwargs):
+            order.append(f"membership after {len(created)} rows")
+
+        with ExitStack() as stack:
+            self._enter_publish_patches(stack, created)
+            stack.enter_context(patch("handlers._common.helpers.ensure_bot_in_conversation", side_effect=ensure))
+            handle_publish_channel_submit_work(self.BODY, client, MagicMock(), {})
+
+        assert [type(record).__name__ for record in created] == ["Sync", "SyncChannel"]
+        assert order == ["membership after 2 rows"]
+
+    def test_failed_membership_rolls_back_and_dms_the_admin(self):
+        created: list = []
+        client = MagicMock()
+
+        with ExitStack() as stack:
+            self._enter_publish_patches(stack, created)
+            stack.enter_context(
+                patch(
+                    "handlers._common.helpers.ensure_bot_in_conversation",
+                    side_effect=ConversationAccessError("no dice"),
+                )
+            )
+            purge_sync = stack.enter_context(patch("handlers.channel_sync.helpers.purge_sync"))
+            handle_publish_channel_submit_work(self.BODY, client, MagicMock(), {})
+
+        purge_sync.assert_called_once_with(created[0].id)
+        assert client.chat_postMessage.call_args.kwargs["channel"] == "U1"
+        assert "no dice" in client.chat_postMessage.call_args.kwargs["text"]
+
+
+class TestUnconfiguredChannelStillLeaves:
+    """The leave handlers are what keep a random invite from sticking."""
+
+    EVENT = {"team_id": "T1", "event": {"user": "UBOT", "channel": "C1"}}
+
+    def _run(self, sync_channels: list):
+        from handlers.sync import handle_member_joined_channel
+
+        client = MagicMock()
+        with (
+            patch("handlers.sync.helpers.get_own_bot_user_id", return_value="UBOT"),
+            patch("handlers.sync.DbManager.find_records", return_value=sync_channels),
+        ):
+            handle_member_joined_channel(self.EVENT, client, MagicMock(), {})
+        return client
+
+    def test_channel_with_no_sync_channel_is_left(self):
+        client = self._run([])
+
+        client.conversations_leave.assert_called_once_with(channel="C1")
+
+    def test_configured_channel_is_kept(self):
+        client = self._run([object()])
+
+        client.conversations_leave.assert_not_called()

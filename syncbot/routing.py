@@ -45,6 +45,7 @@ ACTION_MAPPER = {
     actions.CONFIG_STOP_SYNC: handlers.handle_stop_sync,
     actions.CONFIG_SUBSCRIBE_CHANNEL: handlers.handle_subscribe_channel,
     actions.CONFIG_REFRESH_HOME: handlers.handle_refresh_home,
+    actions.CONFIG_AUTHORIZE_SYNCBOT: handlers.handle_authorize_syncbot,
     actions.CONFIG_BACKUP_RESTORE: handlers.handle_backup_restore,
     actions.CONFIG_BACKUP_DOWNLOAD: handlers.handle_backup_download,
     actions.CONFIG_BACKUP_RESTORE_PROCEED: handlers.handle_backup_restore_proceed,

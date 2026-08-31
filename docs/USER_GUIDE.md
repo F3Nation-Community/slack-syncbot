@@ -15,7 +15,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 
 ## Things to Know
 
-- Only workspace **admins and owners** can configure syncs (set `REQUIRE_ADMIN=false` to allow all users).
+- Only workspace **admins and owners** can configure syncs (set `REQUIRE_ADMIN=false` to allow all users). Everyone can still open the Home tab; what `REQUIRE_ADMIN` restricts is the configuration itself, such as creating a group, publishing a channel, or opening Settings.
 - Messages, threads, edits, deletes, reactions, images, videos, and GIFs are all synced.
 - **@mentions and #channel links** in synced messages are rewritten per target workspace: mapped users are tagged with the local Slack user, and channels that are part of the same sync are shown as native local channel links; otherwise users fall back to a code-style label and channels use a link back to the source workspace (or a code-style label if that cannot be built).
 - Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
@@ -23,7 +23,15 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 - Do not add SyncBot manually to channels. SyncBot adds itself when you Publish or Subscribe. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
 - When you pick a channel to publish or subscribe, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
 - A channel can belong to only one Channel Sync at a time. If you pick one that is already syncing, SyncBot tells you so in the dialog and asks for a different channel rather than quietly doing nothing. A channel you previously unpublished is free to use again.
-- Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. Keep in mind that SyncBot cannot add itself to a private channel, so you need to invite it there first.
+- Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. When they are allowed, you publish or subscribe a private channel the same way you would a public one, and SyncBot adds itself for you using your permission to invite it — see **Authorize SyncBot** below.
+
+## Authorize SyncBot
+
+Slack does not allow an app to add itself to a private channel. Only someone who is already in that channel can add it, acting as themselves. So the first time you use SyncBot, you may see an **Authorize SyncBot** section at the top of the Home tab with a short explanation and a button.
+
+Clicking the button walks you through the same install screen you saw when SyncBot was added to the workspace, and it takes a few seconds. It does not ask for any new permissions from your workspace; it simply records that SyncBot may act on your behalf. Once that is done, the section disappears for you, and publishing or subscribing a private channel works without any extra steps.
+
+Everyone sees this section until they have authorized, whether or not they are an admin, and whoever installed SyncBot originally will usually never see it at all. If you pick a private channel before authorizing, SyncBot tells you in the dialog and points you here rather than failing after the dialog closes.
 
 ## Workspace Groups
 

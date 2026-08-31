@@ -201,7 +201,7 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 | Variable | Notes |
 |----------|-------|
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
-| `REQUIRE_ADMIN` | `true` (default) / `false`. Limits who can configure SyncBot to workspace admins and owners. |
+| `REQUIRE_ADMIN` | `true` (default) / `false`. Limits who can configure SyncBot (groups, publishing, Settings) to workspace admins and owners. Any user can still open the Home tab and authorize SyncBot to act on their behalf, which is what lets private Channels be synced. |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 | `SYNCBOT_FEDERATION_ENABLED` | `true` to enable federation to other SyncBot instances (default `false`). |

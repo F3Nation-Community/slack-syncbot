@@ -14,6 +14,14 @@ from helpers._cache import (
     _cache_set,
     clear_all_caches,
 )
+from helpers.conversations import (
+    AUTHORIZE_HINT,
+    ConversationAccessError,
+    authorize_url,
+    ensure_bot_in_conversation,
+    has_usable_user_token,
+    has_user_token,
+)
 from helpers.core import (
     format_admin_label,
     get_request_type,
@@ -114,6 +122,12 @@ from helpers.workspace import (
 )
 
 __all__ = [
+    "AUTHORIZE_HINT",
+    "ConversationAccessError",
+    "authorize_url",
+    "ensure_bot_in_conversation",
+    "has_usable_user_token",
+    "has_user_token",
     "_CACHE",
     "_CACHE_TTL_SECONDS",
     "_USER_INFO_CACHE_TTL",
