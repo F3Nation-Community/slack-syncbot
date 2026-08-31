@@ -188,7 +188,7 @@ class TestPublishChannelSubmitAck:
 
         assert result is not None
         assert result["response_action"] == "errors"
-        assert "Select a Channel to publish." in result["errors"].values()
+        assert "Select a Channel." in result["errors"].values()
         create_record.assert_not_called()
 
     def test_existing_sync_channel_returns_ack_error(self):
@@ -207,7 +207,7 @@ class TestPublishChannelSubmitAck:
 
         assert result is not None
         assert result["response_action"] == "errors"
-        assert "already being synced" in next(iter(result["errors"].values()))
+        assert "already part of a Channel Sync" in next(iter(result["errors"].values()))
         create_record.assert_not_called()
 
 
@@ -243,7 +243,13 @@ class TestSubscribeChannelSubmit:
 
         create_record.assert_not_called()
 
-    def test_duplicate_channel_skips_join_and_create(self):
+    def test_channel_already_in_a_sync_is_rejected(self):
+        """The ack phase reports this, so the work phase must not act on it.
+
+        Previously this fell through to a "duplicate skip" that still refreshed
+        the Home tab, which looked like success. The channel is now rejected
+        outright because a channel may belong to only one sync.
+        """
         client = MagicMock()
         logger = MagicMock()
         context = {}
@@ -263,4 +269,4 @@ class TestSubscribeChannelSubmit:
 
         create_record.assert_not_called()
         client.conversations_join.assert_not_called()
-        refresh_home.assert_called_once()
+        refresh_home.assert_not_called()

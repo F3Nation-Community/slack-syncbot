@@ -21,6 +21,7 @@ from handlers.channel_sync import (
     handle_stop_sync_confirm,
     handle_subscribe_channel,
     handle_subscribe_channel_submit,
+    handle_subscribe_channel_submit_ack,
     handle_unpublish_channel,
 )
 from handlers.export_import import (
@@ -145,6 +146,7 @@ __all__ = [
     "handle_stop_sync_confirm",
     "handle_subscribe_channel",
     "handle_subscribe_channel_submit",
+    "handle_subscribe_channel_submit_ack",
     "handle_team_join",
     "handle_tokens_revoked",
     "handle_unpublish_channel",

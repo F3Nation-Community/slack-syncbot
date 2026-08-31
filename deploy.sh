@@ -250,21 +250,6 @@ prompt_require_admin() {
   done
 }
 
-prompt_soft_delete_retention_days() {
-  local default="$1"
-  echo "Days to keep soft-deleted workspace data before permanent purge." >&2
-  while true; do
-    local v
-    read -r -p "SOFT_DELETE_RETENTION_DAYS [$default]: " v
-    v="${v:-$default}"
-    if [[ "$v" =~ ^[0-9]+$ ]] && [[ "$v" -gt 0 ]]; then
-      echo "$v"
-      return 0
-    fi
-    echo "Enter a positive integer." >&2
-  done
-}
-
 prompt_primary_workspace() {
   local default="$1"
   echo "Slack Team ID for PRIMARY_WORKSPACE (required for backup/restore to appear; also scopes DB reset)." >&2

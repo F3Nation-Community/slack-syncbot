@@ -47,7 +47,6 @@ locals {
       LOG_LEVEL                  = var.log_level
       REQUIRE_ADMIN              = var.require_admin
       SLACK_BOT_TOKEN            = "123"
-      SOFT_DELETE_RETENTION_DAYS = tostring(var.soft_delete_retention_days)
       SYNCBOT_FEDERATION_ENABLED = var.syncbot_federation_enabled ? "true" : "false"
     },
     var.syncbot_instance_id != "" ? { SYNCBOT_INSTANCE_ID = var.syncbot_instance_id } : {},
@@ -66,7 +65,6 @@ locals {
       LOG_LEVEL                  = var.log_level
       REQUIRE_ADMIN              = var.require_admin
       SLACK_BOT_TOKEN            = "123"
-      SOFT_DELETE_RETENTION_DAYS = tostring(var.soft_delete_retention_days)
       SYNCBOT_FEDERATION_ENABLED = var.syncbot_federation_enabled ? "true" : "false"
     },
     var.syncbot_instance_id != "" ? { SYNCBOT_INSTANCE_ID = var.syncbot_instance_id } : {},

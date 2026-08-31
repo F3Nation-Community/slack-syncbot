@@ -202,12 +202,13 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 |----------|-------|
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
 | `REQUIRE_ADMIN` | `true` (default) / `false`. Limits who can configure SyncBot to workspace admins and owners. |
-| `SOFT_DELETE_RETENTION_DAYS` | Days to retain a workspace's paused data after uninstall before hard delete (default `30`). |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 | `SYNCBOT_FEDERATION_ENABLED` | `true` to enable federation to other SyncBot instances (default `false`). |
 | `SYNCBOT_INSTANCE_ID` | This instance's UUID. Pin it when federation is on — Lambda mints a new one per cold start if it is empty. |
 | `SYNCBOT_PUBLIC_URL` | This instance's public HTTPS base. Required for federation; not a Slack app URL. |
+
+How long uninstalled workspace data is kept, whether private Channels may be published, and which workspaces may publish a Broadcast are set in the **Settings** modal on the Home tab (visible to `PRIMARY_WORKSPACE`), not as environment variables.
 
 ---
 
@@ -492,10 +493,11 @@ Schema lives under `syncbot/db/alembic/`. **`alembic upgrade head`** runs:
 
 After deploying a build that changes Slack listener wiring, verify **in the deployed workspace** (not only local dev) that modals using custom interaction responses still work. These flows rely on `view_submission` acks (`response_action`: `update`, `errors`, or `push`) being returned in the **first** Lambda response:
 
-1. **Sync Channel (publish)** — Open **Sync Channel**, choose sync mode, press **Next**; confirm step 2 (channel picker) appears. Submit with an invalid state to confirm field errors if applicable.
-2. **Backup / Restore** — Open Backup/Restore; try restore validation (e.g. missing file) and, if possible, the integrity-warning confirmation path (`push`).
-3. **Data migration** (if federation enabled) — Same style of checks for import validation and confirmation.
-4. **Optional** — Trigger a Home tab action that opens a modal via **`views_open`** (uses `trigger_id`) after a cold start to spot-check latency.
+1. **Publish Channel** — Open **Publish Channel**, choose who can subscribe, press **Next**; confirm step 2 (channel picker) appears. Submit a channel that is already syncing to confirm the field error appears instead of the modal closing.
+2. **Subscribe** — Open **Subscribe** from a published channel and submit a channel that is already syncing; confirm the field error appears in the dialog.
+3. **Backup / Restore** — Open Backup/Restore; try restore validation (e.g. missing file) and, if possible, the integrity-warning confirmation path (`push`).
+4. **Data migration** (if federation enabled) — Same style of checks for import validation and confirmation.
+5. **Optional** — Trigger a Home tab action that opens a modal via **`views_open`** (uses `trigger_id`) after a cold start to spot-check latency.
 
 ---
 

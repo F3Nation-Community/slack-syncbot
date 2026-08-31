@@ -4,9 +4,8 @@ Visible only to ``PRIMARY_WORKSPACE``. Holds operational policy that changes
 over a deployment's life; secrets, connection details, and the ``ENABLE_DB_RESET``
 break-glass switch stay in environment variables.
 
-Values are seeded from the effective configuration, so the operator sees what is
-actually live rather than an empty form: each field shows the database value if
-one has been saved, otherwise the environment variable, otherwise the default.
+Each field shows the saved database value if one exists, otherwise the
+built-in default.
 """
 
 import logging
@@ -53,7 +52,7 @@ def _installed_workspace_options() -> list[orm.SelectorOption]:
 
 
 def _build_settings_form() -> orm.BlockView:
-    """Build the settings modal, seeded from the effective configuration."""
+    """Build the settings modal from the database value or the built-in default."""
     workspace_options = _installed_workspace_options()
 
     blocks = [

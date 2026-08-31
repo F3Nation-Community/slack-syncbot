@@ -52,11 +52,10 @@ PRIMARY_WORKSPACE = "PRIMARY_WORKSPACE"
 ENABLE_DB_RESET = "ENABLE_DB_RESET"
 
 # ---------------------------------------------------------------------------
-# Operational policy — seed/fallback for the operator Settings modal
+# Operational policy — stored in the Settings modal (instance_settings table)
 #
-# These are read through helpers.settings, which prefers a saved database value
-# and falls back to the env var and then to a hardcoded default. Once the
-# operator saves in the Settings modal, the database value wins.
+# These are not environment variables. If a leftover env var with the matching
+# name is still set, helpers.settings logs a warning and ignores it.
 # ---------------------------------------------------------------------------
 
 # Setting keys as stored in the instance_settings table.
@@ -64,12 +63,12 @@ SETTING_ALLOW_PRIVATE_CHANNELS = "allow_private_channels"
 SETTING_BROADCAST_ALLOWED_WORKSPACES = "broadcast_allowed_workspaces"
 SETTING_SOFT_DELETE_RETENTION_DAYS = "soft_delete_retention_days"
 
-# Matching env var names, used as the seed/fallback for each setting above.
+# Names that used to be env vars. Kept so leftover deploy config can be warned
+# about, not so they are read.
 ALLOW_PRIVATE_CHANNELS = "ALLOW_PRIVATE_CHANNELS"
 BROADCAST_ALLOWED_WORKSPACES = "BROADCAST_ALLOWED_WORKSPACES"
 SOFT_DELETE_RETENTION_DAYS_VAR = "SOFT_DELETE_RETENTION_DAYS"
 
-# Hardcoded defaults, used when neither the database nor the environment has a value.
 DEFAULT_ALLOW_PRIVATE_CHANNELS = False
 DEFAULT_BROADCAST_ALLOWED_WORKSPACES: list[str] = []
 DEFAULT_SOFT_DELETE_RETENTION_DAYS = 30
@@ -108,11 +107,6 @@ USER_MATCHING_PAGE_SIZE = 40  # max unmatched users shown in the modal
 
 # Refresh button cooldown (seconds) when content hash unchanged
 REFRESH_COOLDOWN_SECONDS = 60
-
-# Deprecated: import-time snapshot of the env var. Use
-# helpers.soft_delete_retention_days(), which reads the Settings value at call
-# time and falls back to this env var. Kept for backwards compatibility.
-SOFT_DELETE_RETENTION_DAYS = int(os.environ.get(SOFT_DELETE_RETENTION_DAYS_VAR, "30"))
 
 # ---------------------------------------------------------------------------
 # Federation

@@ -28,6 +28,7 @@ def build_join_sync_form(
     trigger_id: str = safe_get(body, "trigger_id")
     team_id = safe_get(body, "view", "team_id")
     join_sync_form: orm.BlockView = copy.deepcopy(forms.JOIN_SYNC_FORM)
+    join_sync_form.set_conversations_include_private(helpers.allow_private_channels())
 
     workspace_record: Workspace = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
@@ -86,6 +87,7 @@ def build_new_sync_form(
 
     trigger_id: str = safe_get(body, "trigger_id")
     new_sync_form: orm.BlockView = copy.deepcopy(forms.NEW_SYNC_FORM)
+    new_sync_form.set_conversations_include_private(helpers.allow_private_channels())
     new_sync_form.post_modal(
         client=client,
         trigger_id=trigger_id,

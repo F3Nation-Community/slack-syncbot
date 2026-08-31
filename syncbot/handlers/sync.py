@@ -253,7 +253,7 @@ def handle_join_sync_submission(
             channel_ref = sync_record.title or "the other Channel"
         client.chat_postMessage(
             channel=channel_id,
-            text=f":arrows_counterclockwise: *{admin_name}* started syncing this Channel with *{channel_ref}*. Messages will be shared automatically.",
+            text=f":arrows_counterclockwise: *{admin_name}* subscribed this Channel to *{channel_ref}*. Messages will be shared automatically.",
         )
 
         local_ref = helpers.resolve_channel_name(channel_id, workspace_record)
@@ -264,7 +264,7 @@ def handle_join_sync_submission(
                     member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
                     member_client.chat_postMessage(
                         channel=sync_channel.channel_id,
-                        text=f":arrows_counterclockwise: *{admin_label}* started syncing *{local_ref}* with this Channel. Messages will be shared automatically.",
+                        text=f":arrows_counterclockwise: *{admin_label}* subscribed *{local_ref}* to this Channel. Messages will be shared automatically.",
                     )
             except Exception as exc:
                 _logger.debug(f"join_sync: failed to notify channel {sync_channel.channel_id}: {exc}")
@@ -337,7 +337,7 @@ def handle_new_sync_submission(
         DbManager.create_record(channel_sync_record)
         client.chat_postMessage(
             channel=channel_id,
-            text=f":outbox_tray: *{admin_name}* published this Channel for Syncing. Other Workspaces can now subscribe.",
+            text=f":outbox_tray: *{admin_name}* published this Channel. Other Workspaces can now subscribe.",
         )
     except Exception as e:
         logger.error(f"Failed to create sync for channel {channel_id}: {e}")
@@ -378,8 +378,8 @@ def handle_member_joined_channel(
         client.chat_postMessage(
             channel=channel_id,
             text=":wave: Hello! I'm SyncBot. I was added to this Channel, but this Channel "
-            "doesn't seem to be part of a Sync. I'm leaving now. Please open the SyncBot Home "
-            "tab to configure me.",
+            "doesn't seem to be part of a Channel Sync. I'm leaving now. Please open the SyncBot Home "
+            "tab to Publish or Subscribe.",
         )
         client.conversations_leave(channel=channel_id)
     except Exception as e:
@@ -407,7 +407,7 @@ def check_join_sync_channel(
         blocks.append(
             orm.SectionBlock(
                 action=constants.WARNING_BLOCK,
-                label=":warning: :warning: This Channel is already part of a Sync! Please choose another Channel.",
+                label=":warning: :warning: This Channel is already part of a Channel Sync! Please choose another Channel.",
             ).as_form_field()
         )
         helpers.update_modal(

@@ -180,7 +180,7 @@ def build_home_tab(
 
     # ── Workspace Groups ──────────────────────────────────────
     blocks.append(header("Workspace Groups"))
-    blocks.append(block_context("_Groups of Workspaces that can Sync Channels._"))
+    blocks.append(block_context("_Groups of Workspaces that can Publish and Subscribe to Channels._"))
     blocks.append(
         orm.ActionsBlock(
             elements=[
@@ -210,7 +210,7 @@ def build_home_tab(
     if not my_groups and not pending_invites:
         blocks.append(
             block_context(
-                "You are not in any Workspace Groups yet. Create or join a Group before you can Sync Channels with other Workspaces."
+                "You are not in any Workspace Groups yet. Create or join a Group before you can Publish or Subscribe to Channels with other Workspaces."
             )
         )
     else:
@@ -371,7 +371,7 @@ def _build_group_section(
             value=str(group.id),
         ),
         orm.ButtonElement(
-            label="Sync Channel",
+            label="Publish Channel",
             action=actions.CONFIG_PUBLISH_CHANNEL,
             value=str(group.id),
         ),

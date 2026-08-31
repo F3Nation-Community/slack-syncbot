@@ -26,80 +26,115 @@ from slack.blocks import section
 
 _logger = logging.getLogger(__name__)
 
-_MAX_PUBLISH_CHANNEL_OPTIONS = 100
+
+def _channel_picker_block(label: str, action_id: str) -> orm.InputBlock:
+    """Build a native channel picker, honoring the private-channel policy.
+
+    Slack renders ``conversations_select`` as a searchable list over all of the
+    user's conversations with no app-side enumeration, so workspaces with more
+    than ~100 channels can reach all of them. Because the native picker cannot
+    pre-exclude already-synced channels, that check moves to submit-time
+    validation in :func:`_validate_channel_selection`.
+    """
+    return orm.InputBlock(
+        label=label,
+        action=action_id,
+        element=orm.ConversationsSelectElement(
+            placeholder="Search for a Channel",
+            include_private=helpers.allow_private_channels(),
+        ),
+        optional=False,
+    )
 
 
-def _get_publishable_channel_options(client: WebClient, workspace_id: int) -> list[orm.SelectorOption]:
-    """Return selector options for channels that are not already published/synced in this workspace."""
-    synced = DbManager.find_records(
+def _channel_picker_help_text(*, subscribe: bool = False) -> str:
+    """Explain what may be selected, including the private-channel warning when relevant."""
+    if subscribe:
+        base = "Search for a Channel in your Workspace to receive the published Channel."
+    else:
+        base = "Search for a Channel in your Workspace to publish."
+    if helpers.allow_private_channels():
+        if subscribe:
+            return (
+                f"{base} :warning: Private Channels are currently allowed. Messages from the "
+                "published Channel will be copied into it, so anyone who can see your Channel "
+                "will be able to read them. SyncBot must already be a member of a private Channel, "
+                "because it cannot add itself to one."
+            )
+        return (
+            f"{base} :warning: Private Channels are currently allowed. If you publish one, its "
+            "messages will be copied into the other Workspaces in this Group, where anyone who can "
+            "see the synced Channel will be able to read them. SyncBot must already be a member of "
+            "a private Channel, because it cannot add itself to one."
+        )
+    return f"{base} Only public Channels can be synced."
+
+
+def _validate_channel_selection(
+    client: WebClient,
+    channel_id: str | None,
+    action_id: str,
+) -> dict | None:
+    """Validate a selected channel on submit, returning a Slack errors response or None.
+
+    Two rules, both enforced here rather than only in the picker filter, which is
+    advisory and bypassable:
+
+    * Private channels are rejected unless the ``allow_private_channels`` setting
+      is on. ``conversations.join`` only works on public channels anyway — a bot
+      has to be invited to a private one manually.
+    * A channel already in an active sync is rejected. This is a **global** rule,
+      not per-group: ``get_sync_list`` resolves a channel to the first matching
+      sync, so a channel in two syncs has undefined send fan-out.
+    """
+    if not channel_id or channel_id == "__none__":
+        return {
+            "response_action": "errors",
+            "errors": {action_id: "Select a Channel."},
+        }
+
+    existing = DbManager.find_records(
         schemas.SyncChannel,
         [
-            schemas.SyncChannel.workspace_id == workspace_id,
+            schemas.SyncChannel.channel_id == channel_id,
             schemas.SyncChannel.deleted_at.is_(None),
         ],
     )
-    synced_ids = {c.channel_id for c in synced}
+    if existing:
+        return {
+            "response_action": "errors",
+            "errors": {action_id: "That Channel is already part of a Channel Sync. Pick a different Channel."},
+        }
 
-    options: list[orm.SelectorOption] = []
-    cursor = ""
-    try:
-        while len(options) < _MAX_PUBLISH_CHANNEL_OPTIONS:
-            resp = client.conversations_list(
-                types="public_channel,private_channel",
-                exclude_archived=True,
-                limit=200,
-                cursor=cursor or None,
-            )
-            chs = helpers.safe_get(resp, "channels") or []
-            for slack_channel in chs:
-                cid = slack_channel.get("id")
-                if not cid or cid in synced_ids:
-                    continue
-                name = slack_channel.get("name") or cid
-                label = f"#{name}"
-                if len(label) > 75:
-                    label = label[:72] + "..."
-                options.append(orm.SelectorOption(name=label, value=cid))
-                if len(options) >= _MAX_PUBLISH_CHANNEL_OPTIONS:
-                    break
-            cursor = helpers.safe_get(resp, "response_metadata", "next_cursor") or ""
-            if not cursor:
-                break
-    except Exception as e:
-        _logger.warning(f"_get_publishable_channel_options: {e}")
+    if not helpers.allow_private_channels():
+        try:
+            conv_info = client.conversations_info(channel=channel_id)
+            is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
+        except Exception as e:
+            # Fail closed: an unreadable channel is one the bot cannot join either.
+            _logger.warning(f"_validate_channel_selection: conversations_info failed for {channel_id}: {e}")
+            return {
+                "response_action": "errors",
+                "errors": {action_id: "SyncBot could not read that Channel. Pick a public Channel it can join."},
+            }
+        if is_private:
+            return {
+                "response_action": "errors",
+                "errors": {action_id: "Private Channels cannot be synced. Pick a public Channel."},
+            }
 
-    return options
+    return None
 
 
 def _build_publish_step2(
-    client: WebClient,
-    group_id: int,
     sync_mode: str,
     other_members: list,
-    workspace_id: int,
 ) -> orm.BlockView:
-    """Build the step-2 modal blocks: channel picker (only unpublished channels) + optional target workspace."""
+    """Build the step-2 modal blocks: native channel picker + optional target workspace."""
     modal_blocks: list[orm.BaseBlock] = []
 
-    channel_options = _get_publishable_channel_options(client, workspace_id)
-    if not channel_options:
-        channel_options = [
-            orm.SelectorOption(
-                name="— No Channels available (all are already published or synced) —", value="__none__"
-            ),
-        ]
-    modal_blocks.append(
-        orm.InputBlock(
-            label="Channel to Publish",
-            action=actions.CONFIG_PUBLISH_CHANNEL_SELECT,
-            element=orm.StaticSelectElement(
-                placeholder="Select a Channel to publish",
-                options=channel_options,
-            ),
-            optional=False,
-        )
-    )
-    modal_blocks.append(block_context("Select a Channel from your Workspace to make available for Syncing."))
+    modal_blocks.append(_channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT))
+    modal_blocks.append(block_context(_channel_picker_help_text()))
 
     if sync_mode == "direct" and other_members:
         ws_options: list[orm.SelectorOption] = []
@@ -150,17 +185,17 @@ def handle_publish_channel(
 
     mode_options = [
         orm.SelectorOption(
-            name="Available to All Workspaces\nAny current or future Workspace Group Member can Sync.",
+            name="Available to All Workspaces\nAny current or future Workspace Group Member can subscribe.",
             value="group",
         ),
         orm.SelectorOption(
-            name="Only with Specific Workspace\nChoose a specific Workspace Group Member to allow Syncing.",
+            name="Only with Specific Workspace\nChoose a specific Workspace Group Member to allow to subscribe.",
             value="direct",
         ),
     ]
     step1_blocks: list[orm.BaseBlock] = [
         orm.InputBlock(
-            label="Channel Sync Mode",
+            label="Who can subscribe",
             action=actions.CONFIG_PUBLISH_SYNC_MODE,
             element=orm.RadioButtonsElement(
                 initial_value="group",
@@ -176,7 +211,7 @@ def handle_publish_channel(
         client=client,
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_PUBLISH_MODE_SUBMIT,
-        title_text="Sync Channel",
+        title_text="Publish Channel",
         submit_button_text="Next",
         parent_metadata={"group_id": group_id, "workspace_id": workspace_record.id},
         new_or_add="new",
@@ -214,10 +249,10 @@ def handle_publish_mode_submit_ack(
     other_members = [
         member for member in group_members if member.workspace_id != workspace_record.id and member.workspace_id
     ]
-    step2 = _build_publish_step2(client, group_id, sync_mode, other_members, workspace_record.id)
+    step2 = _build_publish_step2(sync_mode, other_members)
     updated_view = step2.as_ack_update(
         callback_id=actions.CONFIG_PUBLISH_CHANNEL_SUBMIT,
-        title_text="Sync Channel",
+        title_text="Publish Channel",
         submit_button_text="Publish",
         parent_metadata={"group_id": group_id, "sync_mode": sync_mode},
     )
@@ -254,27 +289,7 @@ def handle_publish_channel_submit_ack(
 
     channel_id = _get_selected_conversation_or_option(body, actions.CONFIG_PUBLISH_CHANNEL_SELECT)
 
-    if not channel_id or channel_id == "__none__":
-        return {
-            "response_action": "errors",
-            "errors": {actions.CONFIG_PUBLISH_CHANNEL_SELECT: "Select a Channel to publish."},
-        }
-
-    existing = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.channel_id == channel_id,
-            schemas.SyncChannel.workspace_id == workspace_record.id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
-    if existing:
-        return {
-            "response_action": "errors",
-            "errors": {actions.CONFIG_PUBLISH_CHANNEL_SELECT: "This Channel is already being synced."},
-        }
-
-    return None
+    return _validate_channel_selection(client, channel_id, actions.CONFIG_PUBLISH_CHANNEL_SELECT)
 
 
 def handle_publish_channel_submit_work(
@@ -307,18 +322,9 @@ def handle_publish_channel_submit_work(
 
     channel_id = _get_selected_conversation_or_option(body, actions.CONFIG_PUBLISH_CHANNEL_SELECT)
 
-    if not channel_id or channel_id == "__none__":
-        return
-
-    existing = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.channel_id == channel_id,
-            schemas.SyncChannel.workspace_id == workspace_record.id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
-    if existing:
+    # The ack phase already surfaced any error; this keeps the work phase from
+    # writing on a payload it should reject.
+    if _validate_channel_selection(client, channel_id, actions.CONFIG_PUBLISH_CHANNEL_SELECT):
         return
 
     try:
@@ -728,13 +734,11 @@ def handle_subscribe_channel(
 ) -> None:
     """Push the channel picker modal for subscribing to an available channel.
 
-    The channel list only shows channels that are not already in any sync
-    (excluding already-synced and published-but-unsubscribed channels).
+    Uses Slack's native searchable picker, so every channel in the workspace is
+    reachable. Whether the chosen channel is eligible is validated on submit.
     """
-    auth_result = _get_authorized_workspace(body, client, context, "subscribe_channel")
-    if not auth_result:
+    if not _get_authorized_workspace(body, client, context, "subscribe_channel"):
         return
-    _, workspace_record = auth_result
 
     trigger_id = helpers.safe_get(body, "trigger_id")
     sync_id = helpers.safe_get(body, "actions", 0, "value")
@@ -750,35 +754,45 @@ def handle_subscribe_channel(
             pub_ch = publisher_channels[0]
             pub_ws = helpers.get_workspace_by_id(pub_ch.workspace_id)
             ch_ref = _format_channel_ref(pub_ch.channel_id, pub_ws, is_local=False)
-            blocks.append(section(f"Syncing with: {ch_ref}"))
+            blocks.append(section(f"Published Channel: {ch_ref}"))
 
-    channel_options = _get_publishable_channel_options(client, workspace_record.id)
-    if not channel_options:
-        channel_options = [
-            orm.SelectorOption(name="— No Channels available to Sync in this Workspace. —", value="__none__"),
-        ]
-    blocks.append(
-        orm.InputBlock(
-            label="Channel for Sync",
-            action=actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT,
-            element=orm.StaticSelectElement(
-                placeholder="Select a Channel to Sync with.",
-                options=channel_options,
-            ),
-            optional=False,
-        )
-    )
-    blocks.append(block_context("Choose a Channel in your Workspace to start Syncing."))
+    blocks.append(_channel_picker_block("Channel to Subscribe", actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT))
+    blocks.append(block_context(_channel_picker_help_text(subscribe=True)))
 
     orm.BlockView(blocks=blocks).post_modal(
         client=client,
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_SUBSCRIBE_CHANNEL_SUBMIT,
-        title_text="Sync Channel",
-        submit_button_text="Sync Channel",
+        title_text="Subscribe",
+        submit_button_text="Subscribe",
         parent_metadata={"sync_id": int(sync_id)} if sync_id else None,
         new_or_add="new",
     )
+
+
+def handle_subscribe_channel_submit_ack(
+    body: dict,
+    client: WebClient,
+    context: dict,
+) -> dict | None:
+    """Ack phase for subscribe: surface a visible error, or ack empty on success.
+
+    The native picker cannot pre-exclude ineligible channels, so an invalid
+    choice has to be reported here rather than returning silently and leaving the
+    user with a modal that appeared to work.
+    """
+    auth_result = _get_authorized_workspace(body, client, context, "subscribe_channel_submit")
+    if not auth_result:
+        return None
+
+    metadata = _parse_private_metadata(body)
+    if not metadata.get("sync_id"):
+        _logger.warning("subscribe_channel_submit: missing sync_id")
+        return None
+
+    channel_id = _get_selected_conversation_or_option(body, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT)
+
+    return _validate_channel_selection(client, channel_id, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT)
 
 
 def handle_subscribe_channel_submit(
@@ -802,8 +816,9 @@ def handle_subscribe_channel_submit(
 
     channel_id = _get_selected_conversation_or_option(body, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT)
 
-    if not channel_id or channel_id == "__none__":
-        _logger.warning("subscribe_channel_submit: no channel selected")
+    # The ack phase already surfaced any error; this keeps the work phase from
+    # writing on a payload it should reject.
+    if _validate_channel_selection(client, channel_id, actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT):
         return
 
     sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
@@ -869,7 +884,7 @@ def handle_subscribe_channel_submit(
                 channel_ref = sync_record.title or "the other Channel"
             client.chat_postMessage(
                 channel=channel_id,
-                text=f":arrows_counterclockwise: *{admin_name}* started syncing this Channel with *{channel_ref}*. Messages will be shared automatically.",
+                text=f":arrows_counterclockwise: *{admin_name}* subscribed this Channel to *{channel_ref}*. Messages will be shared automatically.",
             )
         except Exception as exc:
             _logger.debug(f"subscribe_channel: failed to notify subscriber channel {channel_id}: {exc}")
@@ -882,7 +897,7 @@ def handle_subscribe_channel_submit(
                     pub_client = WebClient(token=helpers.decrypt_bot_token(pub_ws.bot_token))
                     pub_client.chat_postMessage(
                         channel=pub_ch.channel_id,
-                        text=f":arrows_counterclockwise: *{admin_label}* started syncing *{local_ref}* with this Channel. Messages will be shared automatically.",
+                        text=f":arrows_counterclockwise: *{admin_label}* subscribed *{local_ref}* to this Channel. Messages will be shared automatically.",
                     )
             except Exception as exc:
                 _logger.debug(f"subscribe_channel: failed to notify publisher channel {pub_ch.channel_id}: {exc}")

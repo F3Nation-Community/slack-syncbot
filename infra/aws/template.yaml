@@ -145,12 +145,6 @@ Parameters:
       - ERROR
       - CRITICAL
 
-  SoftDeleteRetentionDays:
-    Description: Days to retain soft-deleted workspace data (SOFT_DELETE_RETENTION_DAYS).
-    Type: Number
-    Default: 30
-    MinValue: 1
-
   SyncbotFederationEnabled:
     Description: Set to "true" to enable external connections / federation (SYNCBOT_FEDERATION_ENABLED).
     Type: String
@@ -348,7 +342,6 @@ Resources:
           DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
           REQUIRE_ADMIN: !Ref RequireAdmin
           LOG_LEVEL: !Ref LogLevel
-          SOFT_DELETE_RETENTION_DAYS: !Sub "${SoftDeleteRetentionDays}"
           SYNCBOT_FEDERATION_ENABLED: !Ref SyncbotFederationEnabled
           SYNCBOT_INSTANCE_ID: !Ref SyncbotInstanceId
           SYNCBOT_PUBLIC_URL: !Ref SyncbotPublicUrl

@@ -389,7 +389,6 @@ write_deploy_receipt() {
 - DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
 - LOG_LEVEL=${LOG_LEVEL:-INFO}
 - REQUIRE_ADMIN=${REQUIRE_ADMIN:-true}
-- SOFT_DELETE_RETENTION_DAYS=${SOFT_DELETE_RETENTION_DAYS:-30}
 - SYNCBOT_FEDERATION_ENABLED=${SYNCBOT_FEDERATION_ENABLED:-false}
 - SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
 - SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
@@ -559,7 +558,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "-var=stage=$STAGE"
     "-var=log_level=${LOG_LEVEL:-INFO}"
     "-var=require_admin=${REQUIRE_ADMIN:-true}"
-    "-var=soft_delete_retention_days=${SOFT_DELETE_RETENTION_DAYS:-30}"
     "-var=syncbot_federation_enabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
     "-var=slack_signing_secret=${SLACK_SIGNING_SECRET:?SLACK_SIGNING_SECRET required}"
     "-var=slack_client_id=${SLACK_CLIENT_ID:?SLACK_CLIENT_ID required}"
@@ -809,7 +807,6 @@ LOG_LEVEL="$(prompt_log_level "$LOG_LEVEL_DEFAULT")"
 
 # Preserve optional runtime env on redeploy (Terraform defaults otherwise).
 REQUIRE_ADMIN_DEFAULT="true"
-SOFT_DELETE_DEFAULT="30"
 SYNCBOT_PUBLIC_DEFAULT=""
 SYNCBOT_FEDERATION_DEFAULT="false"
 INSTANCE_ID_VAR=""
@@ -821,10 +818,6 @@ DB_BACKEND="${DATABASE_BACKEND:-sqlite}"
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
   DETECTED_RA="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "REQUIRE_ADMIN")"
   [[ -n "$DETECTED_RA" ]] && REQUIRE_ADMIN_DEFAULT="$DETECTED_RA"
-  DETECTED_SD="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SOFT_DELETE_RETENTION_DAYS")"
-  if [[ "$DETECTED_SD" =~ ^[0-9]+$ ]]; then
-    SOFT_DELETE_DEFAULT="$DETECTED_SD"
-  fi
   SYNCBOT_PUBLIC_DEFAULT="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SYNCBOT_PUBLIC_URL")"
   DETECTED_FED="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SYNCBOT_FEDERATION_ENABLED")"
   if [[ "$DETECTED_FED" == "true" ]]; then
@@ -849,7 +842,6 @@ fi
 echo
 echo "=== App Settings ==="
 REQUIRE_ADMIN_DEFAULT="$(prompt_require_admin "$REQUIRE_ADMIN_DEFAULT")"
-SOFT_DELETE_DEFAULT="$(prompt_soft_delete_retention_days "$SOFT_DELETE_DEFAULT")"
 PRIMARY_WORKSPACE_VAR="$(prompt_primary_workspace "$PRIMARY_WORKSPACE_VAR")"
 SYNCBOT_FEDERATION_DEFAULT="$(prompt_federation_enabled "$SYNCBOT_FEDERATION_DEFAULT")"
 if [[ "$SYNCBOT_FEDERATION_DEFAULT" == "true" ]]; then
@@ -896,7 +888,6 @@ VARS=(
   "-var=stage=$STAGE"
   "-var=log_level=$LOG_LEVEL"
   "-var=require_admin=$REQUIRE_ADMIN_DEFAULT"
-  "-var=soft_delete_retention_days=$SOFT_DELETE_DEFAULT"
   "-var=syncbot_federation_enabled=$SYNCBOT_FEDERATION_DEFAULT"
   "-var=syncbot_instance_id=${INSTANCE_ID_VAR:-}"
   "-var=primary_workspace=${PRIMARY_WORKSPACE_VAR:-}"
@@ -924,7 +915,6 @@ fi
 
 echo
 echo "Require admin:    $REQUIRE_ADMIN_DEFAULT"
-echo "Soft-delete days: $SOFT_DELETE_DEFAULT"
 echo "Log level:        $LOG_LEVEL"
 if [[ -n "$PRIMARY_WORKSPACE_VAR" ]]; then
   echo "Primary workspace: $PRIMARY_WORKSPACE_VAR"

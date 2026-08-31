@@ -64,24 +64,26 @@ class TestMigration004:
 
 
 class TestResolutionPrecedence:
-    def test_default_is_used_when_neither_db_nor_env_has_a_value(self, real_db):
+    def test_default_is_used_when_the_database_has_no_row(self, real_db):
         import helpers
 
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(constants.ALLOW_PRIVATE_CHANNELS, None)
-            assert helpers.allow_private_channels() is False
+        assert helpers.allow_private_channels() is False
 
-    def test_env_overrides_the_default(self, real_db):
+    def test_env_is_ignored_and_the_default_is_used(self, real_db):
         import helpers
+        from helpers import settings as settings_mod
 
+        settings_mod._IGNORED_ENV_WARNED.clear()
         with patch.dict(os.environ, {constants.ALLOW_PRIVATE_CHANNELS: "true"}):
-            assert helpers.allow_private_channels() is True
+            assert helpers.allow_private_channels() is False
+        assert constants.ALLOW_PRIVATE_CHANNELS in settings_mod._IGNORED_ENV_WARNED
 
-    def test_db_overrides_env(self, real_db):
+    def test_database_value_wins_even_when_env_is_set(self, real_db):
         import helpers
+        from helpers import settings as settings_mod
 
         helpers.set_setting(constants.SETTING_ALLOW_PRIVATE_CHANNELS, "false")
-
+        settings_mod._IGNORED_ENV_WARNED.clear()
         with patch.dict(os.environ, {constants.ALLOW_PRIVATE_CHANNELS: "true"}):
             assert helpers.allow_private_channels() is False
 
@@ -112,28 +114,28 @@ class TestTypedParsing:
 
         for raw, expected in (("true", True), ("1", True), ("yes", True), ("false", False), ("0", False)):
             helpers.set_setting("t_bool", raw)
-            assert helpers.get_bool_setting("t_bool", None, False) is expected
+            assert helpers.get_bool_setting("t_bool", False) is expected
 
     def test_bool_falls_back_to_the_default_when_unparseable(self, real_db):
         import helpers
 
         helpers.set_setting("t_bool_bad", "perhaps")
-        assert helpers.get_bool_setting("t_bool_bad", None, True) is True
+        assert helpers.get_bool_setting("t_bool_bad", True) is True
 
     def test_int_parses_and_falls_back(self, real_db):
         import helpers
 
         helpers.set_setting("t_int", "45")
-        assert helpers.get_int_setting("t_int", None, 30) == 45
+        assert helpers.get_int_setting("t_int", 30) == 45
 
         helpers.set_setting("t_int_bad", "many")
-        assert helpers.get_int_setting("t_int_bad", None, 30) == 30
+        assert helpers.get_int_setting("t_int_bad", 30) == 30
 
     def test_list_splits_on_commas_and_strips(self, real_db):
         import helpers
 
         helpers.set_setting("t_list", " T1 , T2 ,, T3 ")
-        assert helpers.get_list_setting("t_list", None) == ["T1", "T2", "T3"]
+        assert helpers.get_list_setting("t_list") == ["T1", "T2", "T3"]
 
     def test_empty_list_means_any_workspace_may_broadcast(self, real_db):
         import helpers

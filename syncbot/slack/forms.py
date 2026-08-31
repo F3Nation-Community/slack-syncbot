@@ -9,6 +9,12 @@ runtime before being sent to Slack:
 * :data:`ENTER_GROUP_CODE_FORM` — Modal for entering a group invite code.
 * :data:`PUBLISH_CHANNEL_FORM` — Modal for publishing a channel.
 * :data:`SUBSCRIBE_CHANNEL_FORM` — Modal for subscribing to a channel.
+
+Any form containing a :class:`~slack.orm.ConversationsSelectElement` defaults to
+public channels only. Because these are module-level constants, the
+``allow_private_channels`` policy cannot be baked in here without going stale, so
+callers must apply it to their deep copy via
+:meth:`~slack.orm.BlockView.set_conversations_include_private`.
 """
 
 from slack import actions, orm
@@ -76,7 +82,7 @@ PUBLISH_CHANNEL_FORM = orm.BlockView(
         ),
         orm.ContextBlock(
             element=orm.ContextElement(
-                initial_value="Select a Channel from your Workspace to make available for Syncing.",
+                initial_value="Select a Channel from your Workspace to publish.",
             ),
         ),
     ]
@@ -86,9 +92,9 @@ PUBLISH_CHANNEL_FORM = orm.BlockView(
 SUBSCRIBE_CHANNEL_FORM = orm.BlockView(
     blocks=[
         orm.InputBlock(
-            label="Channel for Sync",
+            label="Channel to Subscribe",
             action=actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT,
-            element=orm.ConversationsSelectElement(placeholder="Select a Channel to sync into"),
+            element=orm.ConversationsSelectElement(placeholder="Select a Channel to subscribe"),
             optional=False,
         ),
         orm.ContextBlock(
