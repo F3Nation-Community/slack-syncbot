@@ -176,7 +176,7 @@ GitHub Actions never runs `terraform apply`. Image updates are CI-only; Terrafor
 | **Database** | `pool_pre_ping=True` for stale connection detection, retry decorator on all operations, `dispose()` only after all retries exhausted |
 | **Slack API** | `slack_retry` decorator with exponential backoff, `Retry-After` header support, user profile caching |
 | **Network** | TLS to the existing SQL host when used, Lambda Function URL (IAM `NONE` auth type), federation HMAC-SHA256 signing with 5-minute replay window |
-| **Authorization** | Admin/owner checks on all configuration actions, configurable via `REQUIRE_ADMIN`. The Home tab itself opens for everyone so any user can reach **Authorize SyncBot**, which records their own Slack user token (used only to invite the bot into a private channel they belong to) |
+| **Authorization** | Admin/owner checks on all configuration actions, configurable via `REQUIRE_ADMIN`. The Home tab itself opens for everyone so any user can reach **Authorize SyncBot**, which records their own Slack user token (used only to invite the bot into a private channel they belong to, never another member's token) |
 
 ## Performance & Cost (Home and User Mapping Refresh)
 

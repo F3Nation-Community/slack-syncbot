@@ -18,7 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Authorize SyncBot** on the Home tab: a short section, shown to anyone who has not authorized yet, that records permission for SyncBot to act on their behalf so it can be added to their private Channels. It disappears once that person has authorized, and whoever installed SyncBot never needs it. Picking a private Channel without it now explains the problem in the dialog instead of failing after the dialog closes.
+- **Authorize SyncBot** on the Home tab: a short section, shown to anyone who has not authorized yet, that records permission for SyncBot to act on their behalf so it can be added to their private Channels. It disappears once that person has authorized. The original installer already has this from adding the app, so they usually never see the button; another admin's authorization is not reused. Picking a private Channel without it now explains the problem in the dialog instead of failing after the dialog closes.
 
 ### Changed
 
