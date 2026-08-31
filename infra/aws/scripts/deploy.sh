@@ -195,7 +195,6 @@ push_github_aws_ci_config() {
   _gh_push_from_env_file DATABASE_SSL_CA_PATH env DATABASE_SSL_CA_PATH
   _gh_push_from_env_file LOG_LEVEL env LOG_LEVEL
   _gh_push_from_env_file REQUIRE_ADMIN env REQUIRE_ADMIN
-  _gh_push_from_env_file SOFT_DELETE_RETENTION_DAYS env SOFT_DELETE_RETENTION_DAYS
   _gh_push_from_env_file SYNCBOT_FEDERATION_ENABLED env SYNCBOT_FEDERATION_ENABLED
   _gh_push_from_env_file SYNCBOT_INSTANCE_ID env SYNCBOT_INSTANCE_ID
   _gh_push_from_env_file SYNCBOT_PUBLIC_URL env SYNCBOT_PUBLIC_URL
@@ -809,7 +808,6 @@ write_deploy_receipt() {
 - DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
 - LOG_LEVEL=${LOG_LEVEL:-INFO}
 - REQUIRE_ADMIN=${REQUIRE_ADMIN:-true}
-- SOFT_DELETE_RETENTION_DAYS=${SOFT_DELETE_RETENTION_DAYS:-30}
 - SYNCBOT_FEDERATION_ENABLED=${SYNCBOT_FEDERATION_ENABLED:-false}
 - SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
 - SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
@@ -1141,7 +1139,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "DatabaseUser=${DATABASE_USER:-}"
     "LogLevel=${LOG_LEVEL:-INFO}"
     "RequireAdmin=${REQUIRE_ADMIN:-true}"
-    "SoftDeleteRetentionDays=${SOFT_DELETE_RETENTION_DAYS:-30}"
     "SyncbotFederationEnabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
     "SyncbotInstanceId=${SYNCBOT_INSTANCE_ID:-}"
     "SyncbotPublicUrl=${SYNCBOT_PUBLIC_URL:-}"
@@ -1269,7 +1266,6 @@ PREV_DATABASE_MODE=""
 PREV_ENABLE_KEEP_WARM=""
 PREV_LOG_LEVEL=""
 PREV_REQUIRE_ADMIN=""
-PREV_SOFT_DELETE=""
 PREV_FEDERATION=""
 PREV_INSTANCE_ID=""
 PREV_PUBLIC_URL=""
@@ -1301,7 +1297,6 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   PREV_DATABASE_SCHEMA="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseSchema")"
   PREV_LOG_LEVEL="$(stack_param_value "$EXISTING_STACK_PARAMS" "LogLevel")"
   PREV_REQUIRE_ADMIN="$(stack_param_value "$EXISTING_STACK_PARAMS" "RequireAdmin")"
-  PREV_SOFT_DELETE="$(stack_param_value "$EXISTING_STACK_PARAMS" "SoftDeleteRetentionDays")"
   PREV_FEDERATION="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotFederationEnabled")"
   PREV_INSTANCE_ID="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotInstanceId")"
   PREV_PUBLIC_URL="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotPublicUrl")"
@@ -1484,7 +1479,6 @@ if [[ "$IS_STACK_UPDATE" == "true" && -n "$PREV_LOG_LEVEL" ]]; then
 fi
 
 REQUIRE_ADMIN="${PREV_REQUIRE_ADMIN:-true}"
-SOFT_DELETE_RETENTION_DAYS="${PREV_SOFT_DELETE:-30}"
 SYNCBOT_FEDERATION_ENABLED="${PREV_FEDERATION:-false}"
 SYNCBOT_INSTANCE_ID="${PREV_INSTANCE_ID:-}"
 SYNCBOT_PUBLIC_URL="${PREV_PUBLIC_URL:-}"
@@ -1500,7 +1494,6 @@ LOG_LEVEL="$(prompt_log_level "$LOG_LEVEL_DEFAULT")"
 echo
 echo "=== App Settings ==="
 REQUIRE_ADMIN="$(prompt_require_admin "$REQUIRE_ADMIN")"
-SOFT_DELETE_RETENTION_DAYS="$(prompt_soft_delete_retention_days "$SOFT_DELETE_RETENTION_DAYS")"
 PRIMARY_WORKSPACE="$(prompt_primary_workspace "$PRIMARY_WORKSPACE")"
 SYNCBOT_FEDERATION_ENABLED="$(prompt_federation_enabled "$SYNCBOT_FEDERATION_ENABLED")"
 if [[ "$SYNCBOT_FEDERATION_ENABLED" == "true" ]]; then
@@ -1515,7 +1508,6 @@ echo "Stack:            $STACK_NAME"
 echo "Stage:            $STAGE"
 echo "Log level:        $LOG_LEVEL"
 echo "Require admin:    $REQUIRE_ADMIN"
-echo "Soft-delete days: $SOFT_DELETE_RETENTION_DAYS"
 echo "Keep-warm:        $ENABLE_KEEP_WARM"
 if [[ -n "$PRIMARY_WORKSPACE" ]]; then
   echo "Primary workspace: $PRIMARY_WORKSPACE"
@@ -1568,7 +1560,6 @@ PARAMS=(
   "DatabasePassword=${DATABASE_PASSWORD:-}"
   "LogLevel=$LOG_LEVEL"
   "RequireAdmin=$REQUIRE_ADMIN"
-  "SoftDeleteRetentionDays=$SOFT_DELETE_RETENTION_DAYS"
   "SyncbotFederationEnabled=$SYNCBOT_FEDERATION_ENABLED"
 )
 [[ -n "${DATABASE_USER:-}" ]] && PARAMS+=("DatabaseUser=$DATABASE_USER")

@@ -236,17 +236,6 @@ variable "require_admin" {
   }
 }
 
-variable "soft_delete_retention_days" {
-  type        = number
-  default     = 30
-  description = "SOFT_DELETE_RETENTION_DAYS (minimum 1)."
-
-  validation {
-    condition     = var.soft_delete_retention_days >= 1
-    error_message = "soft_delete_retention_days must be at least 1."
-  }
-}
-
 variable "syncbot_federation_enabled" {
   type        = bool
   default     = false

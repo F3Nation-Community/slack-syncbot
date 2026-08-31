@@ -106,29 +106,22 @@ def _validate_channel_selection(
             "errors": {action_id: "That Channel is already part of a Channel Sync. Pick a different Channel."},
         }
 
-    try:
-        conv_info = client.conversations_info(channel=channel_id)
-        is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
-        is_member = bool(helpers.safe_get(conv_info, "channel", "is_member"))
-    except Exception as e:
-        # Fail closed: an unreadable channel is one the bot cannot join either.
-        _logger.warning(f"_validate_channel_selection: conversations_info failed for {channel_id}: {e}")
-        return {
-            "response_action": "errors",
-            "errors": {action_id: "SyncBot could not read that Channel. Pick a public Channel it can join."},
-        }
-
-    if is_private and not helpers.allow_private_channels():
-        return {
-            "response_action": "errors",
-            "errors": {action_id: "Private Channels cannot be synced. Pick a public Channel."},
-        }
-
-    if is_private and not is_member:
-        return {
-            "response_action": "errors",
-            "errors": {action_id: "SyncBot is not in that Channel. Invite it first, then try again."},
-        }
+    if not helpers.allow_private_channels():
+        try:
+            conv_info = client.conversations_info(channel=channel_id)
+            is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
+        except Exception as e:
+            # Fail closed: an unreadable channel is one the bot cannot join either.
+            _logger.warning(f"_validate_channel_selection: conversations_info failed for {channel_id}: {e}")
+            return {
+                "response_action": "errors",
+                "errors": {action_id: "SyncBot could not read that Channel. Pick a public Channel it can join."},
+            }
+        if is_private:
+            return {
+                "response_action": "errors",
+                "errors": {action_id: "Private Channels cannot be synced. Pick a public Channel."},
+            }
 
     return None
 
@@ -891,7 +884,7 @@ def handle_subscribe_channel_submit(
                 channel_ref = sync_record.title or "the other Channel"
             client.chat_postMessage(
                 channel=channel_id,
-                text=f":arrows_counterclockwise: *{admin_name}* started syncing this Channel with *{channel_ref}*. Messages will be shared automatically.",
+                text=f":arrows_counterclockwise: *{admin_name}* subscribed this Channel to *{channel_ref}*. Messages will be shared automatically.",
             )
         except Exception as exc:
             _logger.debug(f"subscribe_channel: failed to notify subscriber channel {channel_id}: {exc}")
@@ -904,7 +897,7 @@ def handle_subscribe_channel_submit(
                     pub_client = WebClient(token=helpers.decrypt_bot_token(pub_ws.bot_token))
                     pub_client.chat_postMessage(
                         channel=pub_ch.channel_id,
-                        text=f":arrows_counterclockwise: *{admin_label}* started syncing *{local_ref}* with this Channel. Messages will be shared automatically.",
+                        text=f":arrows_counterclockwise: *{admin_label}* subscribed *{local_ref}* to this Channel. Messages will be shared automatically.",
                     )
             except Exception as exc:
                 _logger.debug(f"subscribe_channel: failed to notify publisher channel {pub_ch.channel_id}: {exc}")

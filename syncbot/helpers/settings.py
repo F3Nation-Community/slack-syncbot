@@ -1,9 +1,9 @@
-"""Database-backed instance settings with environment fallback.
+"""Database-backed instance settings.
 
-Resolution precedence for every setting is **database, then environment, then a
-hardcoded default**. Environment variables become the seed and fallback: they
-still work for a fresh deployment, and once the operator saves a value in the
-Settings modal the database value is authoritative.
+Resolution is **database, then a hardcoded default**. Environment variables for
+these keys are ignored: they belong in the Settings modal, and a leftover env
+value must not quietly override what an operator saved (or the default). When
+one is still set, a warning is logged once per process.
 
 Only operational policy belongs here — things that change over a deployment's
 life and benefit from a UI. Secrets, connection details, and break-glass
@@ -29,9 +29,32 @@ _FALSY = ("false", "0", "no", "off")
 
 _SENTINEL_MISSING = "\x00__missing__"
 
+# Env vars that used to seed these settings. Still recognized so a leftover
+# deploy config logs a warning instead of silently changing behavior.
+_IGNORED_ENV_BY_SETTING = {
+    constants.SETTING_ALLOW_PRIVATE_CHANNELS: constants.ALLOW_PRIVATE_CHANNELS,
+    constants.SETTING_BROADCAST_ALLOWED_WORKSPACES: constants.BROADCAST_ALLOWED_WORKSPACES,
+    constants.SETTING_SOFT_DELETE_RETENTION_DAYS: constants.SOFT_DELETE_RETENTION_DAYS_VAR,
+}
+_IGNORED_ENV_WARNED: set[str] = set()
+
 
 def _cache_key(key: str) -> str:
     return f"setting:{key}"
+
+
+def _warn_ignored_env(setting_key: str) -> None:
+    env_var = _IGNORED_ENV_BY_SETTING.get(setting_key)
+    if not env_var or env_var in _IGNORED_ENV_WARNED:
+        return
+    raw = os.environ.get(env_var)
+    if raw is None or raw.strip() == "":
+        return
+    _IGNORED_ENV_WARNED.add(env_var)
+    _logger.warning(
+        "%s is ignored; set this in the SyncBot Settings modal instead",
+        env_var,
+    )
 
 
 def get_raw_setting(key: str) -> str | None:
@@ -68,21 +91,15 @@ def set_setting(key: str, value: str | None) -> None:
     _logger.info("instance_setting_saved", extra={"setting_key": key})
 
 
-def _resolve(key: str, env_var: str | None) -> str | None:
-    """Return the effective raw string for *key*: database, else environment."""
-    stored = get_raw_setting(key)
-    if stored is not None:
-        return stored
-    if env_var:
-        env_value = os.environ.get(env_var)
-        if env_value is not None and env_value.strip() != "":
-            return env_value
-    return None
+def _resolve(key: str) -> str | None:
+    """Return the database value for *key*, warning if a leftover env var is set."""
+    _warn_ignored_env(key)
+    return get_raw_setting(key)
 
 
-def get_bool_setting(key: str, env_var: str | None, default: bool) -> bool:
+def get_bool_setting(key: str, default: bool) -> bool:
     """Resolve *key* as a boolean."""
-    raw = _resolve(key, env_var)
+    raw = _resolve(key)
     if raw is None:
         return default
     normalized = raw.strip().lower()
@@ -94,9 +111,9 @@ def get_bool_setting(key: str, env_var: str | None, default: bool) -> bool:
     return default
 
 
-def get_int_setting(key: str, env_var: str | None, default: int) -> int:
+def get_int_setting(key: str, default: int) -> int:
     """Resolve *key* as an integer."""
-    raw = _resolve(key, env_var)
+    raw = _resolve(key)
     if raw is None:
         return default
     try:
@@ -106,9 +123,9 @@ def get_int_setting(key: str, env_var: str | None, default: int) -> int:
         return default
 
 
-def get_list_setting(key: str, env_var: str | None, default: list[str] | None = None) -> list[str]:
+def get_list_setting(key: str, default: list[str] | None = None) -> list[str]:
     """Resolve *key* as a comma-separated list, matching the SLACK_BOT_SCOPES idiom."""
-    raw = _resolve(key, env_var)
+    raw = _resolve(key)
     if raw is None:
         return list(default or [])
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -126,7 +143,6 @@ def allow_private_channels() -> bool:
     """
     return get_bool_setting(
         constants.SETTING_ALLOW_PRIVATE_CHANNELS,
-        constants.ALLOW_PRIVATE_CHANNELS,
         constants.DEFAULT_ALLOW_PRIVATE_CHANNELS,
     )
 
@@ -135,7 +151,6 @@ def broadcast_allowed_workspaces() -> list[str]:
     """Slack team IDs permitted to publish a broadcast. Empty means any installed workspace."""
     return get_list_setting(
         constants.SETTING_BROADCAST_ALLOWED_WORKSPACES,
-        constants.BROADCAST_ALLOWED_WORKSPACES,
         constants.DEFAULT_BROADCAST_ALLOWED_WORKSPACES,
     )
 
@@ -144,7 +159,6 @@ def soft_delete_retention_days() -> int:
     """Days a soft-deleted workspace is retained before the purge removes it permanently."""
     return get_int_setting(
         constants.SETTING_SOFT_DELETE_RETENTION_DAYS,
-        constants.SOFT_DELETE_RETENTION_DAYS_VAR,
         constants.DEFAULT_SOFT_DELETE_RETENTION_DAYS,
     )
 

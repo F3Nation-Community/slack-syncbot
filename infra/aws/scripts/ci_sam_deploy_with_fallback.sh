@@ -150,7 +150,6 @@ emit_override_lines() {
   printf 'DatabaseSchema=%s\n' "${DATABASE_SCHEMA}"
   printf 'LogLevel=%s\n' "${LOG_LEVEL:-INFO}"
   printf 'RequireAdmin=%s\n' "${REQUIRE_ADMIN:-true}"
-  printf 'SoftDeleteRetentionDays=%s\n' "${SOFT_DELETE_RETENTION_DAYS:-30}"
   printf 'SyncbotFederationEnabled=%s\n' "${SYNCBOT_FEDERATION_ENABLED:-false}"
   printf 'SyncbotInstanceId=%s\n' "${SYNCBOT_INSTANCE_ID:-}"
   printf 'SyncbotPublicUrl=%s\n' "${SYNCBOT_PUBLIC_URL:-}"

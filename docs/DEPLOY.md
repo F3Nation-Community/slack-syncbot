@@ -202,12 +202,13 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 |----------|-------|
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
 | `REQUIRE_ADMIN` | `true` (default) / `false`. Limits who can configure SyncBot to workspace admins and owners. |
-| `SOFT_DELETE_RETENTION_DAYS` | Days to retain a workspace's paused data after uninstall before hard delete (default `30`). |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 | `SYNCBOT_FEDERATION_ENABLED` | `true` to enable federation to other SyncBot instances (default `false`). |
 | `SYNCBOT_INSTANCE_ID` | This instance's UUID. Pin it when federation is on — Lambda mints a new one per cold start if it is empty. |
 | `SYNCBOT_PUBLIC_URL` | This instance's public HTTPS base. Required for federation; not a Slack app URL. |
+
+How long uninstalled workspace data is kept, whether private Channels may be published, and which workspaces may publish a Broadcast are set in the **Settings** modal on the Home tab (visible to `PRIMARY_WORKSPACE`), not as environment variables.
 
 ---
 

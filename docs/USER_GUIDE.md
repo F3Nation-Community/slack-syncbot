@@ -20,7 +20,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 - **@mentions and #channel links** in synced messages are rewritten per target workspace: mapped users are tagged with the local Slack user, and channels that are part of the same sync are shown as native local channel links; otherwise users fall back to a code-style label and channels use a link back to the source workspace (or a code-style label if that cannot be built).
 - Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
 - Existing messages are not back-filled; syncing starts from the moment a channel is linked.
-- Do not add SyncBot manually to channels. SyncBot adds itself when you configure a Sync. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
+- Do not add SyncBot manually to channels. SyncBot adds itself when you Publish or Subscribe. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
 - When you pick a channel to publish or subscribe, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
 - A channel can belong to only one Channel Sync at a time. If you pick one that is already syncing, SyncBot tells you so in the dialog and asks for a different channel rather than quietly doing nothing. A channel you previously unpublished is free to use again.
 - Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. Keep in mind that SyncBot cannot add itself to a private channel, so you need to invite it there first.
@@ -58,7 +58,7 @@ When publishing a channel inside a group, use **Publish Channel**. The first ste
 
 ## Uninstall / Reinstall
 
-If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted). Reinstalling within the retention period (default 30 days, which your operator can change with `SOFT_DELETE_RETENTION_DAYS` or in the Settings modal) automatically restores everything, including group ownership. Group members are notified via DMs and channel messages.
+If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted). Reinstalling within the retention period (default 30 days, which the operator can change in **Settings**) automatically restores everything, including group ownership. Group members are notified via DMs and channel messages.
 
 ## User Mapping
 

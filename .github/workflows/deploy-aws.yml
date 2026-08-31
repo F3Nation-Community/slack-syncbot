@@ -114,7 +114,6 @@ jobs:
           DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
-          SOFT_DELETE_RETENTION_DAYS: ${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }}
           SYNCBOT_FEDERATION_ENABLED: ${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }}
           SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
           SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
@@ -206,7 +205,6 @@ jobs:
           DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
           REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
-          SOFT_DELETE_RETENTION_DAYS: ${{ vars.SOFT_DELETE_RETENTION_DAYS || '30' }}
           SYNCBOT_FEDERATION_ENABLED: ${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }}
           SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
           SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}

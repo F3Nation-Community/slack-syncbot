@@ -14,14 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Channel pickers no longer stop at the first 100 channels. Publishing and subscribing now use Slack's own channel search, so every channel in the workspace is reachable by typing a few letters, however many channels you have.
 - Picking a channel that is already part of a Channel Sync now explains the problem in the dialog and asks for a different channel, instead of closing the modal as though it had worked. Subscribing reports this the same way publishing already did.
-- Publishing or subscribing a private Channel that SyncBot has not been invited to now explains that in the dialog, instead of closing as though it had worked and then failing when SyncBot cannot join.
 
 ### Changed
 
 - A channel may belong to only one Channel Sync at a time, and this is now enforced instance-wide rather than per workspace. Two syncs sharing a channel had no defined message routing. Channels that were previously unpublished are still free to reuse.
-- The `ALLOW_PRIVATE_CHANNELS` setting now takes effect. When it is off, which is the default, private channels are left out of the picker and rejected on submit; when an operator turns it on in **Settings**, the dialog warns that a private channel's messages will be copied into the other workspaces in the group. The new and join sync dialogs follow the same policy.
-- **Publish Channel** vs **Subscribe** — The group button that used to say Sync Channel is now **Publish Channel**, matching the Unpublish teardown on the publishing side. Other workspaces join with **Subscribe** rather than Start Syncing. Pause, Resume, and Stop Syncing are unchanged: they still describe a live two-way link, not the join action.
-- A channel SyncBot cannot read is rejected rather than accepted and then failing during setup, which is also a clearer signal when SyncBot has not been invited to a private channel yet.
+- Retention, private-channel publishing, and the broadcast allow-list are set only in the **Settings** modal. They are no longer read from the environment; leftover deploy values are ignored and a warning is logged.
+- Private channels are off by default. When an operator turns them on in **Settings**, the dialog warns that a private channel's messages will be copied into the other workspaces in the group. The new and join sync dialogs follow the same policy.
+- **Publish Channel** vs **Subscribe** — The group button that used to say Sync Channel is now **Publish Channel**, matching the Unpublish teardown on the publishing side. Other workspaces join with **Subscribe** rather than Start Syncing. Channel notices match: subscribe posts say a workspace subscribed, and publishing no longer says "for Syncing". Pause, Resume, and Stop Syncing are unchanged: they still describe a live two-way link, not the join action.
+- A channel SyncBot cannot read is rejected rather than accepted and then failing during setup.
 
 
 ## [1.3.0] - 2026-08-30
