@@ -237,6 +237,27 @@ class FederatedWorkspace(BaseClass, GetDBClass):
         return FederatedWorkspace.id
 
 
+class InstanceSetting(BaseClass, GetDBClass):
+    """Operator-managed instance policy, edited through the Settings modal.
+
+    Key/value on purpose, so adding a setting never needs a migration. Values
+    are stored as strings; the typed accessors in ``helpers.settings`` parse
+    them and apply the database-over-environment-over-default precedence.
+
+    Only operational policy lives here. Secrets, connection details, and
+    break-glass switches (``ENABLE_DB_RESET``) stay in environment variables.
+    """
+
+    __tablename__ = "instance_settings"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+    def get_id():
+        return InstanceSetting.key
+
+
 class ProcessedEvent(BaseClass, GetDBClass):
     """Dedup record for Slack Events API at-least-once delivery.
 

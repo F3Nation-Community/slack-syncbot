@@ -129,6 +129,28 @@ class TestDeclineGroupInviteAuthorization:
     def test_invitee_may_not_cancel(self):
         assert not self._run(actions.CONFIG_CANCEL_GROUP_REQUEST, INVITED_WS_ID).called
 
+    def test_group_owner_may_cancel(self):
+        """A group owner has standing over membership, so it may cancel a pending invite."""
+        member = _pending_member()
+        group = SimpleNamespace(id=GROUP_ID, name="Test Group")
+        acting = SimpleNamespace(id=THIRD_PARTY_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+
+        with (
+            patch("handlers.groups._get_authorized_workspace", return_value=("U1", acting)),
+            patch("handlers.groups.DbManager.get_record", side_effect=[member, group]),
+            patch("handlers.groups.DbManager.delete_records") as delete_records,
+            patch("handlers.groups.DbManager.find_records", return_value=[]),
+            patch("handlers.groups.helpers.is_workspace_owner", return_value=True),
+            patch("handlers.groups.helpers.get_workspace_by_id", return_value=acting),
+            patch("handlers.groups._update_invite_dms"),
+            patch("handlers.groups.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_decline_group_invite(
+                _invite_body(actions.CONFIG_CANCEL_GROUP_REQUEST), MagicMock(), MagicMock(), context={}
+            )
+
+        assert delete_records.called
+
     def test_unauthorized_user_is_rejected(self):
         with (
             patch("handlers.groups._get_authorized_workspace", return_value=None),

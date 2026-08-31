@@ -7,7 +7,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 1. Click the install link from a desktop browser (make sure you have selected the correct workspace in the upper right).
 2. Open the **SyncBot** app from the sidebar and click the **Home** tab (this requires a workspace admin or owner).
 3. The Home tab shows everything in one view:
-   - **SyncBot Configuration (bottom row)** — **Refresh**, and **Backup/Restore** only if the host set `PRIMARY_WORKSPACE` (the Slack Team ID) and redeployed. If you do not see Backup/Restore, ask the operator.
+   - **SyncBot Configuration (bottom row)** — **Refresh**, plus **Backup/Restore** and **Settings** only if the host set `PRIMARY_WORKSPACE` (the Slack Team ID) and redeployed. If you do not see them, ask the operator. **Settings** is where the operator adjusts instance-wide policy, such as how long the data of a workspace that uninstalled is kept before it is deleted for good.
    - **Workspace Groups** — create or join groups of workspaces that can sync channels together.
    - **Per-group sections** — for each group you can publish channels, manage user mapping (a dedicated Home tab screen), and see or manage channel syncs inline.
    - **Synced Channels** — each row shows the local channel and workspace list in brackets (for example _[Any: Your Workspace, Other Workspace]_), with pause/resume and stop controls, a synced-since date, and a tracked message count.
@@ -27,6 +27,22 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 
 Workspaces must belong to the same **group** before they can sync channels or map users. Admins can create a new group (which generates an invite code) or join an existing group by entering a code. A workspace can be in multiple groups with different combinations of other workspaces.
 
+### Group owners
+
+Every group has at least one **owner** workspace. The workspace that creates a group is its first owner. Owners are the workspaces that can promote other owners and disband the group; everyone else is a member. Inviting another workspace stays open to any member, not just owners.
+
+An owner can share that responsibility by clicking **Promote to Owner** next to another workspace in the group. There is no matching "demote" button for other workspaces — an owner can only step down itself, using **Give Up Ownership**, and only when another owner remains. That keeps one workspace from quietly taking a group over by demoting everyone else.
+
+For the same reason, a group can never be left with no owner. If you are the only owner, SyncBot will not let your workspace leave the group until you have promoted another workspace to owner. It explains this instead of failing silently, so you know what to do next.
+
+Uninstalling SyncBot does not hand your ownership to anyone else. Your membership is only paused, so reinstalling within the retention period gives you the group back exactly as it was. Ownership passes to another workspace only when your data is actually deleted, either because the retention period expired or because an operator purged it. In that case SyncBot promotes the longest-standing remaining member so the group is not stranded.
+
+### Disbanding a group
+
+An owner can **Disband Group** to remove a group entirely, along with its syncs and user mappings. Because this cannot be undone and affects other workspaces, SyncBot only offers it when your workspace is the sole owner *and* the sole publisher of every channel in the group. If another workspace owns the group or has published a channel into it, disbanding is declined with an explanation of who else is involved — ask them to unpublish or leave first, or just leave the group yourself instead.
+
+Disbanding always asks for confirmation before anything is removed, and tells you how many workspaces, syncs, and channels it will affect. Note that the user mappings scoped to the group go with it, and those took auto-matching and manual edits to build, so re-creating the group later means establishing those matches again.
+
 ## Sync Modes
 
 When publishing a channel inside a group, admins choose either **1-to-1** (only a specific workspace can subscribe) or **group-wide** (any group member can subscribe independently).
@@ -40,7 +56,7 @@ When publishing a channel inside a group, admins choose either **1-to-1** (only 
 
 ## Uninstall / Reinstall
 
-If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted). Reinstalling within the retention period (default 30 days, configurable via `SOFT_DELETE_RETENTION_DAYS`) automatically restores everything. Group members are notified via DMs and channel messages.
+If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted). Reinstalling within the retention period (default 30 days, which your operator can change with `SOFT_DELETE_RETENTION_DAYS` or in the Settings modal) automatically restores everything, including group ownership. Group members are notified via DMs and channel messages.
 
 ## User Mapping
 

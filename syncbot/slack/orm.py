@@ -208,6 +208,39 @@ class RadioButtonsElement(BaseElement):
 
 
 @dataclass
+class MultiStaticSelectElement(BaseElement):
+    """Multi-select over a fixed option list, for picking several values at once."""
+
+    initial_values: list[str] = None
+    options: list[SelectorOption] = None
+
+    def get_selected_value(self, input_data, action):
+        selected = safe_get(input_data, action, action, "selected_options") or []
+        return [option.get("value") for option in selected if option.get("value")]
+
+    def as_form_field(self, action: str):
+        if not self.options:
+            self.options = as_selector_options(["Default"])
+
+        option_elements = [self.__make_option(o) for o in self.options]
+        j = {"type": "multi_static_select", "options": option_elements, "action_id": action}
+        if self.placeholder:
+            j.update(self.make_placeholder_field())
+
+        if self.initial_values:
+            initial = [x for x in option_elements if x["value"] in self.initial_values]
+            if initial:
+                j["initial_options"] = initial
+        return j
+
+    def __make_option(self, option: SelectorOption):
+        return {
+            "text": {"type": "plain_text", "text": option.name, "emoji": True},
+            "value": option.value,
+        }
+
+
+@dataclass
 class PlainTextInputElement(BaseElement):
     initial_value: str = None
     multiline: bool = False

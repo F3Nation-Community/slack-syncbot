@@ -6,7 +6,6 @@ from logging import Logger
 
 from slack_sdk.web import WebClient
 
-import constants
 import helpers
 from db import DbManager, schemas
 
@@ -36,7 +35,7 @@ def handle_tokens_revoked(
 
     now = datetime.now(UTC)
     ws_name = helpers.resolve_workspace_name(workspace_record)
-    retention_days = constants.SOFT_DELETE_RETENTION_DAYS
+    retention_days = helpers.soft_delete_retention_days()
 
     DbManager.update_records(
         schemas.Workspace,

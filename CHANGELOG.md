@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.3.0] - 2026-08-30
+
+### Added
+
+- Group ownership: an owner can promote another workspace with **Promote to Owner**, and step down itself with **Give Up Ownership** while another owner remains. A group always keeps at least one owner, so a sole owner is asked to promote a successor before leaving instead of failing silently.
+- **Disband Group** removes a group, its syncs, and its user mappings in one step, offered only to a workspace that is both the sole owner and the sole publisher so it cannot destroy another workspace's syncs. It confirms first and lists what will be removed.
+- A group owner can now cancel a pending invite, alongside the workspace that sent it.
+- Operator **Settings** modal in the Home tab, visible only to `PRIMARY_WORKSPACE`, for instance-wide policy: soft-delete retention days, whether private channels may be synced, and which workspaces may publish broadcasts. Settings are stored in the database, so changing them no longer needs a redeploy.
+
+### Changed
+
+- `SOFT_DELETE_RETENTION_DAYS`, `ALLOW_PRIVATE_CHANNELS`, and `BROADCAST_ALLOWED_WORKSPACES` are now seed values: the database value from the Settings modal wins once saved, otherwise the environment variable applies, otherwise a built-in default. `PRIMARY_WORKSPACE`, `ENABLE_DB_RESET`, and `REQUIRE_ADMIN` stay environment-only on purpose, since they gate who can reach the modal and the destructive actions beside it.
+- Retention is read at call time rather than at process start, so a change applies without a restart. The private-channel and broadcast settings are stored now and begin taking effect with the channel picker rework and broadcast channels.
+- Ownership survives an uninstall: it passes to the longest-standing remaining member only when a workspace's data is actually deleted, so reinstalling within the retention window restores the group unchanged.
+- Destructive confirmations (leave group, disband group, stop syncing) now show a red confirmation button in the dialog, matching the Reset Database prompt, so the action you are about to take reads as destructive rather than routine.
+
+
 ## [1.2.6] - 2026-08-30
 
 ### Fixed

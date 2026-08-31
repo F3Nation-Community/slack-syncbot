@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from slack_sdk import WebClient
 from sqlalchemy.exc import ProgrammingError
 
-import constants
 from db import DbManager, schemas
 from helpers._cache import _cache_get, _cache_set
 from helpers.core import safe_get
@@ -162,7 +161,9 @@ def purge_stale_soft_deletes() -> int:
         return 0
     _cache_set(cache_key, True, ttl=86400)
 
-    retention_days = constants.SOFT_DELETE_RETENTION_DAYS
+    from helpers.settings import soft_delete_retention_days
+
+    retention_days = soft_delete_retention_days()
     cutoff = datetime.now(UTC) - __import__("datetime").timedelta(days=retention_days)
 
     try:

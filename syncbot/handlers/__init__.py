@@ -43,8 +43,12 @@ from handlers.federation_cmds import (
     handle_remove_federation_connection,
 )
 from handlers.group_manage import (
+    handle_demote_self,
+    handle_disband_group,
+    handle_disband_group_confirm,
     handle_leave_group,
     handle_leave_group_confirm,
+    handle_promote_to_owner,
 )
 from handlers.groups import (
     handle_accept_group_invite,
@@ -62,6 +66,7 @@ from handlers.messages import (
     _parse_event_fields,
     respond_to_message_event,
 )
+from handlers.settings import handle_open_settings, handle_settings_submit
 from handlers.sync import (
     check_join_sync_channel,
     handle_app_home_opened,
@@ -117,8 +122,14 @@ __all__ = [
     "handle_join_group",
     "handle_join_group_submit",
     "handle_join_sync_submission",
+    "handle_demote_self",
+    "handle_disband_group",
+    "handle_disband_group_confirm",
     "handle_leave_group",
     "handle_leave_group_confirm",
+    "handle_open_settings",
+    "handle_promote_to_owner",
+    "handle_settings_submit",
     "handle_member_joined_channel",
     "handle_new_sync_submission",
     "handle_pause_sync",

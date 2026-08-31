@@ -234,6 +234,13 @@ def build_home_tab(
             action=actions.CONFIG_REFRESH_HOME,
         ),
     ]
+    if helpers.is_settings_visible_for_workspace(workspace_record.team_id):
+        config_buttons.append(
+            orm.ButtonElement(
+                label="Settings",
+                action=actions.CONFIG_OPEN_SETTINGS,
+            ),
+        )
     if helpers.is_backup_visible_for_workspace(workspace_record.team_id):
         config_buttons.append(
             orm.ButtonElement(
@@ -343,8 +350,16 @@ def _build_group_section(
     """Append blocks for a single workspace group."""
     blocks.append(divider())
 
+    # Belt-and-suspenders behind migration 003's backfill: repairs a legacy
+    # group that has no owner at all. Strictly guarded and idempotent, because
+    # this is a write on the Home-tab read path. See helpers.ensure_group_has_owner.
+    helpers.ensure_group_has_owner(group.id)
+
     all_members = _get_group_members(group.id)
     other_members = [member for member in all_members if member.workspace_id != workspace_record.id]
+
+    is_owner = helpers.is_workspace_owner(group.id, workspace_record.id)
+    owner_count = len(helpers.get_active_owners(group.id))
 
     blocks.append(header(f"{group.name}"))
 
@@ -374,6 +389,17 @@ def _build_group_section(
             value=str(group.id),
         ),
     )
+    # Disband is only offered when it can actually succeed, so the destructive
+    # button never appears to a workspace that would just be rejected.
+    if is_owner and helpers.can_disband(group.id, workspace_record.id)[0]:
+        group_actions.append(
+            orm.ButtonElement(
+                label="Disband Group",
+                action=f"{actions.CONFIG_DISBAND_GROUP}_{group.id}",
+                style="danger",
+                value=str(group.id),
+            ),
+        )
     blocks.append(orm.ActionsBlock(elements=group_actions))
 
     syncs_for_group = DbManager.find_records(Sync, [Sync.group_id == group.id])
@@ -437,6 +463,29 @@ def _build_group_section(
                 blocks.append(block_context(text))
         else:
             blocks.append(block_context(text))
+
+        # Owners may promote any active local member. Demotion is self-only, and
+        # only while another owner remains to keep the group from losing its
+        # last owner.
+        role_actions: list[orm.ButtonElement] = []
+        if is_owner and member.workspace_id and member.role != "owner":
+            role_actions.append(
+                orm.ButtonElement(
+                    label="Promote to Owner",
+                    action=f"{actions.CONFIG_PROMOTE_TO_OWNER}_{member.id}",
+                    value=str(member.id),
+                )
+            )
+        if member.workspace_id == workspace_record.id and member.role == "owner" and owner_count > 1:
+            role_actions.append(
+                orm.ButtonElement(
+                    label="Give Up Ownership",
+                    action=f"{actions.CONFIG_DEMOTE_SELF}_{member.id}",
+                    value=str(member.id),
+                )
+            )
+        if role_actions:
+            blocks.append(orm.ActionsBlock(elements=role_actions))
 
     pending_members = DbManager.find_records(
         WorkspaceGroupMember,
