@@ -39,6 +39,32 @@ def _parse_private_metadata(body: dict) -> dict:
         return {}
 
 
+def _close_modal_done(client, body: dict, message: str) -> None:
+    """Replace an open modal with a terminal, close-only acknowledgement.
+
+    Destructive confirmations put a red ``danger`` button in the modal body
+    rather than using the modal's submit button, which Slack renders in the
+    theme colour and cannot be styled red. A block action cannot close a modal
+    (only a view submission can), so once the work is done we swap the view for
+    a "you can close this" screen, mirroring the database-reset flow.
+    """
+    view_id = helpers.safe_get(body, "view", "id")
+    if not view_id:
+        return
+    try:
+        client.views_update(
+            view_id=view_id,
+            view={
+                "type": "modal",
+                "title": {"type": "plain_text", "text": "Done"},
+                "close": {"type": "plain_text", "text": "Close"},
+                "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": message}}],
+            },
+        )
+    except Exception as exc:
+        _logger.warning("modal_close_failed", extra={"error": str(exc)})
+
+
 def _extract_team_id(body: dict) -> str | None:
     """Return a workspace/team ID from common Slack payload locations."""
     return (

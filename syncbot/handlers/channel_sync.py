@@ -12,6 +12,7 @@ import helpers
 from builders._common import _format_channel_ref, _get_group_members
 from db import DbManager, schemas
 from handlers._common import (
+    _close_modal_done,
     _extract_team_id,
     _get_authorized_workspace,
     _get_selected_conversation_or_option,
@@ -600,6 +601,16 @@ def handle_stop_sync(
                 "\u2022 Other Workspaces in the Sync will continue uninterrupted\n\n"
                 "_No messages will be deleted from any Channel — only SyncBot's tracking history for your Workspace is removed._"
             ),
+            orm.ActionsBlock(
+                elements=[
+                    orm.ButtonElement(
+                        label="Stop Syncing",
+                        action=actions.CONFIG_STOP_SYNC_CONFIRM,
+                        value=str(sync_id),
+                        style="danger",
+                    ),
+                ]
+            ),
         ]
     )
 
@@ -608,7 +619,7 @@ def handle_stop_sync(
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_STOP_SYNC_CONFIRM,
         title_text="Stop Syncing",
-        submit_button_text="Stop Syncing",
+        submit_button_text=None,
         close_button_text="Cancel",
         parent_metadata={"sync_id": sync_id},
     )
@@ -706,6 +717,7 @@ def handle_stop_sync_confirm(
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
     if sync_record and sync_record.group_id:
         _refresh_group_member_homes(sync_record.group_id, workspace_record.id, logger, context=context)
+    _close_modal_done(client, body, ":octagonal_sign: Channel sync stopped. You can close this now.")
 
 
 def handle_subscribe_channel(

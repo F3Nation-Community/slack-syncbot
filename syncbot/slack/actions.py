@@ -76,8 +76,13 @@ CONFIG_JOIN_GROUP_CODE = "join_group_code"
 CONFIG_LEAVE_GROUP = "leave_group"
 """Action: user clicked "Leave Group" (prefix-matched with group_id)."""
 
-CONFIG_LEAVE_GROUP_CONFIRM = "leave_group_confirm"
-"""Callback: leave-group confirmation modal submitted."""
+CONFIG_LEAVE_GROUP_CONFIRM = "confirm_leave_group"
+"""Action (block): red confirm button inside the leave-group modal.
+
+Not ``leave_group_confirm``: that string is prefix-matched onto
+``CONFIG_LEAVE_GROUP`` in ``helpers.core._PREFIXED_ACTIONS`` and would misroute
+to the modal-opening handler. Destructive confirmations are red in-modal buttons
+(a modal submit button cannot be coloured), so this is a block action."""
 
 CONFIG_ACCEPT_GROUP_REQUEST = "accept_group_request"
 """Action: user clicked "Accept" on an incoming group join request (prefix-matched with member_id)."""
@@ -106,8 +111,11 @@ CONFIG_DEMOTE_SELF = "demote_self"
 CONFIG_DISBAND_GROUP = "disband_group"
 """Action: sole owner clicked "Disband Group" (prefix-matched with group_id)."""
 
-CONFIG_DISBAND_GROUP_CONFIRM = "disband_group_confirm"
-"""Callback: disband-group confirmation modal submitted."""
+CONFIG_DISBAND_GROUP_CONFIRM = "confirm_disband_group"
+"""Action (block): red confirm button inside the disband-group modal.
+
+Not ``disband_group_confirm``: that string is prefix-matched onto
+``CONFIG_DISBAND_GROUP`` and would misroute to the modal-opening handler."""
 
 # ---------------------------------------------------------------------------
 # Instance settings (PRIMARY_WORKSPACE only)
@@ -162,8 +170,11 @@ CONFIG_RESUME_SYNC = "resume_sync"
 CONFIG_STOP_SYNC = "stop_sync"
 """Action: user clicked "Stop Syncing" on a channel sync (prefix-matched with sync_id)."""
 
-CONFIG_STOP_SYNC_CONFIRM = "stop_sync_confirm"
-"""View submission: user confirmed stopping a channel sync."""
+CONFIG_STOP_SYNC_CONFIRM = "confirm_stop_sync"
+"""Action (block): red confirm button inside the stop-sync modal.
+
+Not ``stop_sync_confirm``: that string is prefix-matched onto
+``CONFIG_STOP_SYNC`` and would misroute to the modal-opening handler."""
 
 CONFIG_SUBSCRIBE_CHANNEL = "subscribe_channel"
 """Action: user clicked "Start Syncing" on an available channel (prefix-matched with sync_id)."""

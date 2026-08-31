@@ -78,8 +78,8 @@ def handle_leave_group(
                 trigger_id=trigger_id,
                 callback_id=actions.CONFIG_LEAVE_GROUP_CONFIRM,
                 title_text="Leave Group",
-                submit_button_text="Close",
-                close_button_text="Cancel",
+                submit_button_text=None,
+                close_button_text="Close",
                 parent_metadata={"group_id": group_id, "blocked": True},
             )
             return
@@ -96,6 +96,16 @@ def handle_leave_group(
                     "_Other members will continue syncing uninterrupted._"
                 ),
             ),
+            orm.ActionsBlock(
+                elements=[
+                    orm.ButtonElement(
+                        label="Leave Group",
+                        action=actions.CONFIG_LEAVE_GROUP_CONFIRM,
+                        value=str(group_id),
+                        style="danger",
+                    ),
+                ]
+            ),
         ]
     )
 
@@ -104,7 +114,7 @@ def handle_leave_group(
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_LEAVE_GROUP_CONFIRM,
         title_text="Leave Group",
-        submit_button_text="Leave",
+        submit_button_text=None,
         close_button_text="Cancel",
         parent_metadata={"group_id": group_id},
     )
@@ -125,7 +135,7 @@ def handle_leave_group_confirm(
     - Removes user mappings scoped to this group
     - Notifies remaining group members
     """
-    from handlers._common import _parse_private_metadata
+    from handlers._common import _close_modal_done, _parse_private_metadata
 
     user_id = helpers.get_user_id_from_body(body)
     if not user_id or not helpers.is_user_authorized(client, user_id):
@@ -139,10 +149,11 @@ def handle_leave_group_confirm(
         return
 
     if meta.get("blocked"):
-        # The modal was the sole-owner explanation, not a confirmation.
+        # The sole-owner explanation modal is close-only and never routes here;
+        # this guards a forged payload.
         return
 
-    team_id = helpers.safe_get(body, "view", "team_id")
+    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return
@@ -265,6 +276,7 @@ def handle_leave_group_confirm(
                 _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    _close_modal_done(client, body, f":wave: You have left *{group.name}*. You can close this now.")
 
 
 def _member_id_from_action(body: dict, prefix: str) -> int | None:
@@ -523,8 +535,8 @@ def handle_disband_group(
             trigger_id=trigger_id,
             callback_id=actions.CONFIG_DISBAND_GROUP_CONFIRM,
             title_text="Disband Group",
-            submit_button_text="Close",
-            close_button_text="Cancel",
+            submit_button_text=None,
+            close_button_text="Close",
             parent_metadata={"group_id": group_id, "blocked": True},
         )
         return
@@ -556,14 +568,24 @@ def handle_disband_group(
                     "_User mappings took auto-matching and manual edits to build. If you re-create "
                     "this group later, those matches have to be established again._"
                 ),
-            )
+            ),
+            orm.ActionsBlock(
+                elements=[
+                    orm.ButtonElement(
+                        label="Disband Group",
+                        action=actions.CONFIG_DISBAND_GROUP_CONFIRM,
+                        value=str(group_id),
+                        style="danger",
+                    ),
+                ]
+            ),
         ]
     ).post_modal(
         client=client,
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_DISBAND_GROUP_CONFIRM,
         title_text="Disband Group",
-        submit_button_text="Disband",
+        submit_button_text=None,
         close_button_text="Cancel",
         parent_metadata={"group_id": group_id},
     )
@@ -576,7 +598,7 @@ def handle_disband_group_confirm(
     context: dict,
 ) -> None:
     """Disband a group after confirmation: purge its syncs, memberships, and mappings."""
-    from handlers._common import _parse_private_metadata
+    from handlers._common import _close_modal_done, _parse_private_metadata
 
     user_id = helpers.get_user_id_from_body(body)
     if not user_id or not helpers.is_user_authorized(client, user_id):
@@ -588,7 +610,7 @@ def handle_disband_group_confirm(
     if not group_id or meta.get("blocked"):
         return
 
-    team_id = helpers.safe_get(body, "view", "team_id")
+    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return
@@ -652,3 +674,4 @@ def handle_disband_group_confirm(
     )
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    _close_modal_done(client, body, f":wastebasket: *{group.name}* has been disbanded. You can close this now.")
