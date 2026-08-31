@@ -71,6 +71,7 @@ Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name we
 - **`ENABLE_DB_RESET`** — boolean (`true`/`1`/`yes`), gated by `PRIMARY_WORKSPACE`; don't treat as team-id string anymore.
 - **`DATABASE_BACKEND`** + **`DATABASE_*`** — use `DATABASE_BACKEND` (`mysql` / `postgresql` / `sqlite`) and `DATABASE_HOST` / `DATABASE_USER` / `DATABASE_PASSWORD` / `DATABASE_SCHEMA` per [docs/INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md).
 - **Fork vs upstream** — `origin` may be your fork; open PRs against the repo you were asked to target (usually **F3Nation-Community/slack-syncbot** `main`). `release.yml` and Dependabot auto-merge run only on that canonical repository. Canonical GitHub bot identity is App **`f3n-community-automation`** (see [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)); forks do not install it.
+- **User scopes on Home** — do not paste Slack API names (`groups:write`) onto **Authorize SyncBot**. Add the scope to `USER_SCOPES` *and* a row (or an existing fold) in `USER_PERMISSION_GROUPS` in [`syncbot/slack_manifest_scopes.py`](syncbot/slack_manifest_scopes.py). The comment on that constant is the labeling recipe: Slack scopes docs → 2–4 ordinary words, fold read/write twins, keep `groups:write` separate. Tests in `tests/test_slack_manifest_scopes.py` require every user scope in exactly one group.
 
 ## More detail
 

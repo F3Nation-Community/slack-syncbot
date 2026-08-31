@@ -6,6 +6,9 @@ This app always uses both **bot** and **user** scopes; ``USER_SCOPES`` is non-em
 match the manifest ``user`` array (order included). When changing scopes, edit this module and
 ``slack-manifest.json`` / ``slack-manifest_test.json`` together, then AWS SAM defaults,
 GCP ``slack_user_scopes``, and env examples.
+
+``USER_PERMISSION_GROUPS`` is the Home tab Authorize list. How to extend it is
+documented on that constant (and in ``AGENTS.md`` / ``docs/AI_AGENTS.md``).
 """
 
 from __future__ import annotations
@@ -52,10 +55,30 @@ USER_SCOPES: tuple[str, ...] = (
     "users:read.email",
 )
 
-# Plain-language groups for the Home tab Authorize section. A group is already
-# allowed only when every scope in it is on the stored user token; otherwise it
-# is still needed. Related read/write pairs are folded together so the list is
-# short enough to scan. Labels are for people, not the Slack API names.
+# Home tab Authorize section: plain-language groups derived from USER_SCOPES.
+#
+# How this list was built (keep new rows consistent):
+# 1. Start from USER_SCOPES / the manifest ``user`` array — never bot scopes.
+#    Those are the app, not the person authorizing.
+# 2. Look up each scope on Slack's scopes reference
+#    (https://docs.slack.dev/reference/scopes) for what it grants on a *user*
+#    token, then write 2–4 ordinary words. Never paste ``channels:history``.
+#    Do not start with "Can" or "Allow". Capitalize "Channel" the way the rest
+#    of the product does.
+# 3. Fold scopes people experience as one capability: history+read of the same
+#    conversation type, files read+write, reactions read+write, users.read plus
+#    users:read.email. Keep ``groups:write`` on its own line ("Manage private
+#    Channels") because inviting SyncBot in is a different promise than viewing
+#    a private Channel. Singleton groups: chat:write, im:write, team:read.
+# 4. A group is already-allowed only when *every* scope in it is on the stored
+#    user token. Incomplete pairs stay under Needed. First-time authorize hides
+#    the already-allowed list (it would be empty); a later scope add shows it
+#    with checkmarks so re-authorize does not look like a redo.
+# 5. ``tests/test_slack_manifest_scopes.py`` requires every USER_SCOPE in
+#    exactly one group and labels with no ``:``. Add a new user scope to an
+#    existing group when it is the twin of something already listed, else a
+#    new group. The Home tab reads this constant; do not duplicate the labels
+#    in the builder.
 USER_PERMISSION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Post messages", ("chat:write",)),
     ("View public Channels", ("channels:history", "channels:read")),

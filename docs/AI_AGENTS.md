@@ -38,6 +38,19 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 - Look for forbidden-file edits; CI should fail them, but reviewers should still watch for secrets.
 - Ensure tests cover behavior changes; spot-check Slack/event flows when touching handlers.
 
+## When changing Slack user scopes
+
+`USER_SCOPES` in [`syncbot/slack_manifest_scopes.py`](../syncbot/slack_manifest_scopes.py) must stay in lockstep with the manifests and `SLACK_USER_SCOPES` defaults (see that module's header). The Home tab **Authorize SyncBot** section does not list those API names. It lists `USER_PERMISSION_GROUPS`.
+
+The 1.3.2 list was built as follows; keep new rows on the same rails:
+
+1. Start from the manifest **user** scopes, not bot scopes.
+2. Look up each scope on [Slack's scopes reference](https://docs.slack.dev/reference/scopes) for the *user-token* meaning, then write a 2–4 word label. Never paste `channels:history`. Do not start with "Can" or "Allow".
+3. Fold scopes people experience as one capability (history+read of the same channel type, files read+write, reactions, users.read + email). Keep `groups:write` as its own line because inviting the bot into a private Channel is not the same as viewing one.
+4. A group counts as already allowed only when every scope in it is on the stored token. First-time authorize hides the already-allowed list; a later scope add shows it with checkmarks so re-authorize does not look like a redo.
+
+`tests/test_slack_manifest_scopes.py` asserts every `USER_SCOPE` sits in exactly one group. The recipe also lives as comments on `USER_PERMISSION_GROUPS`.
+
 ## Fork compatibility
 
 `release.yml`, Dependabot auto-merge, and semantic-release config apply to **F3Nation-Community/slack-syncbot** only. Deploy forks keep `test`/`prod` Environments and must not mint duplicate GitHub Releases. CODEOWNERS handles are organization-specific; replace `@sprocktech-dev` on other orgs. See [INFRA_CONTRACT.md](INFRA_CONTRACT.md) Fork Compatibility Policy.

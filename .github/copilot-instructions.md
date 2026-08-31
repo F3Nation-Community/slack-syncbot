@@ -26,6 +26,10 @@ poetry run pytest -q tests/ infra/aws/tests infra/gcp/tests
 - Title must be a **Conventional Commit** (squash merge).
 - Link issues with `Fixes #n` when fixing bugs.
 
+## User scopes on Home
+
+Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes to `USER_SCOPES` and to `USER_PERMISSION_GROUPS` in `syncbot/slack_manifest_scopes.py` (plain 2–4 word labels; fold read/write twins; keep `groups:write` separate). See that constant's comment and [docs/AI_AGENTS.md](../docs/AI_AGENTS.md).
+
 ## Optional: CI parity check
 
 Repository workflow `.github/workflows/copilot-setup-steps.yml` mirrors installing Poetry deps like CI.
