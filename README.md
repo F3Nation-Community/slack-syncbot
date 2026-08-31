@@ -41,22 +41,16 @@ After you have set up the Slack app, you can follow the steps below to deploy to
 
    PostgreSQL is the same idea (`CREATE DATABASE` / `CREATE USER` / grants). The full recipe is in [DEPLOY.md](docs/DEPLOY.md#create-the-database-and-app-user). For a cloud deploy, the host must be reachable from the public internet.
 
-2. **Clone the repo and set up the env file**
+2. **Clone/download/fork the repo and set up your env file**
 
-   ```bash
-   git clone https://github.com/F3Nation-Community/slack-syncbot.git
-   cd syncbot
-   cp .env.deploy.example .env.deploy.test
-   ```
-
-   Open `.env.deploy.test` in your editor and fill in your Slack secrets (and database settings if you are not using SQLite). The first-time stage is `test`; use `.env.deploy.prod` and `--env prod` for production. For GCP, set `CLOUD_PROVIDER=gcp` and `DATABASE_BACKEND=sqlite` in that file (the example file defaults to AWS MySQL).
+   Clone or download this repo locally, or fork it into your own repo. For non-interactive deploys, copy `.env.deploy.example` to `.env.deploy.test` or `.env.deploy.prod` for your deploy environment. Open this file in your editor of choice and fill in your deploy settings.
 
 3. **Run the deploy script**
 
    - On **macOS / Linux**, run `./deploy.sh`.
    - On **Windows**, run `.\deploy.ps1`.
-   - With no `--env` flag, the script runs interactively and prompts for inputs. For a non-interactive deploy, pass `--env test` or `--env prod` so it loads `.env.deploy.test` or `.env.deploy.prod`.
-   - Add `--setup-github` if you want later deploys from pushes to the `test` or `prod` branches. On AWS, that copies env-file keys that AWS CI actually reads (including `PRIMARY_WORKSPACE` if you set it). On GCP, it only writes Workload Identity Federation repo vars and `GITHUB_DEPLOY_TARGET`. It does not replace the first local AWS bootstrap or GCP `terraform apply`. GCP GitHub Actions never runs `terraform apply`; it only builds and pushes a container image. Infra, secrets, database, and warmth on GCP change with local `./deploy.sh` (`CLOUD_PROVIDER=gcp`). AWS GitHub **does** run `sam deploy`. See [docs/DEPLOY.md](docs/DEPLOY.md).
+   - With no `--env` flag, the script runs interactively and prompts for inputs. Pass `--env test` or `--env prod` so it loads your deploy file and skips interactive prompts.
+   - Add `--setup-github` if you want later deploys from pushes to the `test` or `prod` branches. On AWS, that copies env file keys that AWS CI actually reads (including `PRIMARY_WORKSPACE` if you set it). On GCP, it only writes Workload Identity Federation repo vars and `GITHUB_DEPLOY_TARGET`. It does not replace the first local AWS bootstrap or GCP `terraform apply`. GCP GitHub Actions never runs `terraform apply`, it only builds and pushes a container image. Run the deploy script again for infra, secrets, database, and warmth changes to GCP. If you setup GitHub and use AWS, it **does** run `sam deploy` on push. See [docs/DEPLOY.md](docs/DEPLOY.md).
 
 4. **Update the Slack app and save secrets**
 
