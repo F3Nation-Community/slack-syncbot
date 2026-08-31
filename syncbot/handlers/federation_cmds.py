@@ -145,7 +145,7 @@ def handle_federation_label_submit(
     if not workspace_record:
         return
 
-    public_url = federation.get_public_url()
+    public_url = federation.get_public_url(context)
     if not public_url:
         _logger.warning("federation_no_public_url")
         return

@@ -267,54 +267,32 @@ def ensure_bot_in_conversation(
         ) from exc
 
 
-def authorize_url(team_id: str | None = None) -> str | None:
-    """Return the URL that starts an OAuth install for the current user.
+def authorize_url(team_id: str | None = None, context: dict | None = None) -> str | None:
+    """Return this instance's ``/slack/install`` URL for the current user.
 
-    Prefers this deployment's own ``/slack/install`` so Bolt issues and verifies
-    the ``state`` itself. When no public URL is configured, falls back to Slack's
-    authorize endpoint with a state from the same store Bolt uses. Returns
-    ``None`` when neither is possible, so the Home tab can hide the button rather
-    than render a dead link.
+    Bolt's callback checks a browser cookie that only ``/slack/install`` sets.
+    Linking straight at Slack's authorize URL (even with a ``state`` from the
+    database) comes back as ``invalid_browser`` after Allow. Returns ``None``
+    when there is no public origin to point at, so the Home tab hides the
+    button rather than rendering a dead link.
 
-    *team_id* pre-selects the workspace on Slack's authorize screen, which
-    matters because most people belong to several and the screen otherwise
-    defaults to whichever one their browser used last. Bolt passes the ``team``
-    query parameter through to the same place.
+    The origin comes from :func:`helpers.oauth.get_public_base_url` (this
+    request's Host, or one remembered from an earlier Slack request).
+    *team_id* is passed through as ``team`` so Slack pre-selects this
+    workspace; most people belong to several and the screen otherwise
+    defaults to whichever one the browser used last.
     """
     client_id = os.environ.get(constants.SLACK_CLIENT_ID, "").strip()
     if not client_id:
         return None
 
-    base = os.environ.get(constants.SYNCBOT_PUBLIC_URL, "").strip().rstrip("/")
-    if base:
-        install_url = f"{base}/slack/install"
-        if team_id:
-            install_url += "?" + urllib.parse.urlencode({"team": team_id})
-        return install_url
+    from helpers.oauth import get_public_base_url
 
-    from slack_manifest_scopes import USER_SCOPES
-
-    bot_scopes = os.environ.get(constants.SLACK_BOT_SCOPES, "").strip()
-    user_scopes = os.environ.get(constants.SLACK_USER_SCOPES, "").strip() or ",".join(USER_SCOPES)
-
-    params = {"client_id": client_id, "scope": bot_scopes, "user_scope": user_scopes}
-    state = _issue_oauth_state()
-    if state:
-        params["state"] = state
-    if team_id:
-        params["team"] = team_id
-    return "https://slack.com/oauth/v2/authorize?" + urllib.parse.urlencode(params)
-
-
-def _issue_oauth_state() -> str | None:
-    """Issue an OAuth ``state`` value from Bolt's own state store."""
-    from helpers.oauth import get_oauth_flow
-
-    try:
-        oauth_flow = get_oauth_flow()
-        if oauth_flow is None:
-            return None
-        return oauth_flow.settings.state_store.issue()
-    except Exception as exc:
-        _logger.warning(f"could not issue OAuth state: {exc}")
+    base = get_public_base_url(context)
+    if not base:
         return None
+
+    install_url = f"{base}/slack/install"
+    if team_id:
+        install_url += "?" + urllib.parse.urlencode({"team": team_id})
+    return install_url

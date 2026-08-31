@@ -161,3 +161,65 @@ class TestLambdaHandler:
             pytest.raises(RuntimeError, match="Lambda adapter is unavailable"),
         ):
             app_module.handler({"httpMethod": "POST", "path": "/slack/events", "body": "{}"}, {})
+
+    def test_get_favicon_is_not_treated_as_oauth_install(self):
+        with patch.object(app_module, "SlackRequestHandler") as mock_srh:
+            result = app_module.handler(
+                {"requestContext": {"http": {"method": "GET"}}, "rawPath": "/favicon.ico"},
+                {},
+            )
+        mock_srh.assert_not_called()
+        assert result["statusCode"] == 404
+
+    def test_get_install_is_delegated_to_bolt(self):
+        mock_handle = MagicMock(
+            return_value={
+                "statusCode": 302,
+                "headers": {"location": "https://slack.com/oauth", "set-cookie": "slack-app-oauth-state=abc"},
+                "body": "",
+            }
+        )
+        with patch.object(app_module, "SlackRequestHandler") as mock_srh_class:
+            mock_srh_class.return_value.handle = mock_handle
+            result = app_module.handler(
+                {"requestContext": {"http": {"method": "GET"}}, "rawPath": "/slack/install"},
+                {},
+            )
+        mock_handle.assert_called_once()
+        assert result["statusCode"] == 302
+        assert "set-cookie" not in {k.lower() for k in (result.get("headers") or {})}
+        assert result["cookies"] == ["slack-app-oauth-state=abc"]
+
+    def test_get_install_remembers_public_base_from_host_header(self):
+        mock_handle = MagicMock(return_value={"statusCode": 302, "headers": {}, "body": ""})
+        with patch.object(app_module, "SlackRequestHandler") as mock_srh_class:
+            mock_srh_class.return_value.handle = mock_handle
+            app_module.handler(
+                {
+                    "requestContext": {"http": {"method": "GET"}},
+                    "rawPath": "/slack/install",
+                    "headers": {"host": "fn.lambda-url.us-east-1.on.aws", "x-forwarded-proto": "https"},
+                },
+                {},
+            )
+        from helpers.oauth import get_public_base_url
+
+        assert get_public_base_url() == "https://fn.lambda-url.us-east-1.on.aws"
+
+
+class TestAsFunctionUrlResponse:
+    def test_moves_set_cookie_header_to_cookies_array(self):
+        resp = app_module._as_function_url_response(
+            {
+                "statusCode": 302,
+                "headers": {"Location": "https://slack.com", "Set-Cookie": "slack-app-oauth-state=xyz"},
+                "body": "",
+            }
+        )
+        assert resp["cookies"] == ["slack-app-oauth-state=xyz"]
+        assert "Set-Cookie" not in resp["headers"]
+        assert resp["headers"]["Location"] == "https://slack.com"
+
+    def test_leaves_responses_without_set_cookie_unchanged(self):
+        original = {"statusCode": 200, "headers": {"Content-Type": "text/plain"}, "body": "ok"}
+        assert app_module._as_function_url_response(original) is original

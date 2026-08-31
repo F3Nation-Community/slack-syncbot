@@ -113,6 +113,7 @@ REFRESH_COOLDOWN_SECONDS = 60
 # ---------------------------------------------------------------------------
 
 SYNCBOT_INSTANCE_ID = "SYNCBOT_INSTANCE_ID"
+# Leftover: ignored. Public origin comes from incoming Slack request Host.
 SYNCBOT_PUBLIC_URL = "SYNCBOT_PUBLIC_URL"
 FEDERATION_ENABLED = os.environ.get("SYNCBOT_FEDERATION_ENABLED", "false").lower() == "true"
 

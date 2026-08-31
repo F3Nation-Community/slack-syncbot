@@ -138,7 +138,7 @@ def home_tab_hash_key(team_id: str, user_id: str) -> str:
     return f"home_tab_hash:{team_id}:{user_id}"
 
 
-def _build_authorize_section(blocks: list, team_id: str, user_id: str) -> bool:
+def _build_authorize_section(blocks: list, team_id: str, user_id: str, context: dict | None = None) -> bool:
     """Prepend the Authorize SyncBot section when this user still needs to authorize.
 
     Slack will not let a bot add itself to a private channel; only a member can,
@@ -154,7 +154,7 @@ def _build_authorize_section(blocks: list, team_id: str, user_id: str) -> bool:
     if not helpers.needs_user_authorization(team_id, user_id):
         return False
 
-    url = helpers.authorize_url(team_id)
+    url = helpers.authorize_url(team_id, context=context)
     if not url:
         # Single-workspace/local mode has no OAuth flow, so there is nothing to
         # link to and a button would be a dead end.
@@ -238,7 +238,7 @@ def build_home_tab(
     # a non-admin still needs to authorize SyncBot to act as them. Everything
     # below it remains admin-only, and every configure handler keeps its own
     # authorization check.
-    _build_authorize_section(blocks, workspace_record.team_id, user_id)
+    _build_authorize_section(blocks, workspace_record.team_id, user_id, context)
 
     if not is_admin:
         blocks.append(block_context(":lock: Only Workspace Admins can configure SyncBot."))

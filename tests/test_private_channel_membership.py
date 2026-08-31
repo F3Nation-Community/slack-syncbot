@@ -193,37 +193,53 @@ class TestEnsureBotInConversation:
 
 
 class TestAuthorizeUrl:
-    """Slack's authorize screen defaults to whichever workspace the browser used
-    last, so the team is pinned on both the Bolt install path and the fallback."""
+    """Bolt only accepts OAuth that started at this instance's /slack/install.
+
+    The origin is the Host of incoming Slack requests, not SYNCBOT_PUBLIC_URL.
+    """
 
     def test_install_path_carries_the_team(self, monkeypatch):
-        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://syncbot.example.com/")
         monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
 
-        assert authorize_url("T1") == "https://syncbot.example.com/slack/install?team=T1"
+        url = authorize_url("T1", context={"public_base_url": "https://syncbot.example.com"})
+
+        assert url == "https://syncbot.example.com/slack/install?team=T1"
 
     def test_install_path_without_a_team_is_unchanged(self, monkeypatch):
-        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://syncbot.example.com")
         monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
 
-        assert authorize_url() == "https://syncbot.example.com/slack/install"
+        url = authorize_url(context={"public_base_url": "https://syncbot.example.com"})
 
-    def test_fallback_authorize_endpoint_carries_the_team(self, monkeypatch):
+        assert url == "https://syncbot.example.com/slack/install"
+
+    def test_remembered_host_is_used_without_context(self, monkeypatch):
+        monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
         monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "")
+        from helpers.oauth import remember_public_base
+
+        remember_public_base("https://fn.lambda-url.us-east-1.on.aws")
+
+        assert authorize_url("T1") == "https://fn.lambda-url.us-east-1.on.aws/slack/install?team=T1"
+
+    def test_legacy_env_public_url_is_ignored(self, monkeypatch):
         monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
-
-        with patch("helpers.conversations._issue_oauth_state", return_value="state-123"):
-            url = authorize_url("T1")
-
-        assert url.startswith("https://slack.com/oauth/v2/authorize?")
-        assert "team=T1" in url
-        assert "state=state-123" in url
-
-    def test_no_client_id_means_no_link(self, monkeypatch):
         monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://syncbot.example.com")
-        monkeypatch.setenv("SLACK_CLIENT_ID", "")
+
+        url = authorize_url("T1", context={"public_base_url": "https://from-host.example"})
+
+        assert url == "https://from-host.example/slack/install?team=T1"
+
+    def test_no_origin_means_no_link(self, monkeypatch):
+        monkeypatch.setenv("SLACK_CLIENT_ID", "111.222")
+        monkeypatch.setenv("SYNCBOT_PUBLIC_URL", "https://should-not-use.example")
+        monkeypatch.setattr("helpers.oauth.get_public_base_url", lambda context=None: None)
 
         assert authorize_url("T1") is None
+
+    def test_no_client_id_means_no_link(self, monkeypatch):
+        monkeypatch.setenv("SLACK_CLIENT_ID", "")
+
+        assert authorize_url("T1", context={"public_base_url": "https://syncbot.example.com"}) is None
 
 
 class TestPublishWritesRowsBeforeAddingTheBot:

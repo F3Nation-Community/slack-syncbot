@@ -63,7 +63,13 @@ from helpers.notifications import (
     purge_stale_soft_deletes,
     save_dm_messages_to_group_member,
 )
-from helpers.oauth import get_oauth_flow
+from helpers.oauth import (
+    capture_public_base,
+    get_oauth_flow,
+    get_public_base_url,
+    public_base_from_headers,
+    remember_public_base,
+)
 from helpers.refresh import (
     cooldown_message_block,
     index_of_block_with_action,
@@ -164,6 +170,10 @@ __all__ = [
     "find_synced_channel_in_target",
     "get_mapped_target_user_id",
     "get_oauth_flow",
+    "get_public_base_url",
+    "capture_public_base",
+    "public_base_from_headers",
+    "remember_public_base",
     "normalize_display_name",
     "get_own_bot_id",
     "get_own_bot_user_id",
