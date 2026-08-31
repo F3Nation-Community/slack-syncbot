@@ -212,3 +212,59 @@ class TestSettingsHandlerGate:
             handle_open_settings(body, MagicMock(), MagicMock(), context={})
 
         assert not build_form.called
+
+
+class TestSettingsFormRenders:
+    """Build the real form (no _build_settings_form patch) so a missing orm
+    element or bad field cannot slip through the way it would when the form is
+    always mocked out."""
+
+    def _options(self):
+        from slack import orm
+
+        return [
+            orm.SelectorOption(name="Alpha", value="T_ALPHA"),
+            orm.SelectorOption(name="Bravo", value="T_BRAVO"),
+        ]
+
+    def test_form_serializes_to_valid_slack_blocks(self):
+        from handlers.settings import _build_settings_form
+
+        with (
+            patch("handlers.settings._installed_workspace_options", return_value=self._options()),
+            patch("handlers.settings.helpers.allow_private_channels", return_value=True),
+            patch("handlers.settings.helpers.broadcast_allowed_workspaces", return_value=["T_ALPHA"]),
+            patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
+        ):
+            blocks = _build_settings_form().as_form_field()
+
+        element_types = [b["element"]["type"] for b in blocks if b.get("type") == "input" and b.get("element")]
+        assert "radio_buttons" in element_types
+        assert "multi_static_select" in element_types
+        assert "number_input" in element_types
+
+        multi = next(b["element"] for b in blocks if b.get("element", {}).get("type") == "multi_static_select")
+        assert [o["value"] for o in multi["options"]] == ["T_ALPHA", "T_BRAVO"]
+        assert [o["value"] for o in multi["initial_options"]] == ["T_ALPHA"]
+
+    def test_open_posts_a_modal_for_the_primary_workspace(self):
+        from handlers.settings import handle_open_settings
+
+        body = {"team": {"id": "T_PRIMARY"}, "user": {"id": "U1"}, "trigger_id": "tr"}
+        client = MagicMock()
+
+        with (
+            patch.dict(os.environ, {constants.PRIMARY_WORKSPACE: "T_PRIMARY"}),
+            patch("handlers.settings.helpers.get_user_id_from_body", return_value="U1"),
+            patch("handlers.settings.helpers.is_user_authorized", return_value=True),
+            patch("handlers.settings._installed_workspace_options", return_value=self._options()),
+            patch("handlers.settings.helpers.allow_private_channels", return_value=False),
+            patch("handlers.settings.helpers.broadcast_allowed_workspaces", return_value=[]),
+            patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
+        ):
+            handle_open_settings(body, client, MagicMock(), context={})
+
+        assert client.views_open.called
+        view = client.views_open.call_args.kwargs["view"]
+        assert view["callback_id"] == "settings_submit"
+        assert view["type"] == "modal"
