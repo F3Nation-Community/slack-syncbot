@@ -299,12 +299,8 @@ prompt_instance_id() {
 }
 
 prompt_public_url() {
-  local default="$1"
-  echo "Public HTTPS base URL for this instance (required for federation)." >&2
-  local disp="${default:-(empty)}"
-  local v
-  read -r -p "SYNCBOT_PUBLIC_URL [$disp]: " v
-  echo "${v:-$default}"
+  # Leftover: the app derives the public origin from incoming Slack request Host.
+  echo ""
 }
 
 # Parse owner/repo from a github.com git remote URL (ssh, https, ssh://). Empty if not GitHub.

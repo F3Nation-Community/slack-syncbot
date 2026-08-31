@@ -251,7 +251,7 @@ variable "syncbot_instance_id" {
 variable "syncbot_public_url_override" {
   type        = string
   default     = ""
-  description = "SYNCBOT_PUBLIC_URL (HTTPS base, no path). Set after first deploy if using federation; empty omits the env var."
+  description = "Leftover SYNCBOT_PUBLIC_URL; the app ignores it. Leave empty."
 }
 
 variable "primary_workspace" {
