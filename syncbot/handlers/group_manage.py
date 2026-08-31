@@ -44,6 +44,46 @@ def handle_leave_group(
     if not trigger_id:
         return
 
+    workspace_record = helpers.get_workspace_record(
+        helpers.safe_get(body, "team", "id"),
+        body,
+        context,
+        client,
+    )
+
+    # An owner may not abandon a group that would be left with no owner. Show
+    # the reason in the modal rather than failing on submit.
+    if workspace_record:
+        allowed, reason = helpers.can_workspace_leave(group_id, workspace_record.id)
+        if not allowed:
+            blocked_form = orm.BlockView(
+                blocks=[
+                    orm.SectionBlock(
+                        label=(
+                            f':lock: *You are the only Owner of "{group.name}", so you cannot leave it yet.*\n\n'
+                            "Every group needs at least one Owner. Promote another Workspace to Owner "
+                            "from the group's member list, and then you will be able to leave.\n\n"
+                            "_If you would rather shut the whole group down, and you are the only "
+                            "Workspace publishing a Channel into it, use Disband Group instead._"
+                        ),
+                    ),
+                ]
+            )
+            _logger.info(
+                "leave_group_blocked",
+                extra={"group_id": group_id, "workspace_id": workspace_record.id, "reason": reason},
+            )
+            blocked_form.post_modal(
+                client=client,
+                trigger_id=trigger_id,
+                callback_id=actions.CONFIG_LEAVE_GROUP_CONFIRM,
+                title_text="Leave Group",
+                submit_button_text="Close",
+                close_button_text="Cancel",
+                parent_metadata={"group_id": group_id, "blocked": True},
+            )
+            return
+
     confirm_form = orm.BlockView(
         blocks=[
             orm.SectionBlock(
@@ -98,9 +138,23 @@ def handle_leave_group_confirm(
         _logger.warning("leave_group_confirm: missing group_id in metadata")
         return
 
+    if meta.get("blocked"):
+        # The modal was the sole-owner explanation, not a confirmation.
+        return
+
     team_id = helpers.safe_get(body, "view", "team_id")
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
+        return
+
+    # Re-checked on submit: main_response has no authorization gate, so the
+    # modal-time check alone is bypassable with a forged view submission.
+    allowed, reason = helpers.can_workspace_leave(group_id, workspace_record.id)
+    if not allowed:
+        _logger.warning(
+            "leave_group_denied",
+            extra={"group_id": group_id, "workspace_id": workspace_record.id, "reason": reason},
+        )
         return
 
     groups = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
@@ -209,5 +263,177 @@ def handle_leave_group_confirm(
                 builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
             except Exception as e:
                 _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
+
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+
+
+def _member_id_from_action(body: dict, prefix: str) -> int | None:
+    """Read the trailing member id off a prefix-matched action id."""
+    action_data = helpers.safe_get(body, "actions", 0) or {}
+    raw = action_data.get("value") or (action_data.get("action_id", "") or "").replace(f"{prefix}_", "")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        _logger.warning("invalid_member_id", extra={"action": prefix, "raw_length": len(str(raw))})
+        return None
+
+
+def _notify_group_admins(group_id: int, message: str, logger: Logger) -> None:
+    """DM every active local member's admins and refresh their Home tabs."""
+    for member in helpers.get_active_members(group_id):
+        if not member.workspace_id:
+            continue
+        member_ws = helpers.get_workspace_by_id(member.workspace_id)
+        if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+            continue
+        try:
+            member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
+            helpers.notify_admins_dm(member_client, message)
+            builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
+        except Exception as e:
+            _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
+
+
+def handle_promote_to_owner(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Promote another member of a group to Owner.
+
+    Owner-only. Eligible targets are active members with a ``workspace_id``,
+    which excludes pending invitees and federated members — promoting a
+    federated member would hand group control to a remote instance.
+    """
+    from handlers._common import _get_authorized_workspace
+
+    auth_result = _get_authorized_workspace(body, client, context, "promote_to_owner")
+    if not auth_result:
+        return
+    _, workspace_record = auth_result
+
+    member_id = _member_id_from_action(body, actions.CONFIG_PROMOTE_TO_OWNER)
+    if member_id is None:
+        return
+
+    target = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
+    if not target:
+        return
+
+    if not helpers.is_workspace_owner(target.group_id, workspace_record.id):
+        _logger.warning(
+            "authorization_denied",
+            extra={
+                "action": "promote_to_owner",
+                "group_id": target.group_id,
+                "acting_workspace_id": workspace_record.id,
+            },
+        )
+        return
+
+    eligible_ids = {member.id for member in helpers.get_promotable_members(target.group_id)}
+    if member_id not in eligible_ids:
+        _logger.warning(
+            "promote_to_owner_ineligible",
+            extra={"member_id": member_id, "group_id": target.group_id},
+        )
+        return
+
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == member_id],
+        {schemas.WorkspaceGroupMember.role: helpers.OWNER},
+    )
+
+    _logger.info(
+        "group_owner_promoted",
+        extra={
+            "group_id": target.group_id,
+            "member_id": member_id,
+            "workspace_id": target.workspace_id,
+            "promoted_by_workspace_id": workspace_record.id,
+        },
+    )
+
+    group = DbManager.get_record(schemas.WorkspaceGroup, id=target.group_id)
+    target_ws = helpers.get_workspace_by_id(target.workspace_id) if target.workspace_id else None
+    target_name = helpers.resolve_workspace_name(target_ws) if target_ws else "A Workspace"
+    _notify_group_admins(
+        target.group_id,
+        f":key: *{target_name}* is now an Owner of the group *{group.name if group else 'the group'}*.",
+        logger,
+    )
+
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+
+
+def handle_demote_self(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Give up this workspace's own ownership of a group.
+
+    Self-demotion only, under the same "another owner remains" guard as leaving.
+    Letting owners demote each other invites ownership fights and has no use case
+    yet.
+    """
+    from handlers._common import _get_authorized_workspace
+
+    auth_result = _get_authorized_workspace(body, client, context, "demote_self")
+    if not auth_result:
+        return
+    _, workspace_record = auth_result
+
+    member_id = _member_id_from_action(body, actions.CONFIG_DEMOTE_SELF)
+    if member_id is None:
+        return
+
+    target = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
+    if not target:
+        return
+
+    if target.workspace_id != workspace_record.id:
+        _logger.warning(
+            "authorization_denied",
+            extra={
+                "action": "demote_self",
+                "member_id": member_id,
+                "acting_workspace_id": workspace_record.id,
+            },
+        )
+        return
+
+    owners = helpers.get_active_owners(target.group_id)
+    if not any(owner.id == member_id for owner in owners):
+        return
+    if len(owners) < 2:
+        _logger.info(
+            "demote_self_blocked_sole_owner",
+            extra={"group_id": target.group_id, "workspace_id": workspace_record.id},
+        )
+        return
+
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == member_id],
+        {schemas.WorkspaceGroupMember.role: helpers.MEMBER},
+    )
+
+    _logger.info(
+        "group_owner_demoted",
+        extra={"group_id": target.group_id, "member_id": member_id, "workspace_id": workspace_record.id},
+    )
+
+    group = DbManager.get_record(schemas.WorkspaceGroup, id=target.group_id)
+    ws_name = helpers.resolve_workspace_name(workspace_record)
+    _notify_group_admins(
+        target.group_id,
+        f":information_source: *{ws_name}* is no longer an Owner of the group "
+        f"*{group.name if group else 'the group'}*.",
+        logger,
+    )
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)

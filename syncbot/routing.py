@@ -27,6 +27,8 @@ ACTION_MAPPER = {
     actions.CONFIG_JOIN_GROUP: handlers.handle_join_group,
     actions.CONFIG_INVITE_WORKSPACE: handlers.handle_invite_workspace,
     actions.CONFIG_LEAVE_GROUP: handlers.handle_leave_group,
+    actions.CONFIG_PROMOTE_TO_OWNER: handlers.handle_promote_to_owner,
+    actions.CONFIG_DEMOTE_SELF: handlers.handle_demote_self,
     actions.CONFIG_ACCEPT_GROUP_REQUEST: handlers.handle_accept_group_invite,
     actions.CONFIG_DECLINE_GROUP_REQUEST: handlers.handle_decline_group_invite,
     actions.CONFIG_CANCEL_GROUP_REQUEST: handlers.handle_decline_group_invite,

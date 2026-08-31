@@ -726,8 +726,18 @@ def handle_decline_group_invite(
         _logger.info(f"decline_group_invite: member {member_id} not pending")
         return
 
-    expected_workspace_id = member.invited_by_workspace_id if is_cancel else member.workspace_id
-    if not expected_workspace_id or expected_workspace_id != acting_workspace.id:
+    if is_cancel:
+        # Cancel is an inviter action: the workspace that sent the invite may
+        # cancel it, and so may an owner of the group (co-owners have equal
+        # standing over group membership).
+        authorized = member.invited_by_workspace_id == acting_workspace.id or helpers.is_workspace_owner(
+            member.group_id, acting_workspace.id
+        )
+    else:
+        # Accept and decline are invitee actions: only the invited workspace.
+        authorized = member.workspace_id == acting_workspace.id
+
+    if not authorized:
         _logger.warning(
             "authorization_denied",
             extra={

@@ -97,6 +97,12 @@ CONFIG_INVITE_WORKSPACE_SELECT = "invite_workspace_select"
 CONFIG_DECLINE_GROUP_REQUEST = "decline_group_request"
 """Action: user clicked "Decline" on an incoming group invite DM (prefix-matched with member_id)."""
 
+CONFIG_PROMOTE_TO_OWNER = "promote_to_owner"
+"""Action: an owner promoted another member to owner (prefix-matched with member_id)."""
+
+CONFIG_DEMOTE_SELF = "demote_self"
+"""Action: an owner gave up its own ownership (prefix-matched with member_id). Self-demotion only."""
+
 # ---------------------------------------------------------------------------
 # Channel Sync actions
 # ---------------------------------------------------------------------------
