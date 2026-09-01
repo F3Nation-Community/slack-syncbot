@@ -13,9 +13,9 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 | `POST` | `/api/federation/message` | Receive a forwarded message from a connected instance; resolves `@` mentions and `#` channel references locally before posting |
 | `POST` | `/api/federation/message/edit` | Receive a message edit from a connected instance; applies the same local mention and channel resolution before updating |
 | `POST` | `/api/federation/message/delete` | Receive a message deletion from a connected instance |
-| `POST` | `/api/federation/message/react` | Receive a reaction from a connected instance |
+| `POST` | `/api/federation/message/react` | Receive a reaction from a connected instance; applies the destination channel's reaction type (native, Hybrid thread, or skip) |
 | `POST` | `/api/federation/users` | Exchange user directory with a connected instance |
-| `GET` | `/api/federation/ping` | Health check for connected instances |
+| `GET` | `/api/federation/ping` | Health check for connected instances (still answers when federation is off in Settings) |
 
 ## Subscribed Slack Events
 
@@ -25,7 +25,7 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 | `app_uninstalled` | `handle_app_uninstalled` | Workspace uninstall: Bolt `InstallationStore.delete_all` (bot + every user install row), then pause groups and channel syncs. |
 | `member_joined_channel` | `handle_member_joined_channel` | Detects when SyncBot is added to an unconfigured channel; posts a message and leaves. |
 | `message.channels` / `message.groups` | `respond_to_message_event` | Fires on new messages, edits, deletes, and file shares in public/private channels. Dispatches to sub-handlers for new posts, thread replies, edits, deletes, and reactions. |
-| `reaction_added` / `reaction_removed` | `_handle_reaction` | Syncs emoji reactions to the corresponding message in all target channels. |
+| `reaction_added` / `reaction_removed` | `_handle_reaction` | Syncs emoji reactions to linked channels; skips user-token echo events SyncBot applied on the destination. |
 | `team_join` | `handle_team_join` | Fires when a new user joins a connected workspace. Adds the user to the directory and re-checks unmatched user mappings. |
 | `tokens_revoked` | `handle_tokens_revoked` | User-token revoke: Bolt `delete_installation` for that person, then republish Home. A `tokens.bot` array is treated as uninstall only when the stored bot token fails `auth.test`. |
 | `user_profile_changed` | `handle_user_profile_changed` | Detects display name or email changes and updates the user directory and mappings. |

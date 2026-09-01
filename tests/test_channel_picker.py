@@ -27,7 +27,7 @@ def client():
 class TestPickerBlock:
     def test_uses_native_conversations_select(self):
         with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False):
-            block = _channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT)
+            block = _channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT, team_id="T1")
 
         rendered = block.as_form_field()
         assert rendered["element"]["type"] == "conversations_select"
@@ -35,20 +35,20 @@ class TestPickerBlock:
 
     def test_private_channels_included_when_policy_allows(self):
         with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True):
-            block = _channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT)
+            block = _channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT, team_id="T1")
 
         include = block.as_form_field()["element"]["filter"]["include"]
         assert "private" in include
 
     def test_help_text_warns_when_private_channels_allowed(self):
         with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True):
-            assert "Private Channels are currently allowed" in _channel_picker_help_text()
+            assert "Private Channels are currently allowed" in _channel_picker_help_text(team_id="T1")
 
         with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False):
-            assert "Only public Channels can be synced" in _channel_picker_help_text()
+            assert "Only public Channels can be synced" in _channel_picker_help_text(team_id="T1")
 
         with patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False):
-            assert "receive the published Channel" in _channel_picker_help_text(subscribe=True)
+            assert "receive the published Channel" in _channel_picker_help_text(team_id="T1", subscribe=True)
 
 
 class TestValidateChannelSelection:

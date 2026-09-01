@@ -623,33 +623,54 @@ def _handle_message_delete(
 
 
 def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[tuple]) -> None:
-    """Post reaction notices for *reacted_records* (called after a successful claim)."""
+    """Apply reaction add/remove to linked channels that receive from the source."""
+    from helpers.reactions import (
+        apply_reaction_to_target,
+        channel_sends_reactions,
+        find_source_sync_channel,
+    )
+
     event = body.get("event", {})
     reaction = event.get("reaction")
     user_id = event.get("user")
     item = event.get("item", {})
     channel_id = item.get("channel")
+    event_type = event.get("type")
+    action = "add" if event_type == "reaction_added" else "remove"
 
-    fed_ws = helpers.get_federated_workspace_for_sync(reacted_records[0][1].sync_id)
+    source_sync_channel = find_source_sync_channel(reacted_records, channel_id)
+    if not source_sync_channel or not channel_sends_reactions(source_sync_channel):
+        return
+
+    sync_id = source_sync_channel.sync_id
+
+    fed_ws = helpers.get_federated_workspace_for_sync(sync_id) if sync_id else None
     source_workspace_id = _find_source_workspace_id(reacted_records, channel_id, ws_index=2)
     user_name, user_profile_url = helpers.get_user_info(client, user_id) if user_id else (None, None)
     source_ws = helpers.get_workspace_by_id(source_workspace_id) if source_workspace_id else None
     ws_name = helpers.resolve_workspace_name(source_ws) if source_ws else None
     posted_from = f"({ws_name})" if ws_name else "(via SyncBot)"
 
-    post_uuid = uuid.uuid4().hex
     post_list: list[schemas.PostMeta] = []
-
     synced = 0
     failed = 0
+    name_probe_cache: dict[tuple[str, str], bool] = {}
+
     for post_meta, sync_channel, workspace in reacted_records:
+        if sync_channel.channel_id == channel_id:
+            continue
+
         try:
             if fed_ws and workspace.id != source_workspace_id:
+                from helpers.reactions import should_sync_reaction_between
+
+                if not should_sync_reaction_between(source_sync_channel, sync_channel):
+                    continue
                 payload = federation.build_reaction_payload(
                     post_id=str(post_meta.post_id),
                     channel_id=sync_channel.channel_id,
                     reaction=reaction,
-                    action="add",
+                    action=action,
                     user_name=user_name or user_id or "Someone",
                     user_avatar_url=user_profile_url,
                     workspace_name=ws_name,
@@ -657,56 +678,43 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                     user_id=user_id,
                 )
                 federation.push_reaction(fed_ws, payload)
-            else:
-                target_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
-                target_msg_ts = f"{post_meta.ts:.6f}"
+                synced += 1
+                continue
 
-                target_display_name, target_icon_url, author_is_mapped = (
-                    helpers.get_display_name_and_icon_for_synced_message(
-                        user_id or "",
-                        source_workspace_id or 0,
-                        user_name,
-                        user_profile_url,
-                        target_client,
-                        workspace.id,
-                    )
+            target_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
+            target_display_name, target_icon_url, author_is_mapped = (
+                helpers.get_display_name_and_icon_for_synced_message(
+                    user_id or "",
+                    source_workspace_id or 0,
+                    user_name,
+                    user_profile_url,
+                    target_client,
+                    workspace.id,
                 )
-                display_name = target_display_name or user_name or user_id or "Someone"
-                reaction_username_suffix = "" if author_is_mapped else posted_from
+            )
+            display_name = target_display_name or user_name or user_id or "Someone"
 
-                permalink = None
-                try:
-                    plink_resp = target_client.chat_getPermalink(
-                        channel=sync_channel.channel_id,
-                        message_ts=target_msg_ts,
-                    )
-                    permalink = helpers.safe_get(plink_resp, "permalink")
-                except Exception as exc:
-                    # Permalink lookup is optional; if it fails we still post a
-                    # reaction notice without the deep-link.
-                    _logger.debug(
-                        "reaction_permalink_lookup_failed",
-                        extra={"channel_id": sync_channel.channel_id, "message_ts": target_msg_ts, "error": str(exc)},
-                    )
-
-                if permalink:
-                    msg_text = f"reacted with :{reaction}: to <{permalink}|this message>"
-                else:
-                    msg_text = f"reacted with :{reaction}:"
-
-                resp = target_client.chat_postMessage(
-                    channel=sync_channel.channel_id,
-                    text=msg_text,
-                    username=f"{display_name} {reaction_username_suffix}".strip(),
-                    icon_url=target_icon_url or user_profile_url,
-                    thread_ts=target_msg_ts,
-                    unfurl_links=False,
-                    unfurl_media=False,
-                )
-                ts = helpers.safe_get(resp, "ts")
-                if ts:
-                    post_list.append(schemas.PostMeta(post_id=post_uuid, sync_channel_id=sync_channel.id, ts=float(ts)))
-            synced += 1
+            result, notice = apply_reaction_to_target(
+                action=action,
+                reaction=reaction,
+                source_user_id=user_id,
+                source_workspace_id=source_workspace_id,
+                source_sync_channel=source_sync_channel,
+                target_post_meta=post_meta,
+                target_sync_channel=sync_channel,
+                target_workspace=workspace,
+                display_name=display_name,
+                icon_url=target_icon_url or user_profile_url,
+                posted_from=posted_from,
+                author_is_mapped=author_is_mapped,
+                name_probe_cache=name_probe_cache,
+            )
+            if notice:
+                post_list.append(notice)
+            if result in ("direct", "thread"):
+                synced += 1
+            elif result == "failed":
+                failed += 1
         except Exception as exc:
             failed += 1
             _logger.error(f"Failed to sync reaction to channel {sync_channel.channel_id}: {exc}")
@@ -714,9 +722,9 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
     if post_list:
         DbManager.create_records(post_list)
 
-    emit_metric("messages_synced", value=synced, sync_type="reaction_add")
+    emit_metric("messages_synced", value=synced, sync_type=f"reaction_{action}")
     if failed:
-        emit_metric("sync_failures", value=failed, sync_type="reaction_add")
+        emit_metric("sync_failures", value=failed, sync_type=f"reaction_{action}")
 
 
 def _handle_reaction(
@@ -725,14 +733,7 @@ def _handle_reaction(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Sync a reaction to all linked channels as a threaded message.
-
-    Posts a short message (e.g. "reacted with :thumbsup: to <link>") using
-    the same Display Name (Workspace Name) impersonation used for synced
-    messages.  The message is always threaded under the top-level synced
-    message, with a permalink to the exact message that was reacted to.
-    Only ``reaction_added`` events are synced.
-    """
+    """Sync reaction add/remove to linked channels that receive them."""
     event = body.get("event", {})
     reaction = event.get("reaction")
     user_id = event.get("user")
@@ -742,7 +743,7 @@ def _handle_reaction(
     msg_ts = item.get("ts")
     event_type = event.get("type")
 
-    if event_type != "reaction_added":
+    if event_type not in ("reaction_added", "reaction_removed"):
         return
 
     if not reaction or not channel_id or not msg_ts or item_type != "message":
@@ -760,7 +761,15 @@ def _handle_reaction(
         )
         return
 
+    team_id = helpers.safe_get(body, "team_id") or helpers.safe_get(body, "team", "id")
+
     def _sync_reaction() -> None:
+        from helpers.user_action_echo import reaction_echo_fingerprint, take_user_action_echo
+
+        if team_id and user_id and reaction and channel_id and msg_ts:
+            fingerprint = reaction_echo_fingerprint(channel_id, msg_ts, reaction)
+            if take_user_action_echo(str(team_id), user_id, event_type, fingerprint):
+                return
         _sync_reaction_records(body, client, reacted_records)
 
     run_claimed(body, _sync_reaction)

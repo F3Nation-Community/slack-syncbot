@@ -37,6 +37,9 @@ Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes 
 - Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`.
 - Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`); never `import helpers`.
 - `DbManager.get_record` uses each model's `get_id()` (e.g. `Workspace` → Slack `team_id`), not always the integer PK. Only positional or `id=`.
+- Federation on/off is `helpers.federation_enabled()` (Settings DB), not env. Leftover `SYNCBOT_FEDERATION_ENABLED` is warned and ignored after a one-time upgrade seed. Leftover `REQUIRE_ADMIN` is warned and ignored.
+- `is_workspace_admin` (Slack admin/owner) opens Settings, Backup, Reset, External Connections. `is_workspace_manager` (admin or extra list) configures groups and syncs.
+- Direct reactions use `get_user_token(dest_team_id, mapped_user_id)`, never the event team. Never put `xoxp` on federation payloads. User-token echo: `remember_user_action` / `take_user_action_echo` inside `run_claimed` (`helpers/user_action_echo.py`). Hybrid dest-name probe only before a thread notice.
 
 ## Optional: CI parity check
 

@@ -176,17 +176,28 @@ def _build_inline_channel_sync(
                 value=str(sync.id),
                 style="danger",
             )
-        blocks.append(orm.ActionsBlock(elements=[toggle_btn, teardown_btn]))
+        edit_btn = orm.ButtonElement(
+            label="Edit",
+            action=f"{actions.CONFIG_EDIT_SYNC}_c_{my_ch.id}",
+            value=f"c:{my_ch.id}",
+        )
+        blocks.append(orm.ActionsBlock(elements=[edit_btn, toggle_btn, teardown_btn]))
 
     for sync, my_ch in waiting_syncs:
         if sync.publisher_workspace_id == workspace_record.id:
             blocks.append(section(f":outbox_tray: <#{my_ch.channel_id}> — _waiting for subscribers_"))
+            edit_btn = orm.ButtonElement(
+                label="Edit",
+                action=f"{actions.CONFIG_EDIT_SYNC}_c_{my_ch.id}",
+                value=f"c:{my_ch.id}",
+            )
             teardown_btn = orm.ButtonElement(
                 label="Unpublish",
                 action=f"{actions.CONFIG_UNPUBLISH_CHANNEL}_{sync.id}",
                 value=str(sync.id),
                 style="danger",
             )
+            blocks.append(orm.ActionsBlock(elements=[edit_btn, teardown_btn]))
         else:
             # The publisher has left, so there is nothing to sync with anymore.
             # Let the stranded member remove their channel; stopping the last one
@@ -198,7 +209,7 @@ def _build_inline_channel_sync(
                 value=str(sync.id),
                 style="danger",
             )
-        blocks.append(orm.ActionsBlock(elements=[teardown_btn]))
+            blocks.append(orm.ActionsBlock(elements=[teardown_btn]))
 
     for sync, other_chs in available_syncs:
         publisher_ws = helpers.get_workspace_by_id(sync.publisher_workspace_id, context=context)
@@ -216,14 +227,20 @@ def _build_inline_channel_sync(
 
         blocks.append(section(":inbox_tray: Published Channel Available"))
         blocks.append(block_context(f"Type: `{mode_tag}`\nPublisher: `{publisher_name}`\nChannel: `{channel_label}`"))
-        blocks.append(
-            orm.ActionsBlock(
-                elements=[
-                    orm.ButtonElement(
-                        label="Subscribe",
-                        action=f"{actions.CONFIG_SUBSCRIBE_CHANNEL}_{sync.id}",
-                        value=str(sync.id),
-                    ),
-                ]
+        row_buttons: list[orm.ButtonElement] = []
+        if sync.group_id and helpers.is_workspace_owner(sync.group_id, workspace_record.id):
+            row_buttons.append(
+                orm.ButtonElement(
+                    label="Edit",
+                    action=f"{actions.CONFIG_EDIT_SYNC}_s_{sync.id}",
+                    value=f"s:{sync.id}",
+                )
+            )
+        row_buttons.append(
+            orm.ButtonElement(
+                label="Subscribe",
+                action=f"{actions.CONFIG_SUBSCRIBE_CHANNEL}_{sync.id}",
+                value=str(sync.id),
             )
         )
+        blocks.append(orm.ActionsBlock(elements=row_buttons))

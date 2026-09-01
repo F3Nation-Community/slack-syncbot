@@ -87,7 +87,7 @@ class TestLeaveGroupConfirmModal:
         workspace = SimpleNamespace(id=2, team_id="T1", bot_token=None, deleted_at=None)
         with (
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
-            patch("handlers.group_manage.helpers.is_user_authorized", return_value=True),
+            patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
             patch("handlers.group_manage.DbManager.find_records", return_value=[group]),
             patch("handlers.group_manage.helpers.get_workspace_record", return_value=workspace),
             patch("handlers.group_manage.helpers.can_workspace_leave", return_value=(True, "")),
@@ -120,7 +120,7 @@ class TestSoleOwnerBlockedModal:
         workspace = SimpleNamespace(id=2, team_id="T1", bot_token=None, deleted_at=None)
         with (
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
-            patch("handlers.group_manage.helpers.is_user_authorized", return_value=True),
+            patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
             patch("handlers.group_manage.DbManager.find_records", return_value=[group]),
             patch("handlers.group_manage.helpers.get_workspace_record", return_value=workspace),
             patch("handlers.group_manage.helpers.can_workspace_leave", return_value=(False, "sole_owner")),

@@ -14,8 +14,8 @@ Ownership is lost only by choice. Uninstall, token revocation, and every other
 offline event leave it intact — only a voluntary departure or the permanent
 retention purge can move it.
 
-These are workspace-level gates that layer *on top of* the per-user
-``helpers.is_user_authorized`` check. Both must pass; neither replaces the other.
+These are workspace-level gates that layer *on top of*
+``helpers.is_workspace_manager``. Both must pass; neither replaces the other.
 
 Imports submodules only, per the import-direction constraint in
 ``helpers/sync_cleanup.py``.

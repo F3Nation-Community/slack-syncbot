@@ -144,14 +144,11 @@ def _get_authorized_workspace(
     the workspace cannot be resolved.
     """
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    team_id = _extract_team_id(body)
+    if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": action_name})
         return None
 
-    team_id = _extract_team_id(body)
-    if not team_id:
-        _logger.warning("workspace_resolution_failed", extra={"user_id": user_id, "action": action_name})
-        return None
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return None

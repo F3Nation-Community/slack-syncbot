@@ -34,8 +34,8 @@ from slack_sdk.errors import SlackApiError
 
 import constants
 from helpers.core import safe_get
-from helpers.settings import allow_private_channels
 from helpers.slack_api import get_own_bot_user_id
+from helpers.workspace_settings import allow_private_channels
 from slack_manifest_scopes import USER_PERMISSION_GROUPS
 
 _logger = logging.getLogger(__name__)
@@ -228,7 +228,7 @@ def _is_user_not_found(exc: SlackApiError) -> bool:
     return any(isinstance(item, dict) and item.get("error") == "user_not_found" for item in nested)
 
 
-def _channel_visibility(client: WebClient, channel_id: str) -> tuple[bool, bool]:
+def _channel_visibility(client: WebClient, channel_id: str, *, team_id: str | None) -> tuple[bool, bool]:
     """Return ``(is_private, is_member)`` as seen by the bot token.
 
     A private channel the bot has never been in is invisible to the bot token, so
@@ -241,13 +241,13 @@ def _channel_visibility(client: WebClient, channel_id: str) -> tuple[bool, bool]
         response = client.conversations_info(channel=channel_id)
     except SlackApiError as exc:
         error = _slack_error(exc)
-        if error in _NOT_VISIBLE_ERRORS and allow_private_channels():
+        if error in _NOT_VISIBLE_ERRORS and allow_private_channels(team_id):
             return True, False
         raise ConversationAccessError(
             f"SyncBot could not read that Channel (`{error or 'unknown error'}`). Pick a Channel it can reach."
         ) from exc
     except Exception as exc:
-        if allow_private_channels():
+        if allow_private_channels(team_id):
             return True, False
         raise ConversationAccessError(
             "SyncBot could not read that Channel. Pick a public Channel it can join."
@@ -303,7 +303,7 @@ def ensure_bot_in_conversation(
     if not channel_id:
         raise ConversationAccessError("No Channel was selected.")
 
-    is_private, is_member = _channel_visibility(client, channel_id)
+    is_private, is_member = _channel_visibility(client, channel_id, team_id=team_id)
     if is_member:
         return
 
@@ -319,7 +319,7 @@ def ensure_bot_in_conversation(
             ) from exc
         return
 
-    if not allow_private_channels():
+    if not allow_private_channels(team_id):
         raise ConversationAccessError("Private Channels cannot be synced. Pick a public Channel.")
 
     invite_user_id = _bot_member_id(client, bot_user_id=bot_user_id, context=context)

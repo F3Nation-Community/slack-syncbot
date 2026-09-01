@@ -33,8 +33,10 @@ from helpers.core import (
     get_user_id_from_body,
     is_backup_visible_for_workspace,
     is_db_reset_visible_for_workspace,
+    is_primary_workspace,
     is_settings_visible_for_workspace,
-    is_user_authorized,
+    is_workspace_admin,
+    is_workspace_manager,
     safe_get,
 )
 from helpers.encryption import decrypt_bot_token, encrypt_bot_token
@@ -81,8 +83,8 @@ from helpers.refresh import (
     refresh_cooldown_check,
 )
 from helpers.settings import (
-    allow_private_channels,
     broadcast_allowed_workspaces,
+    federation_enabled,
     get_bool_setting,
     get_int_setting,
     get_list_setting,
@@ -131,6 +133,12 @@ from helpers.workspace import (
     lookup_channel_meta,
     resolve_channel_name,
     resolve_workspace_name,
+)
+from helpers.workspace_settings import (
+    allow_private_channels,
+    extra_manager_user_ids,
+    set_extra_manager_user_ids,
+    set_workspace_setting,
 )
 
 __all__ = [
@@ -196,7 +204,9 @@ __all__ = [
     "is_backup_visible_for_workspace",
     "is_settings_visible_for_workspace",
     "is_db_reset_visible_for_workspace",
-    "is_user_authorized",
+    "is_primary_workspace",
+    "is_workspace_admin",
+    "is_workspace_manager",
     "notify_admins_dm",
     "notify_admins_dm_blocks",
     "notify_synced_channels",
@@ -204,6 +214,10 @@ __all__ = [
     "MEMBER",
     "OWNER",
     "allow_private_channels",
+    "extra_manager_user_ids",
+    "set_extra_manager_user_ids",
+    "set_workspace_setting",
+    "federation_enabled",
     "broadcast_allowed_workspaces",
     "can_disband",
     "can_workspace_leave",

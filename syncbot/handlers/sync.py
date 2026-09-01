@@ -10,7 +10,7 @@ import builders
 import constants
 import helpers
 from db import DbManager, schemas
-from slack import actions
+from slack import actions, orm
 
 _logger = logging.getLogger(__name__)
 
@@ -71,8 +71,16 @@ def handle_refresh_home(
     if not workspace_record:
         return
 
-    is_admin = helpers.is_user_authorized(client, user_id)
-    current_hash = builders._home_tab_content_hash(workspace_record, user_id, is_admin=is_admin)
+    is_admin = helpers.is_workspace_admin(client, user_id)
+    is_manager = helpers.is_workspace_manager(client, user_id, team_id)
+    extra_manager_ids = tuple(sorted(helpers.extra_manager_user_ids(team_id)))
+    current_hash = builders._home_tab_content_hash(
+        workspace_record,
+        user_id,
+        is_manager=is_manager,
+        is_admin=is_admin,
+        extra_manager_ids=extra_manager_ids,
+    )
     hash_key = builders.home_tab_hash_key(team_id, user_id)
     blocks_key = f"home_tab_blocks:{team_id}:{user_id}"
     refresh_at_key = f"refresh_at:home:{team_id}:{user_id}"
@@ -92,9 +100,9 @@ def handle_refresh_home(
         helpers._cache_set(refresh_at_key, time.monotonic(), ttl=cooldown_sec * 2)
         return
 
-    # Full refresh. Workspace-name sweeps are admin-only: non-admins do not see
+    # Full refresh. Workspace-name sweeps are manager-only: members do not see
     # group member names, and Refresh is now on Home for everyone.
-    if is_admin:
+    if is_manager:
         stale_keys = [k for k in helpers._CACHE if k.startswith("ws_name_refresh:")]
         for k in stale_keys:
             helpers._CACHE.pop(k, None)
@@ -196,16 +204,17 @@ def handle_db_reset(
         return
 
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    if not user_id or not helpers.is_workspace_admin(client, user_id):
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
     if not trigger_id:
         return
 
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "title": {"type": "plain_text", "text": "Yikes! Reset Database?"},
             "close": {"type": "plain_text", "text": "Cancel"},
@@ -236,6 +245,7 @@ def handle_db_reset(
                 },
             ],
         },
+        body=body,
     )
 
 
@@ -254,7 +264,7 @@ def handle_db_reset_proceed(
         return
 
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    if not user_id or not helpers.is_workspace_admin(client, user_id):
         return
 
     # Update the modal to a "done" state so the user can close it (Slack only allows

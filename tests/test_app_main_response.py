@@ -77,6 +77,25 @@ class TestViewAck:
             app_module.view_ack(_body_view_submit("unknown_callback"), MagicMock(), MagicMock(), ack, context)
         ack.assert_called_once_with()
 
+    def test_ack_handler_exception_still_acks(self):
+        ack = MagicMock()
+        context: dict = {}
+
+        def ack_handler(b, c, ctx):
+            raise RuntimeError("unknown column")
+
+        custom = {actions.CONFIG_PUBLISH_CHANNEL_SUBMIT: ack_handler}
+        with patch.object(app_module, "VIEW_ACK_MAPPER", custom):
+            app_module.view_ack(
+                _body_view_submit(actions.CONFIG_PUBLISH_CHANNEL_SUBMIT),
+                MagicMock(),
+                MagicMock(),
+                ack,
+                context,
+            )
+
+        ack.assert_called_once_with()
+
 
 class TestMainResponseLocalDevViewSubmission:
     """With LOCAL_DEVELOPMENT, main_response runs ack + work in one call."""

@@ -60,18 +60,35 @@ ENABLE_DB_RESET = "ENABLE_DB_RESET"
 
 # Setting keys as stored in the instance_settings table.
 SETTING_ALLOW_PRIVATE_CHANNELS = "allow_private_channels"
+SETTING_EXTRA_MANAGER_USER_IDS = "extra_manager_user_ids"
 SETTING_BROADCAST_ALLOWED_WORKSPACES = "broadcast_allowed_workspaces"
 SETTING_SOFT_DELETE_RETENTION_DAYS = "soft_delete_retention_days"
+SETTING_FEDERATION_ENABLED = "federation_enabled"
 
 # Names that used to be env vars. Kept so leftover deploy config can be warned
 # about, not so they are read.
 ALLOW_PRIVATE_CHANNELS = "ALLOW_PRIVATE_CHANNELS"
 BROADCAST_ALLOWED_WORKSPACES = "BROADCAST_ALLOWED_WORKSPACES"
 SOFT_DELETE_RETENTION_DAYS_VAR = "SOFT_DELETE_RETENTION_DAYS"
+SYNCBOT_FEDERATION_ENABLED = "SYNCBOT_FEDERATION_ENABLED"
 
 DEFAULT_ALLOW_PRIVATE_CHANNELS = False
 DEFAULT_BROADCAST_ALLOWED_WORKSPACES: list[str] = []
 DEFAULT_SOFT_DELETE_RETENTION_DAYS = 30
+DEFAULT_FEDERATION_ENABLED = False
+
+# Per-channel reaction sync (sync_channels.reaction_direction / reaction_style)
+REACTION_DIRECTION_BOTH = "both"
+REACTION_DIRECTION_SEND = "send"
+REACTION_DIRECTION_RECEIVE = "receive"
+REACTION_DIRECTION_OFF = "off"
+
+REACTION_STYLE_DIRECT_ONLY = "direct_only"
+REACTION_STYLE_THREADED_AND_DIRECT = "threaded_and_direct"
+
+DEFAULT_REACTION_DIRECTION = REACTION_DIRECTION_BOTH
+DEFAULT_REACTION_STYLE_EXISTING = REACTION_STYLE_THREADED_AND_DIRECT
+DEFAULT_REACTION_STYLE_NEW_RECEIVE = REACTION_STYLE_DIRECT_ONLY
 
 # ---------------------------------------------------------------------------
 # Derived runtime flags / computed values
@@ -115,7 +132,6 @@ REFRESH_COOLDOWN_SECONDS = 60
 SYNCBOT_INSTANCE_ID = "SYNCBOT_INSTANCE_ID"
 # Leftover: ignored. Public origin comes from incoming Slack request Host.
 SYNCBOT_PUBLIC_URL = "SYNCBOT_PUBLIC_URL"
-FEDERATION_ENABLED = os.environ.get("SYNCBOT_FEDERATION_ENABLED", "false").lower() == "true"
 
 
 # ---------------------------------------------------------------------------

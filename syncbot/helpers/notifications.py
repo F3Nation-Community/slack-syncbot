@@ -61,21 +61,47 @@ def get_admin_ids(
     return admin_ids
 
 
+def get_manager_ids(
+    client: WebClient,
+    *,
+    team_id: str | None = None,
+    context: dict | None = None,
+) -> list[str]:
+    """Return Slack admin/owner IDs plus extra managers for *team_id*."""
+    from helpers.workspace_settings import extra_manager_user_ids
+
+    admin_ids = get_admin_ids(client, team_id=team_id, context=context)
+    if not team_id:
+        return admin_ids
+    merged = sorted(set(admin_ids) | set(extra_manager_user_ids(team_id)))
+    return merged
+
+
 def notify_admins_dm(
     client: WebClient,
     message: str,
     exclude_user_ids: set[str] | None = None,
     blocks: list[dict] | None = None,
+    *,
+    include_managers: bool = True,
+    team_id: str | None = None,
+    context: dict | None = None,
 ) -> int:
-    """Send a DM to all workspace admins/owners.  Best-effort.
+    """Send a DM to workspace admins/owners and extra managers.
 
-    Returns the number of admins successfully notified.
+    Extra managers are included because these DMs are operational (sync failures,
+    group changes). Settings / Backup / Reset do not use this helper.
     """
     notified = 0
     kwargs: dict = {"text": message}
     if blocks:
         kwargs["blocks"] = blocks
-    for user_id in get_admin_ids(client):
+    user_ids = (
+        get_manager_ids(client, team_id=team_id, context=context)
+        if include_managers
+        else get_admin_ids(client, team_id=team_id, context=context)
+    )
+    for user_id in user_ids:
         if exclude_user_ids and user_id in exclude_user_ids:
             continue
         try:
@@ -94,14 +120,13 @@ def notify_admins_dm_blocks(
     client: WebClient,
     text: str,
     blocks: list[dict],
+    *,
+    team_id: str | None = None,
+    context: dict | None = None,
 ) -> list[dict]:
-    """Send a Block Kit DM to all workspace admins/owners.
-
-    Returns a list of ``{"channel": ..., "ts": ...}`` dicts for each
-    successfully sent DM (used for later message updates).
-    """
+    """Send a Block Kit DM to workspace admins/owners and extra managers."""
     sent: list[dict] = []
-    for user_id in get_admin_ids(client):
+    for user_id in get_manager_ids(client, team_id=team_id, context=context):
         try:
             dm = client.conversations_open(users=[user_id])
             channel_id = safe_get(dm, "channel", "id")
@@ -214,6 +239,7 @@ def purge_stale_soft_deletes() -> int:
                         member_client,
                         f":wastebasket: *{ws_name}* has been permanently removed "
                         f"after {retention_days} days of inactivity.",
+                        team_id=member_ws.team_id,
                     )
                 except Exception as e:
                     _logger.warning(f"purge: failed to notify member {member.workspace_id}: {e}")

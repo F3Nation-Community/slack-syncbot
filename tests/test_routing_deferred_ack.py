@@ -14,9 +14,18 @@ def test_publish_mode_is_ack_only_not_in_work_mapper():
     assert actions.CONFIG_PUBLISH_MODE_SUBMIT not in VIEW_MAPPER
 
 
+def test_subscribe_direction_is_ack_only_not_in_work_mapper():
+    assert actions.CONFIG_SUBSCRIBE_DIRECTION_SUBMIT in VIEW_ACK_MAPPER
+    assert actions.CONFIG_SUBSCRIBE_DIRECTION_SUBMIT not in VIEW_MAPPER
+
+
 def test_deferred_work_views_have_work_handlers():
+    ack_only = {
+        actions.CONFIG_PUBLISH_MODE_SUBMIT,
+        actions.CONFIG_SUBSCRIBE_DIRECTION_SUBMIT,
+    }
     for callback_id in DEFERRED_ACK_VIEW_CALLBACK_IDS:
-        if callback_id == actions.CONFIG_PUBLISH_MODE_SUBMIT:
+        if callback_id in ack_only:
             continue
         assert callback_id in VIEW_MAPPER, f"missing VIEW_MAPPER work entry for {callback_id!r}"
 

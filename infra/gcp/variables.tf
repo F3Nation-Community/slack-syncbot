@@ -228,7 +228,7 @@ variable "database_port" {
 variable "require_admin" {
   type        = string
   default     = "true"
-  description = "REQUIRE_ADMIN: true or false."
+  description = "Leftover stack compat — REQUIRE_ADMIN (app ignores; Slack admins and extra managers are chosen in Settings)."
 
   validation {
     condition     = contains(["true", "false"], var.require_admin)
@@ -239,7 +239,7 @@ variable "require_admin" {
 variable "syncbot_federation_enabled" {
   type        = bool
   default     = false
-  description = "SYNCBOT_FEDERATION_ENABLED (maps to string true/false in env)."
+  description = "Leftover stack compat — SYNCBOT_FEDERATION_ENABLED (app ignores; enable in Settings)."
 }
 
 variable "syncbot_instance_id" {

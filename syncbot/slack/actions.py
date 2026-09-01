@@ -104,13 +104,19 @@ CONFIG_SETTINGS_SUBMIT = "settings_submit"
 """Callback: instance settings modal submitted."""
 
 CONFIG_SETTINGS_ALLOW_PRIVATE_CHANNELS = "settings_allow_private_channels"
-"""Input: whether private channels may be selected for a normal sync."""
+"""Input: whether private channels may be selected in this workspace."""
+
+CONFIG_SETTINGS_EXTRA_MANAGERS = "settings_extra_managers"
+"""Input: extra user IDs who may configure groups and syncs in this workspace."""
 
 CONFIG_SETTINGS_BROADCAST_WORKSPACES = "settings_broadcast_workspaces"
 """Input: Workspaces permitted to publish a broadcast. Empty means any."""
 
 CONFIG_SETTINGS_RETENTION_DAYS = "settings_retention_days"
 """Input: days a soft-deleted Workspace is retained before permanent removal."""
+
+CONFIG_SETTINGS_FEDERATION_ENABLED = "settings_federation_enabled"
+"""Input: whether External Connections (federation) are enabled."""
 
 # ---------------------------------------------------------------------------
 # Channel Sync actions
@@ -133,6 +139,15 @@ CONFIG_PUBLISH_SYNC_MODE = "publish_sync_mode"
 
 CONFIG_PUBLISH_DIRECT_TARGET = "publish_direct_target"
 """Input: workspace picker for direct (1-to-1) sync target."""
+
+CONFIG_PUBLISH_REACTION_DIRECTION = "publish_reaction_direction"
+CONFIG_PUBLISH_REACTION_STYLE = "publish_reaction_style"
+
+CONFIG_EDIT_SYNC = "edit_sync"
+"""Action: user clicked Edit on a synced Channel row (prefix-matched; value encodes channel or sync)."""
+
+CONFIG_EDIT_SYNC_SUBMIT = "edit_sync_submit"
+"""Callback: Edit modal submitted (policy and/or reactions)."""
 
 CONFIG_UNPUBLISH_CHANNEL = "unpublish_channel"
 """Action: user clicked "Unpublish" on a published channel (prefix-matched with sync.id)."""
@@ -160,6 +175,10 @@ CONFIG_SUBSCRIBE_CHANNEL_SELECT = "subscribe_channel_select"
 
 CONFIG_SUBSCRIBE_CHANNEL_SUBMIT = "subscribe_channel_submit"
 """Callback: subscribe channel modal submitted."""
+
+CONFIG_SUBSCRIBE_DIRECTION_SUBMIT = "subscribe_direction_submit"
+CONFIG_SUBSCRIBE_REACTION_DIRECTION = "subscribe_reaction_direction"
+CONFIG_SUBSCRIBE_REACTION_STYLE = "subscribe_reaction_style"
 
 # ---------------------------------------------------------------------------
 # Home Tab actions

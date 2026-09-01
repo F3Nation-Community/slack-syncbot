@@ -115,7 +115,7 @@ class TestDisbandConfirm:
 
         with (
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
-            patch("handlers.group_manage.helpers.is_user_authorized", return_value=True),
+            patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
             patch("handlers._common._parse_private_metadata", return_value=meta),
             patch("handlers.group_manage.helpers.get_workspace_record", return_value=acting),
             patch(
@@ -151,7 +151,7 @@ class TestLeaveGroupConfirmOwnerGuard:
 
         with (
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
-            patch("handlers.group_manage.helpers.is_user_authorized", return_value=True),
+            patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
             patch("handlers._common._parse_private_metadata", return_value=meta),
             patch("handlers.group_manage.helpers.get_workspace_record", return_value=acting),
             patch(

@@ -5,9 +5,11 @@ Key design decisions:
 * **Connection pooling** — Uses :class:`~sqlalchemy.pool.QueuePool` with
   ``pool_pre_ping=True`` so that warm Lambda containers reuse connections
   while stale ones are transparently replaced.
-* **Automatic retry** — The :func:`_with_retry` decorator retries any
-  :class:`~sqlalchemy.exc.OperationalError` up to ``_MAX_RETRIES`` times,
-  disposing the engine between attempts to force a fresh connection.
+* **Automatic retry** — The :func:`_with_retry` decorator retries transient
+  :class:`~sqlalchemy.exc.OperationalError` (lost connection, deadlock) up to
+  ``_MAX_RETRIES`` times. Schema and syntax errors (unknown column, 1064) are
+  not retried — those burned Slack's 3s ack window and the Lambda migrate
+  timeout when a migration had not applied.
 """
 
 import logging
@@ -20,7 +22,7 @@ from typing import TypeVar
 from urllib.parse import quote_plus
 
 from sqlalchemy import and_, create_engine, func, pool, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, ProgrammingError
 from sqlalchemy.orm import sessionmaker
 
 import constants
@@ -43,6 +45,32 @@ GLOBAL_SCHEMA = None
 _MAX_RETRIES = 2
 _DB_INIT_MAX_ATTEMPTS = 15
 _DB_INIT_RETRY_SECONDS = 2
+# pymysql/MySQL errnos that are schema, syntax, or auth — never a stale connection.
+_NON_RETRYABLE_DBAPI_ERRNOS = frozenset(
+    {
+        1044,  # access denied to database
+        1045,  # access denied
+        1049,  # unknown database
+        1054,  # unknown column
+        1062,  # duplicate entry
+        1064,  # SQL syntax
+        1142,  # command denied
+        1146,  # table doesn't exist
+        1171,  # all parts of a PRIMARY KEY must be NOT NULL
+        1215,  # cannot add foreign key
+    }
+)
+_NON_RETRYABLE_SQL_FRAGMENTS = (
+    "unknown column",
+    "syntax error",
+    "you have an error in your sql syntax",
+    "doesn't exist",
+    "does not exist",
+    "undefined column",
+    "undefined table",
+    "no such table",
+    "no such column",
+)
 # Migrations live next to this package so they are included in the Lambda bundle (SAM CodeUri: syncbot/).
 _ALEMBIC_SCRIPT_LOCATION = Path(__file__).resolve().parent / "alembic"
 
@@ -173,6 +201,56 @@ def _run_alembic_upgrade() -> None:
     command.upgrade(config, "head")
 
 
+def _exception_chain(exc: BaseException) -> list[BaseException]:
+    """``exc`` plus ``orig`` / ``__cause__``, without loops."""
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    queue: list[BaseException] = [exc]
+    while queue:
+        current = queue.pop(0)
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        chain.append(current)
+        orig = getattr(current, "orig", None)
+        if isinstance(orig, BaseException):
+            queue.append(orig)
+        if current.__cause__ is not None:
+            queue.append(current.__cause__)
+    return chain
+
+
+def _dbapi_errno(exc: BaseException) -> int | None:
+    """Return the wrapped DB-API errno when the driver exposes one."""
+    orig = getattr(exc, "orig", None)
+    target = orig if orig is not None else exc
+    args = getattr(target, "args", ())
+    if args and isinstance(args[0], int):
+        return args[0]
+    return None
+
+
+def _is_retryable_db_error(exc: BaseException) -> bool:
+    """True only for transient connectivity/lock errors, not schema or syntax bugs.
+
+    pymysql maps unknown-column (1054) to :class:`~sqlalchemy.exc.OperationalError`,
+    so a blanket OperationalError retry would spin Slack's 3s ack budget and
+    Lambda's migrate timeout on a migration that never applied. Alembic may wrap
+    the driver error, so the whole exception chain is inspected.
+    """
+    chain = _exception_chain(exc)
+    for item in chain:
+        if isinstance(item, ProgrammingError | IntegrityError):
+            return False
+        errno = _dbapi_errno(item)
+        if errno in _NON_RETRYABLE_DBAPI_ERRNOS:
+            return False
+        msg = str(item).lower()
+        if any(fragment in msg for fragment in _NON_RETRYABLE_SQL_FRAGMENTS):
+            return False
+    return any(isinstance(item, OperationalError) for item in chain)
+
+
 def initialize_database() -> None:
     """Apply Alembic migrations. Does not ``CREATE DATABASE``.
 
@@ -184,10 +262,15 @@ def initialize_database() -> None:
             _run_alembic_upgrade()
             return
         except Exception as exc:
-            if attempt >= _DB_INIT_MAX_ATTEMPTS:
+            retryable = _is_retryable_db_error(exc)
+            if not retryable or attempt >= _DB_INIT_MAX_ATTEMPTS:
                 _logger.error(
                     "db_init_failed",
-                    extra={"attempts": _DB_INIT_MAX_ATTEMPTS, "error": str(exc)},
+                    extra={
+                        "attempts": attempt,
+                        "retryable": retryable,
+                        "error": str(exc),
+                    },
                 )
                 if _is_network_sql_backend():
                     raise RuntimeError(
@@ -325,20 +408,22 @@ def _with_retry(fn):
     """
 
     def wrapper(*args, **kwargs):
-        last_exc = None
+        global GLOBAL_ENGINE
         for attempt in range(_MAX_RETRIES + 1):
             try:
                 return fn(*args, **kwargs)
             except OperationalError as exc:
-                last_exc = exc
-                if attempt < _MAX_RETRIES:
+                retryable = _is_retryable_db_error(exc)
+                if retryable and attempt < _MAX_RETRIES:
                     _logger.warning(f"DB operation {fn.__name__} failed (attempt {attempt + 1}), retrying: {exc}")
-                else:
+                    continue
+                if retryable:
                     _logger.error(f"DB operation {fn.__name__} failed after {_MAX_RETRIES + 1} attempts")
-                    global GLOBAL_ENGINE
                     if GLOBAL_ENGINE is not None:
                         GLOBAL_ENGINE.dispose()
-        raise last_exc
+                else:
+                    _logger.error(f"DB operation {fn.__name__} failed (not retryable): {exc}")
+                raise
 
     wrapper.__name__ = fn.__name__
     return wrapper

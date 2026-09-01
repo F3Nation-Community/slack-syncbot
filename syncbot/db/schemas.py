@@ -17,6 +17,8 @@ Tables:
   explicit "no match" records to avoid redundant lookups).
 * **processed_events** — Slack Events API ``event_id`` claims (at-least-once
   dedup). Ephemeral; not included in full-instance backup.
+* **user_action_echoes** — Remembered user-token Slack writes so inbound echo
+  events can be skipped. Ephemeral; not included in full-instance backup.
 """
 
 from typing import Any
@@ -92,7 +94,7 @@ class WorkspaceGroupMember(BaseClass, GetDBClass):
     leave only while another active owner remains, and may disband a group they
     solely own and solely publish into. ``member`` is otherwise descriptive — it
     grants no restrictions beyond the owner-gated actions above, and all
-    per-user authorization still runs through ``helpers.is_user_authorized``.
+    per-user authorization still runs through ``helpers.is_workspace_manager``.
     """
 
     __tablename__ = "workspace_group_members"
@@ -141,6 +143,8 @@ class SyncChannel(BaseClass, GetDBClass):
     workspace = relationship("Workspace", backref="sync_channels")
     channel_id = Column(String(100))
     status = Column(String(20), nullable=False, default="active")
+    reaction_direction = Column(String(32), nullable=False, default="both")
+    reaction_style = Column(String(32), nullable=True)
     created_at = Column(DateTime, nullable=False)
     deleted_at = Column(DateTime, nullable=True, default=None)
 
@@ -240,6 +244,26 @@ class FederatedWorkspace(BaseClass, GetDBClass):
         return FederatedWorkspace.id
 
 
+class WorkspaceSetting(BaseClass, GetDBClass):
+    """Per-workspace policy edited through the Settings modal.
+
+    Key/value storage scoped to one installed workspace. Values are strings;
+    typed accessors in ``helpers.workspace_settings`` parse them. Keys include
+    ``allow_private_channels`` and ``extra_manager_user_ids`` (JSON list of ``U…``
+    IDs).
+    """
+
+    __tablename__ = "workspace_settings"
+
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), primary_key=True)
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+    def get_id():
+        return (WorkspaceSetting.workspace_id, WorkspaceSetting.key)
+
+
 class InstanceSetting(BaseClass, GetDBClass):
     """Operator-managed instance policy, edited through the Settings modal.
 
@@ -280,3 +304,28 @@ class ProcessedEvent(BaseClass, GetDBClass):
 
     def get_id():
         return ProcessedEvent.id
+
+
+class UserActionEcho(BaseClass, GetDBClass):
+    """Remembered user-token side effect so the matching inbound event is skipped."""
+
+    __tablename__ = "user_action_echoes"
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "user_id",
+            "kind",
+            "fingerprint",
+            name="uq_user_action_echoes_team_user_kind_fp",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    team_id = Column(String(100), nullable=False)
+    user_id = Column(String(100), nullable=False)
+    kind = Column(String(64), nullable=False)
+    fingerprint = Column(String(256), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+    def get_id():
+        return UserActionEcho.id

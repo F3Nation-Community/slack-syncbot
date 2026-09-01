@@ -96,7 +96,12 @@ def handle_create_group(
 ) -> None:
     """Open a modal for naming a new workspace group."""
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    team_id = (
+        helpers.safe_get(body, "team", "id")
+        or helpers.safe_get(body, "view", "team_id")
+        or helpers.safe_get(body, "team_id")
+    )
+    if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "create_group"})
         return
 
@@ -126,6 +131,7 @@ def handle_create_group(
         callback_id=actions.CONFIG_CREATE_GROUP_SUBMIT,
         title_text="Create Group",
         submit_button_text="Create Group",
+        body=body,
     )
 
 
@@ -207,7 +213,12 @@ def handle_join_group(
     import copy
 
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    team_id = (
+        helpers.safe_get(body, "team", "id")
+        or helpers.safe_get(body, "view", "team_id")
+        or helpers.safe_get(body, "team_id")
+    )
+    if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "join_group"})
         return
 
@@ -219,6 +230,7 @@ def handle_join_group(
         callback_id=actions.CONFIG_JOIN_GROUP_SUBMIT,
         title_text="Join Group",
         new_or_add="new",
+        body=body,
     )
 
 
@@ -332,6 +344,7 @@ def handle_join_group_submit(
             helpers.notify_admins_dm(
                 member_client,
                 f":punch: *{admin_label}* joined the Workspace Group called *{group.name}*.",
+                team_id=member_ws.team_id,
             )
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
         except Exception as e:
@@ -352,7 +365,6 @@ def handle_invite_workspace(
     context: dict,
 ) -> None:
     """Open a modal for inviting a workspace to a group."""
-    import constants
 
     auth_result = _get_authorized_workspace(body, client, context, "invite_workspace")
     if not auth_result:
@@ -392,7 +404,7 @@ def handle_invite_workspace(
 
     # Show Oops only when there are no other installed workspaces at all (not when everyone is already in the group)
     other_installed = [ws for ws in all_workspaces if ws.bot_token and ws.id != current_workspace_id]
-    if not other_installed and not constants.FEDERATION_ENABLED:
+    if not other_installed and not helpers.federation_enabled():
         msg_blocks = [
             section(
                 "At least one other Slack Workspace needs to install this SyncBot app, or "
@@ -406,6 +418,7 @@ def handle_invite_workspace(
             title_text="Oops!",
             submit_button_text=None,
             new_or_add="new",
+            body=body,
         )
         return
 
@@ -445,7 +458,7 @@ def handle_invite_workspace(
         )
     )
 
-    if constants.FEDERATION_ENABLED:
+    if helpers.federation_enabled():
         modal_blocks.append(divider())
         modal_blocks.append(section(":globe_with_meridians: *External Workspace*"))
         modal_blocks.append(
@@ -465,6 +478,7 @@ def handle_invite_workspace(
         submit_button_text=submit_text,
         parent_metadata={"group_id": group_id},
         new_or_add="new",
+        body=body,
     )
 
 
@@ -564,6 +578,7 @@ def handle_invite_workspace_submit(
         target_client,
         f"{admin_label} has invited your Workspace to join a SyncBot Group!\n\n*Group Name:* `{group.name}`",
         invite_blocks,
+        team_id=target_ws.team_id,
     )
     helpers.save_dm_messages_to_group_member(member.id, dm_entries)
 
@@ -673,6 +688,7 @@ def handle_accept_group_invite(
             helpers.notify_admins_dm(
                 member_client,
                 f":punch: *{ws_name}* has joined the Workspace Group called *{group.name}*.",
+                team_id=member_ws.team_id,
             )
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
         except Exception as e:

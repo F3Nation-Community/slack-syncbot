@@ -54,7 +54,7 @@ The 1.3.2 list was built as follows; keep new rows on the same rails:
 
 ## Public origin and OAuth install
 
-This instance's public HTTPS origin is the Host of incoming Slack requests (the same URL Slack already uses for events). `helpers.oauth.get_public_base_url` / `capture_public_base` serve Authorize SyncBot (`/slack/install?team=`) and federation webhooks. Do not read `SYNCBOT_PUBLIC_URL`; if that leftover env var is set, the app logs a warning and ignores it.
+This instance's public HTTPS origin is the Host of incoming Slack requests (the same URL Slack already uses for events). `helpers.oauth.get_public_base_url` / `capture_public_base` serve Authorize SyncBot (`/slack/install?team=`) and federation webhooks. Do not read `SYNCBOT_PUBLIC_URL`; if that leftover env var is set, the app logs a warning and ignores it. **Authorize SyncBot** stores that person's user token for the destination workspace: private-channel invite **and** native reactions as them. Look up tokens with `get_user_token(dest_team_id, mapped_user_id)`; never send `xoxp` on federation payloads. Leftover Settings env (`ALLOW_PRIVATE_CHANNELS`, `BROADCAST_ALLOWED_WORKSPACES`, `SOFT_DELETE_RETENTION_DAYS`, `SYNCBOT_FEDERATION_ENABLED`, `REQUIRE_ADMIN`) is warned and ignored.
 
 Bolt OAuth must start at **this instance's** `GET /slack/install`. A Home-tab URL that points at Slack's authorize page skips the state cookie and fails after Allow with `invalid_browser`. On Lambda, Function URL payload 2.0 needs the OAuth cookie in the `cookies` array, and stray GETs such as `/favicon.ico` must not be treated as a second install. After a successful callback, call `refresh_home_after_oauth_install` so that user's Home tab updates without a manual Refresh.
 
@@ -67,6 +67,10 @@ All Slack traffic enters through [`syncbot/app.py`](../syncbot/app.py). Bolt mat
 View submissions: ack-phase handlers in `VIEW_ACK_MAPPER` may return field errors (`{"response_action": "errors", ...}`) within Slack's ~3s budget and should avoid Slack/DB of consequence. After ack, the modal is gone — work-phase failures DM the user. Production wires `view_ack` then lazy `main_response`; local often runs one-shot.
 
 Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Authorize SyncBot is the example) or the click shows up as `no_handler`.
+
+**User-token echo:** Slack does not mark an `xoxp` write as a bot action. After a successful user-token side effect, `remember_user_action` in [`syncbot/helpers/user_action_echo.py`](../syncbot/helpers/user_action_echo.py); matching handlers call `take_user_action_echo` inside `run_claimed` before fan-out. Do not store echo rows in `processed_events`. Import the helper submodule directly (`from helpers.user_action_echo import …`), not via `helpers/__init__.py`.
+
+**Hybrid emoji probe:** `_dest_reaction_name_is_invalid` in [`syncbot/helpers/reactions.py`](../syncbot/helpers/reactions.py) runs only when Hybrid is about to post a thread notice (no dest user token, or that token hit an auth error). Direct-only and a successful native `reactions_add` must not probe. Do not use `emoji.list` for dest names.
 
 ## DB identity and deletes
 

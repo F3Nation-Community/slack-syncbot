@@ -9,7 +9,6 @@ from logging import Logger
 from slack_sdk.web import WebClient
 
 import builders
-import constants
 import helpers
 from db import DbManager, schemas
 from helpers import export_import as ei
@@ -57,7 +56,12 @@ def _download_uploaded_file(file_url: str, token: str) -> tuple[str | None, str 
 
 
 def _is_admin(client: WebClient, user_id: str, body: dict) -> bool:
-    return helpers.is_user_authorized(client, user_id)
+    team_id = (
+        helpers.safe_get(body, "team", "id")
+        or helpers.safe_get(body, "view", "team_id")
+        or helpers.safe_get(body, "team_id")
+    )
+    return helpers.is_workspace_admin(client, user_id) if user_id and team_id else False
 
 
 def _team_id_for_backup_gate(body: dict) -> str | None:
@@ -130,9 +134,10 @@ def handle_backup_restore(
     modal_blocks = view.as_form_field()
     modal_blocks.append(restore_block)
 
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "callback_id": actions.CONFIG_BACKUP_RESTORE_SUBMIT,
             "title": {"type": "plain_text", "text": "Backup / Restore"},
@@ -140,6 +145,7 @@ def handle_backup_restore(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": modal_blocks,
         },
+        body=body,
     )
 
 
@@ -395,11 +401,12 @@ def handle_data_migration(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Open Data Migration modal (admin only, federation enabled)."""
-    if not constants.FEDERATION_ENABLED:
+    """Open Data Migration modal (primary-workspace admin only, federation enabled)."""
+    if not helpers.federation_enabled():
         return
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
-    if not _is_admin(client, user_id, body):
+    team_id = _team_id_for_backup_gate(body)
+    if not _is_admin(client, user_id, body) or not helpers.is_primary_workspace(team_id):
         return
     trigger_id = helpers.safe_get(body, "trigger_id")
     if not trigger_id:
@@ -441,9 +448,10 @@ def handle_data_migration(
     modal_blocks = view.as_form_field()
     modal_blocks.append(import_block)
 
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "callback_id": actions.CONFIG_DATA_MIGRATION_SUBMIT,
             "title": {"type": "plain_text", "text": "Data Migration"},
@@ -451,6 +459,7 @@ def handle_data_migration(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": modal_blocks,
         },
+        body=body,
     )
 
 
@@ -461,7 +470,7 @@ def handle_data_migration_export(
     context: dict,
 ) -> None:
     """Export workspace migration JSON and send to user's DM."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
     team_id = helpers.safe_get(body, "team", "id") or helpers.safe_get(body, "team_id")
@@ -493,7 +502,7 @@ def _data_migration_prepare(
 
     Returns ``(error_ack_dict, data, group_id, team_id_to_workspace_id, workspace_record)``.
     """
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return None, None, None, None, None
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
     team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team_id")
@@ -768,7 +777,7 @@ def handle_data_migration_submit_work(
     context: dict,
 ) -> None:
     """Lazy work phase: import migration data after modal closed."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return
     err, data, group_id, team_id_to_workspace_id, workspace_record = _data_migration_prepare(body, client, context)
     if (
@@ -801,7 +810,7 @@ def handle_data_migration_proceed(
     context: dict,
 ) -> None:
     """Proceed with import after user clicked the danger button despite warnings."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):

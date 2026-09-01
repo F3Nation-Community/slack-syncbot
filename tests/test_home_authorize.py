@@ -182,70 +182,79 @@ class TestPermissionLists:
 class TestHomeTabAdminGate:
     BODY = {"team": {"id": "T1"}, "user": {"id": "U1"}}
 
-    def _build(self, *, is_admin: bool, needed: bool) -> list[dict]:
+    def _build(self, *, is_manager: bool, is_admin: bool = False, needed: bool) -> list[dict]:
         client = MagicMock()
         still_needed = ALL_LABELS if needed else []
+        if is_manager and not is_admin:
+            is_admin = False
+        elif is_manager:
+            is_admin = True
         with (
             patch("builders.home.helpers.get_workspace_record", return_value=WORKSPACE),
-            patch("builders.home.helpers.is_user_authorized", return_value=is_admin),
+            patch("builders.home.helpers.is_workspace_admin", return_value=is_admin),
+            patch("builders.home.helpers.is_workspace_manager", return_value=is_manager),
+            patch("builders.home.helpers.extra_manager_user_ids", return_value=[]),
             patch("builders.home.helpers.needs_user_authorization", return_value=needed),
             patch("builders.home.helpers.user_permission_lists", return_value=([], still_needed)),
             patch("builders.home.helpers.authorize_url", return_value=AUTHORIZE_URL),
             patch("builders.home._get_groups_for_workspace", return_value=[]),
             patch("builders.home.DbManager.find_records", return_value=[]),
-            patch("builders.home.helpers.is_settings_visible_for_workspace", return_value=False),
+            patch("builders.home.helpers.is_settings_visible_for_workspace", return_value=True),
             patch("builders.home.helpers.is_backup_visible_for_workspace", return_value=False),
             patch("builders.home.helpers.is_db_reset_visible_for_workspace", return_value=False),
+            patch("builders.home.helpers.is_primary_workspace", return_value=False),
+            patch("builders.home.helpers.federation_enabled", return_value=False),
         ):
             return build_home_tab(self.BODY, client, MagicMock(), {}, user_id="U1", return_blocks=True)
 
-    def test_non_admin_can_still_authorize(self):
-        """REQUIRE_ADMIN restricts configuration, not the whole tab."""
-        rendered = self._build(is_admin=False, needed=True)
+    def test_non_manager_can_still_authorize(self):
+        rendered = self._build(is_manager=False, needed=True)
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" in text
-        assert "This area of SyncBot is limited to Workspace Admins" in text
+        assert "This area of SyncBot is limited to Workspace managers" in text
         assert "SyncBot Configuration" in text
         assert "Refresh" in text
         assert "Create Group" not in text
         assert "Publish Channel" not in text
         assert "Settings" not in text
 
-    def test_non_admin_who_is_fully_authorized_still_gets_refresh(self):
-        rendered = self._build(is_admin=False, needed=False)
+    def test_non_manager_who_is_fully_authorized_still_gets_refresh(self):
+        rendered = self._build(is_manager=False, needed=False)
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" not in text
-        assert "This area of SyncBot is limited to Workspace Admins" in text
+        assert "This area of SyncBot is limited to Workspace managers" in text
         assert "SyncBot Configuration" in text
         assert "Refresh" in text
         assert "Create Group" not in text
 
-    def test_configuration_sits_above_workspace_groups_for_admins(self):
-        rendered = self._build(is_admin=True, needed=True)
+    def test_configuration_sits_above_workspace_groups_for_managers(self):
+        rendered = self._build(is_manager=True, needed=True)
         text = _text_of(rendered)
         assert text.index("SyncBot Configuration") < text.index("Workspace Groups")
         assert text.index("Refresh") < text.index("Create Group")
 
-    def test_admin_who_still_needs_authorization_gets_both_sections(self):
-        rendered = self._build(is_admin=True, needed=True)
+    def test_manager_who_still_needs_authorization_gets_both_sections(self):
+        rendered = self._build(is_manager=True, needed=True)
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" in text
         assert "Create Group" in text
-        assert "This area of SyncBot is limited to Workspace Admins" not in text
+        assert "This area of SyncBot is limited to Workspace managers" not in text
 
-    def test_admin_who_is_fully_authorized_sees_no_authorize_section(self):
-        rendered = self._build(is_admin=True, needed=False)
+    def test_manager_who_is_fully_authorized_sees_no_authorize_section(self):
+        rendered = self._build(is_manager=True, needed=False)
 
         assert "Authorize SyncBot" not in _text_of(rendered)
 
-    def test_non_admin_does_not_see_settings_even_when_the_workspace_is_primary(self):
+    def test_non_admin_manager_does_not_see_settings(self):
         client = MagicMock()
         with (
             patch("builders.home.helpers.get_workspace_record", return_value=WORKSPACE),
-            patch("builders.home.helpers.is_user_authorized", return_value=False),
+            patch("builders.home.helpers.is_workspace_admin", return_value=False),
+            patch("builders.home.helpers.is_workspace_manager", return_value=True),
+            patch("builders.home.helpers.extra_manager_user_ids", return_value=["U1"]),
             patch("builders.home.helpers.needs_user_authorization", return_value=False),
             patch("builders.home.helpers.authorize_url", return_value=AUTHORIZE_URL),
             patch("builders.home._get_groups_for_workspace", return_value=[]),
@@ -253,14 +262,30 @@ class TestHomeTabAdminGate:
             patch("builders.home.helpers.is_settings_visible_for_workspace", return_value=True),
             patch("builders.home.helpers.is_backup_visible_for_workspace", return_value=True),
             patch("builders.home.helpers.is_db_reset_visible_for_workspace", return_value=True),
+            patch("builders.home.helpers.is_primary_workspace", return_value=True),
+            patch("builders.home.helpers.federation_enabled", return_value=True),
         ):
             rendered = build_home_tab(self.BODY, client, MagicMock(), {}, user_id="U1", return_blocks=True)
 
         text = _text_of(rendered)
         assert "Refresh" in text
+        assert "Create Group" in text
         assert "Settings" not in text
         assert "Backup/Restore" not in text
-        assert "Reset Database" not in text
+        assert "External Connections" not in text
+
+
+class TestHomeRefreshTargets:
+    def test_refresh_includes_extra_managers(self):
+        from builders.home import _home_refresh_user_ids
+
+        workspace = SimpleNamespace(team_id="T1")
+        client = MagicMock()
+        with (
+            patch("builders.home.helpers.get_admin_ids", return_value=["U_ADMIN"]),
+            patch("builders.home.helpers.extra_manager_user_ids", return_value=["U_EXTRA"]),
+        ):
+            assert _home_refresh_user_ids(workspace, client, {}) == ["U_ADMIN", "U_EXTRA"]
 
 
 class TestContentHashIsPerUser:
@@ -296,7 +321,7 @@ class TestContentHashIsPerUser:
 
         assert complete != missing_one
 
-    def test_non_admin_hash_ignores_group_data(self):
+    def test_non_manager_hash_ignores_group_data(self):
         def lists(_team_id, _user_id):
             return ([], ALL_LABELS)
 
@@ -304,9 +329,9 @@ class TestContentHashIsPerUser:
             patch("builders.home.helpers.user_permission_lists", side_effect=lists),
             patch("builders.home._get_groups_for_workspace") as groups,
         ):
-            first = _home_tab_content_hash(WORKSPACE, "U1", is_admin=False)
+            first = _home_tab_content_hash(WORKSPACE, "U1", is_manager=False, is_admin=False)
             groups.return_value = [(SimpleNamespace(id=99), None)]
-            second = _home_tab_content_hash(WORKSPACE, "U1", is_admin=False)
+            second = _home_tab_content_hash(WORKSPACE, "U1", is_manager=False, is_admin=False)
 
         assert first == second
         groups.assert_not_called()
@@ -328,7 +353,9 @@ class TestRefreshUsesThePerUserKey:
 
         with (
             patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
-            patch("handlers.sync.helpers.is_user_authorized", return_value=True),
+            patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
+            patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
+            patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("cached", [], None)) as check,
             patch("handlers.sync.helpers._cache_set"),
@@ -339,7 +366,7 @@ class TestRefreshUsesThePerUserKey:
 
 
 class TestRefreshIsAllowedForEveryone:
-    def test_non_admin_refresh_rebuilds_home_without_sweeping_workspace_names(self):
+    def test_non_manager_refresh_rebuilds_home_without_sweeping_workspace_names(self):
         from handlers.sync import handle_refresh_home
 
         client = MagicMock()
@@ -348,7 +375,9 @@ class TestRefreshIsAllowedForEveryone:
 
         with (
             patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
-            patch("handlers.sync.helpers.is_user_authorized", return_value=False),
+            patch("handlers.sync.helpers.is_workspace_manager", return_value=False),
+            patch("handlers.sync.helpers.is_workspace_admin", return_value=False),
+            patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("rebuild", None, None)),
             patch("handlers.sync.DbManager.find_records", return_value=[other_ws]) as find,

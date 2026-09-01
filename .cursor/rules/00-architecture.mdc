@@ -8,6 +8,6 @@ alwaysApply: true
 - **App** lives in `syncbot/` (Slack Bolt, SQLAlchemy, business logic). It must not import cloud SDKs (`boto3`, `google.cloud`, etc.).
 - **Infra** lives in `infra/aws/` (SAM, Lambda) and `infra/gcp/` (Terraform, Cloud Run) plus `.github/workflows/deploy-*.yml`.
 - **Migrations** are under `syncbot/db/alembic/`; apply patterns must respect Lambda vs long-running runtimes (see `docs/ARCHITECTURE.md` and deploy docs).
-- **Configuration contract** is documented in `docs/INFRA_CONTRACT.md` — prefer env vars and shared names over fork-specific hacks in application code. Leftover names listed there (for example `SYNCBOT_PUBLIC_URL`) are ignored; do not revive them.
+- **Configuration contract** is documented in `docs/INFRA_CONTRACT.md` — prefer env vars and shared names over fork-specific hacks in application code. Leftover names listed there (for example `SYNCBOT_PUBLIC_URL`, `SYNCBOT_FEDERATION_ENABLED`, `REQUIRE_ADMIN`) are ignored; do not revive them.
 
 When adding a feature, place code in the layer that can know about Slack/DB, not about a specific cloud API, unless the file is under `infra/`.

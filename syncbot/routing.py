@@ -40,6 +40,7 @@ ACTION_MAPPER = {
     actions.CONFIG_RESUME_SYNC: handlers.handle_resume_sync,
     actions.CONFIG_STOP_SYNC: handlers.handle_stop_sync,
     actions.CONFIG_SUBSCRIBE_CHANNEL: handlers.handle_subscribe_channel,
+    actions.CONFIG_EDIT_SYNC: handlers.handle_edit_sync,
     actions.CONFIG_REFRESH_HOME: handlers.handle_refresh_home,
     actions.CONFIG_AUTHORIZE_SYNCBOT: handlers.handle_authorize_syncbot,
     actions.CONFIG_BACKUP_RESTORE: handlers.handle_backup_restore,
@@ -82,13 +83,16 @@ VIEW_MAPPER = {
     actions.CONFIG_FEDERATION_LABEL_SUBMIT: handlers.handle_federation_label_submit,
     actions.CONFIG_BACKUP_RESTORE_SUBMIT: handlers.handle_backup_restore_submit_work,
     actions.CONFIG_DATA_MIGRATION_SUBMIT: handlers.handle_data_migration_submit_work,
+    actions.CONFIG_EDIT_SYNC_SUBMIT: handlers.handle_edit_sync_submit,
 }
 """View submission ``callback_id`` -> lazy work handler (after HTTP ack)."""
 
 VIEW_ACK_MAPPER = {
     actions.CONFIG_PUBLISH_MODE_SUBMIT: handlers.handle_publish_mode_submit_ack,
     actions.CONFIG_PUBLISH_CHANNEL_SUBMIT: handlers.handle_publish_channel_submit_ack,
+    actions.CONFIG_SUBSCRIBE_DIRECTION_SUBMIT: handlers.handle_subscribe_direction_submit_ack,
     actions.CONFIG_SUBSCRIBE_CHANNEL_SUBMIT: handlers.handle_subscribe_channel_submit_ack,
+    actions.CONFIG_EDIT_SYNC_SUBMIT: handlers.handle_edit_sync_submit_ack,
     actions.CONFIG_BACKUP_RESTORE_SUBMIT: handlers.handle_backup_restore_submit_ack,
     actions.CONFIG_DATA_MIGRATION_SUBMIT: handlers.handle_data_migration_submit_ack,
 }

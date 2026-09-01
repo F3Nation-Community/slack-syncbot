@@ -32,9 +32,9 @@ _SENTINEL_MISSING = "\x00__missing__"
 # Env vars that used to seed these settings. Still recognized so a leftover
 # deploy config logs a warning instead of silently changing behavior.
 _IGNORED_ENV_BY_SETTING = {
-    constants.SETTING_ALLOW_PRIVATE_CHANNELS: constants.ALLOW_PRIVATE_CHANNELS,
     constants.SETTING_BROADCAST_ALLOWED_WORKSPACES: constants.BROADCAST_ALLOWED_WORKSPACES,
     constants.SETTING_SOFT_DELETE_RETENTION_DAYS: constants.SOFT_DELETE_RETENTION_DAYS_VAR,
+    constants.SETTING_FEDERATION_ENABLED: constants.SYNCBOT_FEDERATION_ENABLED,
 }
 _IGNORED_ENV_WARNED: set[str] = set()
 
@@ -132,19 +132,8 @@ def get_list_setting(key: str, default: list[str] | None = None) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# Typed accessors for the settings that exist today
+# Typed accessors for instance settings
 # ---------------------------------------------------------------------------
-
-
-def allow_private_channels() -> bool:
-    """Whether private channels may be selected for a normal (non-broadcast) sync.
-
-    Defaults to false. Broadcasts are always public-only and ignore this.
-    """
-    return get_bool_setting(
-        constants.SETTING_ALLOW_PRIVATE_CHANNELS,
-        constants.DEFAULT_ALLOW_PRIVATE_CHANNELS,
-    )
 
 
 def broadcast_allowed_workspaces() -> list[str]:
@@ -169,3 +158,24 @@ def may_publish_broadcast(team_id: str | None) -> bool:
     if not allowed:
         return True
     return (team_id or "") in allowed
+
+
+def federation_enabled() -> bool:
+    """Whether external federation connections are enabled for this instance.
+
+    Defaults to false on a new install. When there is no database row yet, a
+    leftover ``SYNCBOT_FEDERATION_ENABLED=true`` env value is seeded once so
+    upgrades keep federation on; after that the Settings modal is authoritative.
+    """
+    _warn_ignored_env(constants.SETTING_FEDERATION_ENABLED)
+    raw = get_raw_setting(constants.SETTING_FEDERATION_ENABLED)
+    if raw is not None:
+        return get_bool_setting(
+            constants.SETTING_FEDERATION_ENABLED,
+            constants.DEFAULT_FEDERATION_ENABLED,
+        )
+    env_val = (os.environ.get(constants.SYNCBOT_FEDERATION_ENABLED) or "").strip().lower()
+    if env_val == "true":
+        set_setting(constants.SETTING_FEDERATION_ENABLED, "true")
+        return True
+    return constants.DEFAULT_FEDERATION_ENABLED

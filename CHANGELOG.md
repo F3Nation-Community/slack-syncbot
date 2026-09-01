@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [1.4.0] - Unreleased
+
+### Added
+
+- Federation is enabled from the Settings modal on the primary workspace
+- Extra workspace managers can configure groups and syncs without opening Settings
+- Per-workspace Allow private Channels in Settings on every installed workspace
+- Per-channel send/receive reaction direction and direct vs hybrid reaction type
+- Home **Edit** on synced Channel rows for Any vs Specific and this workspace’s reactions
+
+### Changed
+
+- Leftover `SYNCBOT_FEDERATION_ENABLED` is ignored after a one-time upgrade seed
+- Settings is available on every workspace for Slack admins; instance fields stay primary-only
+- Leftover `REQUIRE_ADMIN` and `ALLOW_PRIVATE_CHANNELS` env vars are ignored
+- Leftover instance-wide private-channel policy is copied to each workspace on upgrade
+
+### Fixed
+
+- Reaction sync ignores user-token echo events and no longer threads on `already_reacted` or missing custom emoji
+- Workspace-settings upgrade quotes the reserved MySQL `key` column
+- Schema errors are not retried, and view acks still return if a handler raises
+
 
 ## [1.3.3] - 2026-09-01
 
