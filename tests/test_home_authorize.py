@@ -205,16 +205,28 @@ class TestHomeTabAdminGate:
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" in text
-        assert "Only Workspace Admins can configure SyncBot" in text
+        assert "This area of SyncBot is limited to Workspace Admins" in text
+        assert "SyncBot Configuration" in text
+        assert "Refresh" in text
         assert "Create Group" not in text
         assert "Publish Channel" not in text
+        assert "Settings" not in text
 
-    def test_non_admin_who_is_fully_authorized_sees_only_the_lock_line(self):
+    def test_non_admin_who_is_fully_authorized_still_gets_refresh(self):
         rendered = self._build(is_admin=False, needed=False)
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" not in text
-        assert "Only Workspace Admins can configure SyncBot" in text
+        assert "This area of SyncBot is limited to Workspace Admins" in text
+        assert "SyncBot Configuration" in text
+        assert "Refresh" in text
+        assert "Create Group" not in text
+
+    def test_configuration_sits_above_workspace_groups_for_admins(self):
+        rendered = self._build(is_admin=True, needed=True)
+        text = _text_of(rendered)
+        assert text.index("SyncBot Configuration") < text.index("Workspace Groups")
+        assert text.index("Refresh") < text.index("Create Group")
 
     def test_admin_who_still_needs_authorization_gets_both_sections(self):
         rendered = self._build(is_admin=True, needed=True)
@@ -222,12 +234,33 @@ class TestHomeTabAdminGate:
 
         assert "Authorize SyncBot" in text
         assert "Create Group" in text
-        assert "Only Workspace Admins can configure SyncBot" not in text
+        assert "This area of SyncBot is limited to Workspace Admins" not in text
 
     def test_admin_who_is_fully_authorized_sees_no_authorize_section(self):
         rendered = self._build(is_admin=True, needed=False)
 
         assert "Authorize SyncBot" not in _text_of(rendered)
+
+    def test_non_admin_does_not_see_settings_even_when_the_workspace_is_primary(self):
+        client = MagicMock()
+        with (
+            patch("builders.home.helpers.get_workspace_record", return_value=WORKSPACE),
+            patch("builders.home.helpers.is_user_authorized", return_value=False),
+            patch("builders.home.helpers.needs_user_authorization", return_value=False),
+            patch("builders.home.helpers.authorize_url", return_value=AUTHORIZE_URL),
+            patch("builders.home._get_groups_for_workspace", return_value=[]),
+            patch("builders.home.DbManager.find_records", return_value=[]),
+            patch("builders.home.helpers.is_settings_visible_for_workspace", return_value=True),
+            patch("builders.home.helpers.is_backup_visible_for_workspace", return_value=True),
+            patch("builders.home.helpers.is_db_reset_visible_for_workspace", return_value=True),
+        ):
+            rendered = build_home_tab(self.BODY, client, MagicMock(), {}, user_id="U1", return_blocks=True)
+
+        text = _text_of(rendered)
+        assert "Refresh" in text
+        assert "Settings" not in text
+        assert "Backup/Restore" not in text
+        assert "Reset Database" not in text
 
 
 class TestContentHashIsPerUser:
@@ -263,6 +296,21 @@ class TestContentHashIsPerUser:
 
         assert complete != missing_one
 
+    def test_non_admin_hash_ignores_group_data(self):
+        def lists(_team_id, _user_id):
+            return ([], ALL_LABELS)
+
+        with (
+            patch("builders.home.helpers.user_permission_lists", side_effect=lists),
+            patch("builders.home._get_groups_for_workspace") as groups,
+        ):
+            first = _home_tab_content_hash(WORKSPACE, "U1", is_admin=False)
+            groups.return_value = [(SimpleNamespace(id=99), None)]
+            second = _home_tab_content_hash(WORKSPACE, "U1", is_admin=False)
+
+        assert first == second
+        groups.assert_not_called()
+
     def test_hash_key_is_scoped_to_the_user_under_the_team_prefix(self):
         """Restore-time invalidation deletes by the ``home_tab_hash:{team_id}`` prefix."""
         key = home_tab_hash_key("T1", "U1")
@@ -280,6 +328,7 @@ class TestRefreshUsesThePerUserKey:
 
         with (
             patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
+            patch("handlers.sync.helpers.is_user_authorized", return_value=True),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("cached", [], None)) as check,
             patch("handlers.sync.helpers._cache_set"),
@@ -287,3 +336,28 @@ class TestRefreshUsesThePerUserKey:
             handle_refresh_home(body, client, MagicMock(), {})
 
         assert check.call_args.args[1] == "home_tab_hash:T1:U1"
+
+
+class TestRefreshIsAllowedForEveryone:
+    def test_non_admin_refresh_rebuilds_home_without_sweeping_workspace_names(self):
+        from handlers.sync import handle_refresh_home
+
+        client = MagicMock()
+        body = {"team": {"id": "T1"}, "user": {"id": "U9"}}
+        other_ws = SimpleNamespace(id=99, team_id="T2", workspace_name="Other", bot_token="enc", deleted_at=None)
+
+        with (
+            patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
+            patch("handlers.sync.helpers.is_user_authorized", return_value=False),
+            patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
+            patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("rebuild", None, None)),
+            patch("handlers.sync.DbManager.find_records", return_value=[other_ws]) as find,
+            patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]) as build,
+            patch("handlers.sync.helpers.refresh_after_full"),
+        ):
+            handle_refresh_home(body, client, MagicMock(), {})
+
+        find.assert_not_called()
+        client.team_info.assert_not_called()
+        build.assert_called_once()
+        client.views_publish.assert_called_once()
