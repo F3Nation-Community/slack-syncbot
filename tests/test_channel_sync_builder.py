@@ -16,7 +16,7 @@ os.environ.setdefault("DATABASE_PASSWORD", "test")
 os.environ.setdefault("DATABASE_SCHEMA", "syncbot")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
-from builders.channel_sync import _build_inline_channel_sync  # noqa: E402
+from builders.channel_sync import _available_channel_label, _build_inline_channel_sync  # noqa: E402
 from db.schemas import Sync  # noqa: E402
 from slack import actions  # noqa: E402
 
@@ -121,3 +121,60 @@ def test_stranded_member_can_stop_the_orphan():
     actions_seen = [a for _, a in _buttons(blocks)]
 
     assert any(a.startswith(actions.CONFIG_STOP_SYNC) for a in actions_seen)
+
+
+def _context_texts(blocks) -> list[str]:
+    texts = []
+    for block in blocks:
+        element = getattr(block, "element", None)
+        if element is not None:
+            texts.append(getattr(element, "initial_value", "") or "")
+    return texts
+
+
+def test_available_channel_label_uses_live_name_not_stored_id():
+    ws = SimpleNamespace(id=1, bot_token="enc")
+    with patch("builders.channel_sync.helpers.lookup_channel_meta", return_value=("2nd-f", False)):
+        assert _available_channel_label("C123ABC", ws, "C123ABC") == "2nd-f"
+
+
+def test_available_channel_label_tags_private():
+    ws = SimpleNamespace(id=1, bot_token="enc")
+    with patch("builders.channel_sync.helpers.lookup_channel_meta", return_value=("leadership", True)):
+        assert _available_channel_label("CPRIV", ws, "CPRIV") == "leadership (private)"
+
+
+def test_available_row_shows_name_in_ticks_and_tags_private():
+    """``sync.title`` was the Channel ID when the bot looked up the name before joining."""
+    sync = SimpleNamespace(
+        id=SYNC_ID,
+        group_id=GROUP_ID,
+        title="C_10",
+        sync_mode="group",
+        publisher_workspace_id=PUBLISHER_WS,
+        target_workspace_id=None,
+    )
+    group = SimpleNamespace(id=GROUP_ID)
+    workspace_record = SimpleNamespace(id=VIEWER_WS, team_id="T1")
+    channels = [_channel(10, PUBLISHER_WS)]
+
+    def find_records(model, _filters):
+        return [sync] if model is Sync else channels
+
+    blocks: list = []
+    with (
+        patch("builders.channel_sync.DbManager.find_records", side_effect=find_records),
+        patch("builders.channel_sync.DbManager.count_records", return_value=0),
+        patch("builders.channel_sync.helpers.resolve_workspace_name", return_value="WS"),
+        patch("builders.channel_sync.helpers.get_workspace_by_id", return_value=SimpleNamespace(bot_token=None)),
+        patch("builders.channel_sync.helpers.lookup_channel_meta", return_value=("2nd-f", True)),
+        patch("builders.channel_sync._format_channel_ref", return_value="#c"),
+    ):
+        _build_inline_channel_sync(blocks, group, workspace_record, other_members=[], context={})
+
+    joined = "\n".join(_context_texts(blocks))
+    assert "Channel: `2nd-f (private)`" in joined
+    assert "`C_10`" not in joined
+    assert ":lock:" not in joined
+    assert "#2nd-f" not in joined
+    assert any(a.startswith(actions.CONFIG_SUBSCRIBE_CHANNEL) for _, a in _buttons(blocks))
