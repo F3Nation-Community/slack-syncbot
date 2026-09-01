@@ -24,12 +24,19 @@ poetry run pytest -q tests/ infra/aws/tests infra/gcp/tests
 
 ## PR rules
 
-- Title must be a **Conventional Commit** (squash merge).
+- Title must be a **Conventional Commit** (squash merge), subject only, about 72 characters.
+- Changelog bullets are one short line like **1.2.0** (what changed, not why).
 - Link issues with `Fixes #n` when fixing bugs.
 
 ## User scopes on Home
 
 Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes to `USER_SCOPES` and to `USER_PERMISSION_GROUPS` in `syncbot/slack_manifest_scopes.py` (plain 2–4 word labels; fold read/write twins; keep `groups:write` separate). See that constant's comment and [docs/AI_AGENTS.md](../docs/AI_AGENTS.md).
+
+## Gotchas (short)
+
+- Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`.
+- Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`); never `import helpers`.
+- `DbManager.get_record` uses each model's `get_id()` (e.g. `Workspace` → Slack `team_id`), not always the integer PK. Only positional or `id=`.
 
 ## Optional: CI parity check
 

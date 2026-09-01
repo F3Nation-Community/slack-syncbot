@@ -46,12 +46,13 @@ Rules:
 This repository uses [Conventional Commits](https://www.conventionalcommits.org/) for clarity and automated versioning on **`main`**.
 
 - Use imperative mood and a type prefix, for example: `feat: add channel mute toggle`, `fix: handle missing OAuth state`, `docs: clarify deploy env vars`, `chore: bump checkout action`.
+- Keep the **subject to about 72 characters**. Skip the body unless you need `BREAKING CHANGE:` or one clause that will not fit the subject. Do not explain Slack API background or prior failures in the commit.
 - Allowed types commonly used here: `feat`, `fix`, `perf`, `refactor`, `docs`, `build`, `chore`, `ci`, `test`, `style`.
 - **Patch** bump: `fix:`, `perf:` (and similar non-breaking fixes).
 - **Minor** bump: `feat:` (user-visible additions).
 - **Major** bump: add `BREAKING CHANGE:` in the commit body/footer, or use a `feat!:` / `fix!:` subject line per Conventional Commits.
-- **Squash merges**: the PR title becomes the merge commit **subject** — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`). CI fills a **Commits** section on the PR (no `Co-authored-by` lines); paste that block into the squash body if you want those messages on `main`. GitHub then adds a single `Co-authored-by` trailer.
-- **Changelog / GitHub Release:** Keep a Changelog headings only (**Added** / **Changed** / **Fixed**). Copy **[1.2.0](CHANGELOG.md)** for voice. python-semantic-release drafts from `feat` / `fix` / `perf`; polish (or pre-write that version's section in the release PR) so operators do not see `### bug fixes` or a raw commit subject.
+- **Squash merges**: the PR title becomes the merge commit **subject** — set the PR title to a valid Conventional Commit (CI enforces this via `.github/workflows/pr-title.yml`). CI fills a **Commits** section on the PR (no `Co-authored-by` lines); keep those as subject lines only. Paste that block into the squash body if you want those messages on `main`. GitHub then adds a single `Co-authored-by` trailer.
+- **Changelog / GitHub Release:** Keep a Changelog headings only (**Added** / **Changed** / **Fixed**). Copy **[1.2.0](CHANGELOG.md)** for length: one short line per bullet, what changed, not why. python-semantic-release drafts from `feat` / `fix` / `perf`; polish (or pre-write that version's section in the release PR) so operators do not see `### bug fixes`, a raw commit subject, or a paragraph dump.
 
 Also install the commit-msg hook so local commits are checked:
 

@@ -66,6 +66,28 @@ def test_changelog_1_2_2_is_prewritten_keep_a_changelog() -> None:
     assert "### bug fixes" not in section.lower()
 
 
+def test_changelog_1_3_and_later_bullets_are_short() -> None:
+    """From 1.3.0 on, match 1.2.0 length: one short line, not a paragraph."""
+    text = CHANGELOG.read_text(encoding="utf-8")
+    versions = H2.findall(text)
+    starts = {m.group(1): m.start() for m in H2.finditer(text)}
+    max_len = 160
+    too_long: list[str] = []
+    for i, ver in enumerate(versions):
+        major, minor, _patch = (int(p) for p in ver.split("."))
+        if (major, minor) < (1, 3):
+            continue
+        start = starts[ver]
+        end = starts[versions[i + 1]] if i + 1 < len(versions) else len(text)
+        for line in text[start:end].splitlines():
+            if not line.startswith("- "):
+                continue
+            bullet = line[2:].strip()
+            if len(bullet) > max_len:
+                too_long.append(f"{ver} ({len(bullet)}): {bullet[:80]}…")
+    assert too_long == [], "changelog bullets from 1.3.0 on must stay 1.2.0-short:\n" + "\n".join(too_long)
+
+
 def test_semantic_release_templates_map_psr_type_names() -> None:
     helper = (TEMPLATE_DIR / "_keep_a_changelog.j2").read_text(encoding="utf-8")
     changelog_j2 = (TEMPLATE_DIR / "CHANGELOG.md.j2").read_text(encoding="utf-8")

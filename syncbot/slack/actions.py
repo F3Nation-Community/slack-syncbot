@@ -12,7 +12,7 @@ CONFIG_CREATE_NEW_SYNC = "create_new_sync"
 """Action: user clicked "Create new Sync" button."""
 
 CONFIG_REMOVE_SYNC = "remove_sync"
-"""Action: user clicked "DeSync" button (prefix-matched)."""
+"""Leftover DeSync action. Home uses CONFIG_STOP_SYNC / CONFIG_UNPUBLISH_CHANNEL."""
 
 CONFIG_NEW_SYNC_CHANNEL_SELECT = "config_new_sync_channel_select"
 """Input: channel picker in the new-sync form."""
