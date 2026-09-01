@@ -23,8 +23,9 @@ def handle_remove_sync(
     logger: Logger,
     context: dict,
 ):
-    """Handles the "DeSync" button action by removing the SyncChannel record from the database.
+    """Leftover DeSync handler. Home teardown is Stop Syncing / Unpublish.
 
+    Still registered on CONFIG_REMOVE_SYNC. Do not wire new buttons here.
     Requires admin/owner authorization (defense-in-depth).
     """
     user_id = helpers.get_user_id_from_body(body)

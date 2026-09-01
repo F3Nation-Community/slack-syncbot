@@ -75,12 +75,12 @@ Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name we
 - **Home hash is per user** (`home_tab_hash:{team_id}:{user_id}`). Prefix delete on restore still works. Hash payload must include that user's permission lists.
 - **Route through `routing.py`.** Do not add Bolt `@app.action` / `@app.event` — `app.py` already matches `.*` into `MAIN_MAPPER` / `VIEW_ACK_MAPPER`. A second decorator double-fires.
 - **Modal field errors only in the ack phase.** `VIEW_ACK_MAPPER` may return `{"response_action": "errors", ...}` (3s budget, no Slack/DB of consequence). After ack, work-phase failures DM the user.
-- **`DbManager.get_record` uses each model's `get_id()` column, not always the integer PK.** `Workspace` → Slack `team_id`. `SyncChannel` → Slack `channel_id`. `PostMeta` → `post_id`. Integer PK lookups use `find_records(... id == n)` or `get_workspace_by_id`. Objects are expunged; each call is its own session.
+- **`DbManager.get_record` uses each model's `get_id()` column, not always the integer PK.** Pass that value positional or as `id=` only (`team_id=` TypeErrors). `Workspace` → Slack `team_id`. `SyncChannel` → Slack `channel_id`. `PostMeta` → `post_id`. Integer PK lookups use `find_records(... id == n)` or `get_workspace_by_id`. Objects are expunged; each call is its own session.
 - **Soft-delete + no `ON DELETE CASCADE`.** Active queries need `deleted_at.is_(None)`. Hard deletes go through `purge_sync` / `purge_workspace` (children first, including soft-deleted rows).
 - **Imports are `import helpers`, not `from syncbot.helpers`.** Pytest `pythonpath` is `syncbot/`.
 - **Link buttons still need a no-op in `ACTION_MAPPER`.** Slack fires `block_actions` for URL buttons (`handle_authorize_syncbot` is the example); without a handler you get `no_handler` in the logs.
 - **Never log tokens.** `_redact_sensitive` must include `user_token` and `bot_token`. Do not print `xoxp` / `xoxb`.
-- **Unpublish is a full `purge_sync`.** Pause/resume only toggles that workspace's channel.
+- **Unpublish is a full `purge_sync`.** Pause/resume only toggles that workspace's channel. Home teardown is **Unpublish** / **Stop Syncing** (`CONFIG_UNPUBLISH_CHANNEL` / `CONFIG_STOP_SYNC`). `CONFIG_REMOVE_SYNC` / `handle_remove_sync` is leftover DeSync — do not wire new buttons to it.
 - **Events API dedup is envelope `event_id` + `team_id`** (`run_claimed`), not `event.ts` or `X-Slack-Retry-Num`. Missing `event_id` always runs. Failed work releases the claim.
 - **Message loop / double-post.** Skip only SyncBot's own `bot_id`, not other bots. A plain `message` with files waits for `file_share`. Other bots' `bot_message` events are synced.
 - **In-process cache is per warm container (60s).** Writes that change fan-out or Home must invalidate (`sync_list:{channel_id}`, settings keys, `home_tab_hash:` prefix).

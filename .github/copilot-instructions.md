@@ -36,7 +36,7 @@ Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes 
 
 - Route handlers through `routing.py` only — do not add `@app.action` / `@app.event`.
 - Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`); never `import helpers`.
-- `DbManager.get_record` uses each model's `get_id()` (e.g. `Workspace` → Slack `team_id`), not always the integer PK.
+- `DbManager.get_record` uses each model's `get_id()` (e.g. `Workspace` → Slack `team_id`), not always the integer PK. Only positional or `id=`.
 
 ## Optional: CI parity check
 

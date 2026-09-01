@@ -348,6 +348,20 @@ class DbManager:
     @staticmethod
     @_with_retry
     def get_record(cls: T, id, schema=None) -> T:
+        """Return one row whose ``cls.get_id()`` column equals *id*, or ``None``.
+
+        The lookup column is **not** always the integer primary key. Callers
+        must pass the value that matches ``get_id()`` (positional or ``id=``
+        only — extra keywords such as ``team_id=`` raise ``TypeError``):
+
+        * ``Workspace`` → Slack ``team_id`` (``T…``)
+        * ``SyncChannel`` → Slack ``channel_id`` (``C…``)
+        * ``PostMeta`` → Slack ``post_id``
+        * most other models → integer ``id``
+
+        Integer PK lookups use :meth:`find_records` (``Model.id == n``) or
+        helpers such as ``get_workspace_by_id``.
+        """
         session = get_session(schema=schema)
         try:
             x = session.query(cls).filter(cls.get_id() == id).first()

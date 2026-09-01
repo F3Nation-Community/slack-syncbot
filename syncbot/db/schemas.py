@@ -63,6 +63,7 @@ class Workspace(BaseClass, GetDBClass):
     deleted_at = Column(DateTime, nullable=True, default=None)
 
     def get_id():
+        """Slack ``team_id``, not the integer primary key."""
         return Workspace.team_id
 
 
@@ -144,6 +145,7 @@ class SyncChannel(BaseClass, GetDBClass):
     deleted_at = Column(DateTime, nullable=True, default=None)
 
     def get_id():
+        """Slack ``channel_id``, not the integer primary key."""
         return SyncChannel.channel_id
 
 
@@ -155,6 +157,7 @@ class PostMeta(BaseClass, GetDBClass):
     ts = Column(DECIMAL(16, 6))
 
     def get_id():
+        """Slack ``post_id``, not the integer primary key."""
         return PostMeta.post_id
 
 

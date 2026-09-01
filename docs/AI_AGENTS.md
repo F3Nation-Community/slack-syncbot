@@ -62,7 +62,7 @@ Token rows live in Bolt's `SQLAlchemyInstallationStore` (`slack_bots` / `slack_i
 
 ## Slack request lifecycle
 
-All Slack traffic enters through [`syncbot/app.py`](../syncbot/app.py). Bolt matches `.*` once for events and actions; handlers are looked up in [`syncbot/routing.py`](../syncbot/routing.py) (`MAIN_MAPPER`, `VIEW_ACK_MAPPER`, `ACTION_MAPPER`, `EVENT_MAPPER`). Do not add a second `@app.action` / `@app.event` — it double-fires. Prefixed destructive `action_id`s go through the confirmation flow in [`.cursor/rules/60-slack-confirmations.mdc`](../.cursor/rules/60-slack-confirmations.mdc).
+All Slack traffic enters through [`syncbot/app.py`](../syncbot/app.py). Bolt matches `.*` once for events and actions; handlers are looked up in [`syncbot/routing.py`](../syncbot/routing.py) (`MAIN_MAPPER` → `ACTION_MAPPER` / `EVENT_MAPPER` / `VIEW_MAPPER`, plus `VIEW_ACK_MAPPER` for the fast ack). Do not add a second `@app.action` / `@app.event` — it double-fires. Prefixed destructive `action_id`s go through the confirmation flow in [`.cursor/rules/60-slack-confirmations.mdc`](../.cursor/rules/60-slack-confirmations.mdc).
 
 View submissions: ack-phase handlers in `VIEW_ACK_MAPPER` may return field errors (`{"response_action": "errors", ...}`) within Slack's ~3s budget and should avoid Slack/DB of consequence. After ack, the modal is gone — work-phase failures DM the user. Production wires `view_ack` then lazy `main_response`; local often runs one-shot.
 
@@ -70,7 +70,7 @@ Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Au
 
 ## DB identity and deletes
 
-`DbManager.get_record(Model, id)` filters on that model's `get_id()` column, not always the integer primary key. `Workspace.get_id()` is Slack `team_id`; `SyncChannel` is Slack `channel_id`; `PostMeta` is `post_id`. Integer PK lookups use `find_records(... id == n)` or helpers such as `get_workspace_by_id`. Returned objects are expunged; each `DbManager` call opens and commits its own session, so there is no multi-call transaction.
+`DbManager.get_record(Model, id)` filters on that model's `get_id()` column, not always the integer primary key. Pass the matching value positional or as `id=` only (extra keywords such as `team_id=` raise `TypeError`). `Workspace.get_id()` is Slack `team_id`; `SyncChannel` is Slack `channel_id`; `PostMeta` is `post_id`. Integer PK lookups use `find_records(... id == n)` or helpers such as `get_workspace_by_id`. Returned objects are expunged; each `DbManager` call opens and commits its own session, so there is no multi-call transaction.
 
 Active rows are soft-delete aware: filter `deleted_at.is_(None)`. There is no `ON DELETE CASCADE` on sync graphs. Hard deletes go through `purge_sync` / `purge_workspace` in [`syncbot/helpers/sync_cleanup.py`](../syncbot/helpers/sync_cleanup.py) (children first, including soft-deleted rows). Unpublish is a full `purge_sync`; pause/resume only toggles that workspace's channel.
 
