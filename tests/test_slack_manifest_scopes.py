@@ -72,6 +72,13 @@ def test_every_user_scope_is_in_exactly_one_permission_group():
     assert len(grouped) == len(set(grouped))
 
 
+def test_slack_manifest_subscribes_to_uninstall_and_token_revoke():
+    """Bolt's store cleanup needs both events; the generated stage manifests copy this list."""
+    events = _manifest()["settings"]["event_subscriptions"]["bot_events"]
+    assert "app_uninstalled" in events
+    assert "tokens_revoked" in events
+
+
 def test_permission_group_labels_are_plain_language():
     """People should not have to read Slack API names on the Home tab."""
     for label, scopes in USER_PERMISSION_GROUPS:

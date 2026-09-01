@@ -80,7 +80,7 @@ from handlers.sync import (
     handle_refresh_home,
     handle_remove_sync,
 )
-from handlers.tokens import handle_tokens_revoked
+from handlers.tokens import handle_app_uninstalled, handle_tokens_revoked
 from handlers.users import (
     handle_team_join,
     handle_user_mapping_back,
@@ -151,6 +151,7 @@ __all__ = [
     "handle_subscribe_channel_submit_ack",
     "handle_team_join",
     "handle_tokens_revoked",
+    "handle_app_uninstalled",
     "handle_unpublish_channel",
     "handle_user_mapping_back",
     "handle_user_mapping_edit_submit",

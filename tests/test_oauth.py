@@ -205,6 +205,59 @@ class TestRefreshHomeAfterOauthInstall:
         build.assert_not_called()
 
 
+class TestSkipEmptyUserInstallations:
+    def test_tokenless_per_user_row_is_treated_as_missing(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from helpers.oauth import _skip_empty_user_installations
+
+        store = MagicMock()
+        store.find_installation.return_value = SimpleNamespace(bot_token=None, user_token=None)
+        _skip_empty_user_installations(store)
+
+        assert store.find_installation(enterprise_id=None, team_id="T1", user_id="U9") is None
+
+    def test_row_with_copied_bot_token_but_no_user_token_is_treated_as_missing(self):
+        """Slack's store copies the workspace bot token onto a leftover user row."""
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from helpers.oauth import _skip_empty_user_installations
+
+        store = MagicMock()
+        store.find_installation.return_value = SimpleNamespace(bot_token="xoxb-copied", user_token=None)
+        _skip_empty_user_installations(store)
+
+        assert store.find_installation(enterprise_id=None, team_id="T1", user_id="U9") is None
+
+    def test_row_with_user_token_is_kept(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from helpers.oauth import _skip_empty_user_installations
+
+        row = SimpleNamespace(bot_token=None, user_token="xoxp-1")
+        store = MagicMock()
+        store.find_installation.return_value = row
+        _skip_empty_user_installations(store)
+
+        assert store.find_installation(enterprise_id=None, team_id="T1", user_id="U9") is row
+
+    def test_team_lookup_without_user_id_is_unchanged(self):
+        from types import SimpleNamespace
+        from unittest.mock import MagicMock
+
+        from helpers.oauth import _skip_empty_user_installations
+
+        row = SimpleNamespace(bot_token=None, user_token=None)
+        store = MagicMock()
+        store.find_installation.return_value = row
+        _skip_empty_user_installations(store)
+
+        assert store.find_installation(enterprise_id=None, team_id="T1") is row
+
+
 class TestOauthSuccessCallback:
     def test_refreshes_home_then_renders_the_default_success_page(self):
         from types import SimpleNamespace

@@ -103,6 +103,47 @@ def get_user_token(team_id: str | None, user_id: str | None) -> str | None:
     return _clean_token(getattr(installation, "user_token", None) if installation else None)
 
 
+def clear_user_authorization(team_id: str | None, user_id: str | None) -> bool:
+    """Remove this person's installation row so Authorize SyncBot can return.
+
+    Slack's Configuration → Revoke invalidates the token but does not edit our
+    ``slack_installations`` row. This is Bolt's ``InstallationStore.delete_installation``
+    with ``user_id`` set (not the team bot in ``slack_bots``), so authorize can
+    fall back to the workspace bot token. Nulling columns and leaving an empty
+    row makes authorize fail, and Home never publishes.
+    """
+    if not team_id or not user_id:
+        return False
+    store = _installation_store()
+    if store is None:
+        return False
+    try:
+        store.delete_installation(enterprise_id=None, team_id=team_id, user_id=user_id)
+        return True
+    except Exception as exc:
+        _logger.warning(f"clear_user_authorization failed for team {team_id}: {exc}")
+        return False
+
+
+def clear_workspace_installations(team_id: str | None) -> bool:
+    """Drop Bolt's bot and user install rows for this workspace.
+
+    Same call as Slack Bolt's ``app_uninstalled`` listener:
+    ``InstallationStore.delete_all``.
+    """
+    if not team_id:
+        return False
+    store = _installation_store()
+    if store is None:
+        return False
+    try:
+        store.delete_all(enterprise_id=None, team_id=team_id)
+        return True
+    except Exception as exc:
+        _logger.warning(f"clear_workspace_installations failed for team {team_id}: {exc}")
+        return False
+
+
 def granted_user_scopes(team_id: str | None, user_id: str | None) -> frozenset[str]:
     """Return the user scopes stored for this person, or empty.
 

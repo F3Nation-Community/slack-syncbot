@@ -69,6 +69,7 @@ EVENT_MAPPER = {
     "reaction_removed": handlers._handle_reaction,
     "team_join": handlers.handle_team_join,
     "tokens_revoked": handlers.handle_tokens_revoked,
+    "app_uninstalled": handlers.handle_app_uninstalled,
     "user_profile_changed": handlers.handle_user_profile_changed,
 }
 """Event ``type`` -> handler."""

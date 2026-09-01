@@ -48,6 +48,7 @@ def get_oauth_flow():
         client_id=client_id,
         engine=engine,
     )
+    _skip_empty_user_installations(installation_store)
     state_store = SQLAlchemyOAuthStateStore(
         expiration_seconds=_OAUTH_STATE_EXPIRATION_SECONDS,
         engine=engine,
@@ -166,6 +167,28 @@ def _oauth_success(args: SuccessArgs):
 
 def _oauth_failure(args: FailureArgs):
     return args.default.failure(args)
+
+
+def _skip_empty_user_installations(store) -> None:
+    """Make Bolt ignore a per-user row that has no user token left.
+
+    After someone revokes Authorize SyncBot we drop their row. A leftover
+    tokenless row still matches ``find_installation(user_id=...)``. Slack's
+    store copies the workspace bot token onto that object, so checking
+    ``bot_token`` is not enough — look at ``user_token``. Returning ``None``
+    lets Bolt keep the workspace bot from ``find_bot`` / the latest install.
+    """
+    original = store.find_installation
+
+    def find_installation(*args, **kwargs):
+        inst = original(*args, **kwargs)
+        if inst is None:
+            return None
+        if kwargs.get("user_id") and not getattr(inst, "user_token", None):
+            return None
+        return inst
+
+    store.find_installation = find_installation
 
 
 def refresh_home_after_oauth_install(installation) -> None:
