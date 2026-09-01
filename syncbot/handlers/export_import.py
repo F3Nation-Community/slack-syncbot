@@ -819,7 +819,7 @@ def handle_data_migration_proceed(
     if not data or not group_id or not workspace_id:
         return
 
-    workspace_record = DbManager.get_record(schemas.Workspace, workspace_id)
+    workspace_record = helpers.get_workspace_by_id(workspace_id)
     if not workspace_record:
         return
 

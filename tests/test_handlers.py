@@ -1,7 +1,7 @@
 """Unit tests for handler parsing and dispatch helpers."""
 
 import os
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 os.environ.setdefault("DATABASE_HOST", "localhost")
 os.environ.setdefault("DATABASE_USER", "root")
@@ -306,42 +306,3 @@ class TestRequestTypeGroupPrefix:
         req_type, req_id = get_request_type(body)
         assert req_type == "block_actions"
         assert req_id == actions.CONFIG_LEAVE_GROUP
-
-
-# -----------------------------------------------------------------------
-# handle_new_sync_submission (unit-level: verifies the handler wiring)
-# -----------------------------------------------------------------------
-
-
-class TestNewSyncSubmission:
-    """Verify that handle_new_sync_submission uses conversations.info to get the channel name."""
-
-    def test_rejects_unauthorized_user(self):
-        from handlers import handle_new_sync_submission
-
-        client = MagicMock()
-        client.users_info.return_value = {"user": {"is_admin": False, "is_owner": False}}
-        body = {"view": {"team_id": "T001"}, "user": {"id": "U001"}}
-        logger = MagicMock()
-
-        with patch("handlers.sync.helpers.is_user_authorized", return_value=False):
-            handle_new_sync_submission(body, client, logger, {})
-
-        client.conversations_info.assert_not_called()
-        client.conversations_join.assert_not_called()
-
-    def test_rejects_missing_channel_id(self):
-        from handlers import handle_new_sync_submission
-
-        client = MagicMock()
-        body = {"view": {"team_id": "T001"}, "user": {"id": "U001"}}
-        logger = MagicMock()
-
-        with (
-            patch("handlers.sync.helpers.is_user_authorized", return_value=True),
-            patch("handlers.sync.forms.NEW_SYNC_FORM") as mock_form,
-        ):
-            mock_form.get_selected_values.return_value = {}
-            handle_new_sync_submission(body, client, logger, {})
-
-        client.conversations_info.assert_not_called()

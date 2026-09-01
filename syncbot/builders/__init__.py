@@ -20,7 +20,6 @@ from builders.home import (
     home_tab_hash_key,
     refresh_home_tab_for_workspace,
 )
-from builders.sync import build_join_sync_form, build_new_sync_form
 from builders.user_mapping import (
     _USER_MAPPING_REFRESH_BUTTON_INDEX,
     _user_mapping_content_hash,
@@ -39,8 +38,6 @@ __all__ = [
     "_get_workspace_info",
     "_home_tab_content_hash",
     "build_home_tab",
-    "build_join_sync_form",
-    "build_new_sync_form",
     "_USER_MAPPING_REFRESH_BUTTON_INDEX",
     "_user_mapping_content_hash",
     "build_user_mapping_edit_modal",

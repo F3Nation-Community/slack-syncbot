@@ -17,6 +17,7 @@ from sqlalchemy import MetaData, Table, delete, select
 
 import constants
 from db import DbManager, get_engine, schemas
+from helpers.workspace import get_workspace_by_id
 
 _logger = logging.getLogger(__name__)
 
@@ -286,7 +287,7 @@ def invalidate_sync_list_cache_for_channel(channel_id: str) -> None:
 
 def build_migration_export(workspace_id: int, include_source_instance: bool = True) -> dict:
     """Build workspace-scoped migration JSON. Optionally sign with Ed25519 and include source_instance."""
-    workspace = DbManager.get_record(schemas.Workspace, workspace_id)
+    workspace = get_workspace_by_id(workspace_id)
     if not workspace or workspace.deleted_at:
         raise ValueError("Workspace not found")
 
@@ -329,11 +330,11 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
         pub_team = None
         tgt_team = None
         if sync.publisher_workspace_id:
-            publisher_ws = DbManager.get_record(schemas.Workspace, sync.publisher_workspace_id)
+            publisher_ws = get_workspace_by_id(sync.publisher_workspace_id)
             if publisher_ws:
                 pub_team = publisher_ws.team_id
         if sync.target_workspace_id:
-            tw = DbManager.get_record(schemas.Workspace, sync.target_workspace_id)
+            tw = get_workspace_by_id(sync.target_workspace_id)
             if tw:
                 tgt_team = tw.team_id
         syncs_data.append(
@@ -395,8 +396,8 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
     )
     user_mappings_data = []
     for um in um_records:
-        src_ws = DbManager.get_record(schemas.Workspace, um.source_workspace_id) if um.source_workspace_id else None
-        tgt_ws = DbManager.get_record(schemas.Workspace, um.target_workspace_id) if um.target_workspace_id else None
+        src_ws = get_workspace_by_id(um.source_workspace_id) if um.source_workspace_id else None
+        tgt_ws = get_workspace_by_id(um.target_workspace_id) if um.target_workspace_id else None
         user_mappings_data.append(
             {
                 "source_team_id": src_ws.team_id if src_ws else None,

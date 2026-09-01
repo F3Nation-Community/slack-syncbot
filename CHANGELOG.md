@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.3.3] - 2026-09-01
+
+### Changed
+
+- Home no longer keeps leftover DeSync or Create new / Join existing Sync routes; Publish, Subscribe, Unpublish, and Stop Syncing are the Channel Sync path
+
+### Fixed
+
+- Data Migration export/import looks up Workspaces by integer id via `get_workspace_by_id`
+
+
 ## [1.3.2] - 2026-08-31
 
 ### Added

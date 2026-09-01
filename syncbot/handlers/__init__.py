@@ -69,16 +69,12 @@ from handlers.messages import (
 )
 from handlers.settings import handle_open_settings, handle_settings_submit
 from handlers.sync import (
-    check_join_sync_channel,
     handle_app_home_opened,
     handle_authorize_syncbot,
     handle_db_reset,
     handle_db_reset_proceed,
-    handle_join_sync_submission,
     handle_member_joined_channel,
-    handle_new_sync_submission,
     handle_refresh_home,
-    handle_remove_sync,
 )
 from handlers.tokens import handle_app_uninstalled, handle_tokens_revoked
 from handlers.users import (
@@ -97,7 +93,6 @@ __all__ = [
     "_parse_event_fields",
     "_parse_private_metadata",
     "_sanitize_text",
-    "check_join_sync_channel",
     "handle_app_home_opened",
     "handle_backup_download",
     "handle_backup_restore",
@@ -123,7 +118,6 @@ __all__ = [
     "handle_invite_workspace_submit",
     "handle_join_group",
     "handle_join_group_submit",
-    "handle_join_sync_submission",
     "handle_demote_self",
     "handle_disband_group",
     "handle_disband_group_confirm",
@@ -133,7 +127,6 @@ __all__ = [
     "handle_promote_to_owner",
     "handle_settings_submit",
     "handle_member_joined_channel",
-    "handle_new_sync_submission",
     "handle_pause_sync",
     "handle_publish_channel",
     "handle_publish_channel_submit_ack",
@@ -142,7 +135,6 @@ __all__ = [
     "handle_authorize_syncbot",
     "handle_refresh_home",
     "handle_remove_federation_connection",
-    "handle_remove_sync",
     "handle_resume_sync",
     "handle_stop_sync",
     "handle_stop_sync_confirm",
