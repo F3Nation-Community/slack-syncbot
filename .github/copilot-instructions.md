@@ -18,13 +18,18 @@ poetry run pytest -q tests/ infra/aws/tests infra/gcp/tests
 
 ## Do not
 
-- Bump `pyproject.toml` `version` or add a new CHANGELOG version heading in a PR (releases own those). Do not hand-edit `*requirements.txt` (exports handle those).
+- Bump `pyproject.toml` `version` in a feature PR. You may pre-write the next CHANGELOG section **below** `<!-- version list -->` (releases own the version bump). Do not hand-edit `*requirements.txt` (exports handle those).
 - Commit `.env` secrets or `.aws-sam/` build output.
+- Link OAuth at `slack.com/oauth/v2/authorize`, or treat `SYNCBOT_PUBLIC_URL` as required. Use `/slack/install` and `get_public_base_url`.
 
 ## PR rules
 
 - Title must be a **Conventional Commit** (squash merge).
 - Link issues with `Fixes #n` when fixing bugs.
+
+## User scopes on Home
+
+Do not show Slack API scope names on **Authorize SyncBot**. Add new user scopes to `USER_SCOPES` and to `USER_PERMISSION_GROUPS` in `syncbot/slack_manifest_scopes.py` (plain 2–4 word labels; fold read/write twins; keep `groups:write` separate). See that constant's comment and [docs/AI_AGENTS.md](../docs/AI_AGENTS.md).
 
 ## Optional: CI parity check
 

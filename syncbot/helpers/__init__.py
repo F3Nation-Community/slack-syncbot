@@ -14,6 +14,19 @@ from helpers._cache import (
     _cache_set,
     clear_all_caches,
 )
+from helpers.conversations import (
+    AUTHORIZE_HINT,
+    ConversationAccessError,
+    authorize_url,
+    clear_user_authorization,
+    clear_workspace_installations,
+    ensure_bot_in_conversation,
+    get_user_token,
+    granted_user_scopes,
+    has_user_token,
+    needs_user_authorization,
+    user_permission_lists,
+)
 from helpers.core import (
     format_admin_label,
     get_request_type,
@@ -53,7 +66,13 @@ from helpers.notifications import (
     purge_stale_soft_deletes,
     save_dm_messages_to_group_member,
 )
-from helpers.oauth import get_oauth_flow
+from helpers.oauth import (
+    capture_public_base,
+    get_oauth_flow,
+    get_public_base_url,
+    public_base_from_headers,
+    remember_public_base,
+)
 from helpers.refresh import (
     cooldown_message_block,
     index_of_block_with_action,
@@ -109,11 +128,22 @@ from helpers.workspace import (
     get_sync_list,
     get_workspace_by_id,
     get_workspace_record,
+    lookup_channel_meta,
     resolve_channel_name,
     resolve_workspace_name,
 )
 
 __all__ = [
+    "AUTHORIZE_HINT",
+    "ConversationAccessError",
+    "authorize_url",
+    "clear_user_authorization",
+    "clear_workspace_installations",
+    "ensure_bot_in_conversation",
+    "granted_user_scopes",
+    "has_user_token",
+    "needs_user_authorization",
+    "user_permission_lists",
     "_CACHE",
     "_CACHE_TTL_SECONDS",
     "_USER_INFO_CACHE_TTL",
@@ -146,6 +176,10 @@ __all__ = [
     "find_synced_channel_in_target",
     "get_mapped_target_user_id",
     "get_oauth_flow",
+    "get_public_base_url",
+    "capture_public_base",
+    "public_base_from_headers",
+    "remember_public_base",
     "normalize_display_name",
     "get_own_bot_id",
     "get_own_bot_user_id",
@@ -154,6 +188,7 @@ __all__ = [
     "get_sync_list",
     "get_user_id_from_body",
     "get_user_info",
+    "get_user_token",
     "get_workspace_by_id",
     "get_workspace_record",
     "index_of_block_with_action",
@@ -192,6 +227,7 @@ __all__ = [
     "set_setting",
     "soft_delete_retention_days",
     "succeed_ownership",
+    "lookup_channel_meta",
     "resolve_channel_name",
     "resolve_channel_references",
     "refresh_after_full",

@@ -38,6 +38,27 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 - Look for forbidden-file edits; CI should fail them, but reviewers should still watch for secrets.
 - Ensure tests cover behavior changes; spot-check Slack/event flows when touching handlers.
 
+## When changing Slack user scopes
+
+`USER_SCOPES` in [`syncbot/slack_manifest_scopes.py`](../syncbot/slack_manifest_scopes.py) must stay in lockstep with the manifests and `SLACK_USER_SCOPES` defaults (see that module's header). The Home tab **Authorize SyncBot** section does not list those API names. It lists `USER_PERMISSION_GROUPS`.
+
+The 1.3.2 list was built as follows; keep new rows on the same rails:
+
+1. Start from the manifest **user** scopes, not bot scopes.
+2. Look up each scope on [Slack's scopes reference](https://docs.slack.dev/reference/scopes) for the *user-token* meaning, then write a 2–4 word label. Never paste `channels:history`. Do not start with "Can" or "Allow".
+3. Fold scopes people experience as one capability (history+read of the same channel type, files read+write, reactions, users.read + email). Keep `groups:write` as its own line because inviting the bot into a private Channel is not the same as viewing one.
+4. A group counts as already allowed only when every scope in it is on the stored token. First-time authorize hides the already-allowed list; a later scope add shows it with checkmarks so re-authorize does not look like a redo.
+
+`tests/test_slack_manifest_scopes.py` asserts every `USER_SCOPE` sits in exactly one group. The recipe also lives as comments on `USER_PERMISSION_GROUPS`.
+
+## Public origin and OAuth install
+
+This instance's public HTTPS origin is the Host of incoming Slack requests (the same URL Slack already uses for events). `helpers.oauth.get_public_base_url` / `capture_public_base` serve Authorize SyncBot (`/slack/install?team=`) and federation webhooks. Do not read `SYNCBOT_PUBLIC_URL`; if that leftover env var is set, the app logs a warning and ignores it.
+
+Bolt OAuth must start at **this instance's** `GET /slack/install`. A Home-tab URL that points at Slack's authorize page skips the state cookie and fails after Allow with `invalid_browser`. On Lambda, Function URL payload 2.0 needs the OAuth cookie in the `cookies` array, and stray GETs such as `/favicon.ico` must not be treated as a second install. After a successful callback, call `refresh_home_after_oauth_install` so that user's Home tab updates without a manual Refresh.
+
+Token rows live in Bolt's `SQLAlchemyInstallationStore` (`slack_bots` / `slack_installations`). Use those store methods; do not hand-edit token columns. A personal revoke is `delete_installation(..., user_id=...)`. A workspace uninstall is `delete_all` (same as Bolt's `app_uninstalled` listener) plus SyncBot's workspace pause. Do not call `App.enable_token_revocation_listeners()`: that deletes the bot whenever Slack fills `tokens.bot`, including on a personal revoke, which blanks Home. `tokens_revoked` with a live bot token is user-only even if `tokens.bot` is set. Do not leave a tokenless per-user `slack_installations` row; Bolt authorize looks that user up first and will skip the workspace bot token.
+
 ## Fork compatibility
 
 `release.yml`, Dependabot auto-merge, and semantic-release config apply to **F3Nation-Community/slack-syncbot** only. Deploy forks keep `test`/`prod` Environments and must not mint duplicate GitHub Releases. CODEOWNERS handles are organization-specific; replace `@sprocktech-dev` on other orgs. See [INFRA_CONTRACT.md](INFRA_CONTRACT.md) Fork Compatibility Policy.

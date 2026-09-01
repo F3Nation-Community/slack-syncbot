@@ -22,7 +22,7 @@ Typical flow: develop on a feature branch → open a PR to **`main`** → merge 
 1. Run `cp .env.example .env` and set `SLACK_BOT_TOKEN` (`xoxb-...`).
 2. Use **Dev Containers: Reopen in Container** — Python, MySQL, and dependencies run inside the container.
 3. Run `cd syncbot && python app.py`. The app listens on **port 3000** (forwarded).
-4. Expose it to Slack with **cloudflared** or **ngrok** from the host, then set Slack **Event Subscriptions** and **Interactivity** URLs to that public URL.
+4. Expose it to Slack with **cloudflared** or **ngrok** from the host, then set Slack **Event Subscriptions**, **Interactivity**, and **Redirect** URLs to that public origin (`/slack/events` and `/slack/oauth_redirect`). If you test **Authorize SyncBot**, the Home tab button always starts at this instance's `/slack/install` on the same origin. There is no `SYNCBOT_PUBLIC_URL` to set.
 
 Optional **SQLite**: in `.env` set `DATABASE_BACKEND=sqlite` and `DATABASE_URL=sqlite:////app/syncbot/syncbot.db`.
 

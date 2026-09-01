@@ -67,6 +67,7 @@
       "request_url": "https://your-random-tunnel-name.trycloudflare.com/slack/events",
       "bot_events": [
         "app_home_opened",
+        "app_uninstalled",
         "member_joined_channel",
         "message.channels",
         "message.groups",

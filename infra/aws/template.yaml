@@ -161,9 +161,8 @@ Parameters:
 
   SyncbotPublicUrl:
     Description: >
-      Public HTTPS base URL without path (SYNCBOT_PUBLIC_URL). Required when
-      federation is enabled (SyncbotFederationEnabled=true); use the Function URL
-      from stack outputs or a custom domain. Leave empty otherwise.
+      Leftover SYNCBOT_PUBLIC_URL. The app ignores this and uses the Host of
+      incoming Slack requests for OAuth install and federation. Leave empty.
     Type: String
     Default: ""
 
@@ -473,7 +472,7 @@ Resources:
 
 Outputs:
   SyncBotPublicBaseUrl:
-    Description: Public HTTPS base URL (SYNCBOT_PUBLIC_URL) for Slack and federation
+    Description: Public HTTPS base URL (Function URL, or leftover SyncbotPublicUrl if set)
     Value: !If
       - HasSyncbotPublicUrlOverride
       - !Ref SyncbotPublicUrl

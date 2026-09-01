@@ -14,8 +14,10 @@ from builders.channel_sync import (
     _build_inline_channel_sync,
 )
 from builders.home import (
+    _build_authorize_section,
     _home_tab_content_hash,
     build_home_tab,
+    home_tab_hash_key,
     refresh_home_tab_for_workspace,
 )
 from builders.sync import build_join_sync_form, build_new_sync_form
@@ -28,7 +30,9 @@ from builders.user_mapping import (
 )
 
 __all__ = [
+    "_build_authorize_section",
     "_build_inline_channel_sync",
+    "home_tab_hash_key",
     "_format_channel_ref",
     "_get_group_members",
     "_get_groups_for_workspace",

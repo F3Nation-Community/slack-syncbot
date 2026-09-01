@@ -52,7 +52,7 @@ from constants import (
 )
 from db import initialize_database
 from federation.api import dispatch_federation_request
-from helpers import get_oauth_flow, get_request_type, safe_get
+from helpers import capture_public_base, get_oauth_flow, get_request_type, safe_get
 from logger import (
     configure_logging,
     emit_metric,
@@ -65,6 +65,7 @@ _SENSITIVE_KEYS = frozenset(
     {
         "token",
         "bot_token",
+        "user_token",
         "access_token",
         "shared_secret",
         "public_key",
@@ -116,6 +117,13 @@ def _capture_slack_retry_num(req, resp, next):
     return next()
 
 
+@app.middleware
+def _capture_public_base_url(req, resp, next):
+    """Remember this request's public origin for /slack/install and federation."""
+    capture_public_base(getattr(req, "headers", None), req.context)
+    return next()
+
+
 def handler(event: dict, context: dict) -> dict:
     """AWS Lambda entry point.
 
@@ -145,6 +153,18 @@ def handler(event: dict, context: dict) -> dict:
     if path.startswith("/api/federation"):
         return _lambda_federation_handler(event)
 
+    if _lambda_http_method(event) == "GET" and path not in ("/slack/install", "/slack/oauth_redirect"):
+        # Bolt's Lambda adapter treats every GET as OAuth install. A browser
+        # favicon hit after /slack/install would issue a new state cookie and
+        # the real callback would fail with invalid_browser.
+        return {
+            "statusCode": 404,
+            "headers": {"Content-Type": "text/plain;charset=utf-8"},
+            "body": "Not Found",
+        }
+
+    capture_public_base(event.get("headers") or {})
+
     if SlackRequestHandler is None:
         raise RuntimeError(
             "AWS Lambda adapter is unavailable (boto3 / slack_bolt.adapter.aws_lambda missing). "
@@ -152,7 +172,48 @@ def handler(event: dict, context: dict) -> dict:
         )
 
     slack_request_handler = SlackRequestHandler(app=app)
-    return slack_request_handler.handle(event, context)
+    return _as_function_url_response(slack_request_handler.handle(event, context))
+
+
+def _lambda_http_method(event: dict) -> str:
+    """HTTP method from a Function URL (payload 2.0) or API Gateway (v1) event."""
+    request_context = event.get("requestContext") or {}
+    http = request_context.get("http") or {}
+    return str(http.get("method") or event.get("httpMethod") or "").upper()
+
+
+def _as_function_url_response(resp: dict) -> dict:
+    """Move ``Set-Cookie`` into the Function URL ``cookies`` array.
+
+    Payload format 2.0 ignores ``Set-Cookie`` in ``headers``, so Bolt's OAuth
+    state cookie would never reach the browser and Allow would fail with
+    ``invalid_browser``.
+    """
+    if not isinstance(resp, dict):
+        return resp
+    headers = resp.get("headers")
+    if not headers:
+        return resp
+    cookies = list(resp.get("cookies") or [])
+    new_headers = {}
+    moved = False
+    for key, value in headers.items():
+        if str(key).lower() == "set-cookie":
+            moved = True
+            if isinstance(value, list | tuple):
+                cookies.extend(str(item) for item in value if item)
+            elif value:
+                cookies.append(str(value))
+        else:
+            new_headers[key] = value
+    if not moved:
+        return resp
+    out = {**resp, "headers": new_headers}
+    if cookies:
+        out["cookies"] = cookies
+    elif "cookies" in out:
+        out = {k: v for k, v in out.items() if k != "cookies"}
+    return out
 
 
 def _lambda_federation_handler(event: dict) -> dict:
@@ -373,6 +434,7 @@ def run_syncbot_http_server(
                         query=query,
                         headers=self.headers,
                     )
+                    capture_public_base(self.headers)
                     bolt_resp = _bolt_oauth_flow.handle_installation(bolt_req)
                     self._send_bolt_response(bolt_resp)
                     return
@@ -382,6 +444,7 @@ def run_syncbot_http_server(
                         query=query,
                         headers=self.headers,
                     )
+                    capture_public_base(self.headers)
                     bolt_resp = _bolt_oauth_flow.handle_callback(bolt_req)
                     self._send_bolt_response(bolt_resp)
                     return

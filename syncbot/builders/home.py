@@ -33,15 +33,33 @@ from slack.blocks import divider, header, section
 _logger = logging.getLogger(__name__)
 
 
-def _home_tab_content_hash(workspace_record: Workspace) -> str:
+def _home_tab_content_hash(
+    workspace_record: Workspace,
+    user_id: str | None = None,
+    *,
+    is_admin: bool = True,
+) -> str:
     """Compute a stable hash of the data that drives the Home tab.
 
-    Includes groups, members, syncs, sync channels (id/workspace/status), mapped counts,
-    pending invite ids, and reset-button visibility so the hash changes when anything
-    visible on Home changes (including PRIMARY_WORKSPACE / ENABLE_DB_RESET for Reset).
+    *user_id* is part of the payload because one block on Home is per person: the
+    Authorize SyncBot section, which disappears once that user has granted every
+    current user-scope group. Without it, a Refresh right after authorizing would
+    replay cached blocks that still show the button. Granted scopes are hashed too,
+    so adding a scope later busts the cache and the section comes back with the
+    already-allowed list filled in.
+
+    Non-admins only see Authorize, Refresh, and the lock line, so their hash skips
+    groups and syncs. That keeps Refresh cheap and means a channel change does not
+    force every member to rebuild a tab they cannot see. Workspace-level changes
+    still bust every *admin* hash, because the workspace payload is hashed in too.
     """
     workspace_id = workspace_record.id
     workspace_name = (workspace_record.workspace_name or "") or ""
+    permission_lists = tuple(helpers.user_permission_lists(workspace_record.team_id, user_id)) if user_id else ((), ())
+    if not is_admin:
+        payload = (workspace_id, workspace_name, user_id or "", permission_lists)
+        return hashlib.sha256(repr(payload).encode()).hexdigest()
+
     reset_visible = helpers.is_db_reset_visible_for_workspace(workspace_record.team_id)
     my_groups = _get_groups_for_workspace(workspace_id)
     group_ids = sorted(g.id for g, _ in my_groups)
@@ -114,8 +132,112 @@ def _home_tab_content_hash(workspace_record: Workspace) -> str:
         tuple(group_payload),
         pending_ids,
         reset_visible,
+        user_id or "",
+        permission_lists,
     )
     return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+
+def home_tab_hash_key(team_id: str, user_id: str) -> str:
+    """Cache key for a Home tab content hash.
+
+    Per user, since the Authorize SyncBot section is per user. Restore-time
+    invalidation still works: ``invalidate_home_tab_caches_for_team`` deletes by
+    the ``home_tab_hash:{team_id}`` prefix.
+    """
+    return f"home_tab_hash:{team_id}:{user_id}"
+
+
+def _build_authorize_section(blocks: list, team_id: str, user_id: str, context: dict | None = None) -> bool:
+    """Prepend the Authorize SyncBot section when this user still needs to authorize.
+
+    Slack will not let a bot add itself to a private channel; only a member can,
+    with that member's own user token. This button is the OAuth install that mints
+    it (or refreshes it when we add scopes later). Shown to everyone, admin or not,
+    because authorization is about acting as that person rather than about
+    configuring SyncBot.
+
+    When they already granted some permissions, those stay listed with checkmarks
+    so a later scope change looks like an addition rather than a redo. A first-time
+    visitor has nothing granted yet, so that list is omitted.
+    """
+    if not helpers.needs_user_authorization(team_id, user_id):
+        return False
+
+    url = helpers.authorize_url(team_id, context=context)
+    if not url:
+        # Single-workspace/local mode has no OAuth flow, so there is nothing to
+        # link to and a button would be a dead end.
+        return False
+
+    already, needed = helpers.user_permission_lists(team_id, user_id)
+
+    blocks.append(header("Authorize SyncBot"))
+    blocks.append(block_context("_Allow SyncBot to act on your behalf in this Slack Workspace._"))
+    if already:
+        checks = "\n".join(f":white_check_mark: {label}" for label in already)
+        blocks.append(block_context(f"*Already allowed permissions:*\n{checks}"))
+    if needed:
+        dashes = "\n".join(f"- {label}" for label in needed)
+        blocks.append(block_context(f"*Needed permissions:*\n{dashes}"))
+    blocks.append(
+        orm.ActionsBlock(
+            elements=[
+                orm.ButtonElement(
+                    label="Authorize SyncBot",
+                    action=actions.CONFIG_AUTHORIZE_SYNCBOT,
+                    url=url,
+                ),
+            ]
+        )
+    )
+    blocks.append(divider())
+    return True
+
+
+def _build_configuration_section(
+    blocks: list,
+    workspace_record: Workspace,
+    *,
+    include_admin_buttons: bool,
+) -> None:
+    """Append SyncBot Configuration, directly under Authorize.
+
+    *Refresh* is for everyone so a non-admin can reload Home after revoking.
+    Settings, Backup/Restore, and Reset stay admin-only (and still require
+    ``PRIMARY_WORKSPACE`` / ``ENABLE_DB_RESET`` as before).
+    """
+    blocks.append(header("SyncBot Configuration"))
+    config_buttons = [
+        orm.ButtonElement(
+            label="Refresh",
+            action=actions.CONFIG_REFRESH_HOME,
+        ),
+    ]
+    if include_admin_buttons:
+        if helpers.is_settings_visible_for_workspace(workspace_record.team_id):
+            config_buttons.append(
+                orm.ButtonElement(
+                    label="Settings",
+                    action=actions.CONFIG_OPEN_SETTINGS,
+                ),
+            )
+        if helpers.is_backup_visible_for_workspace(workspace_record.team_id):
+            config_buttons.append(
+                orm.ButtonElement(
+                    label="Backup/Restore",
+                    action=actions.CONFIG_BACKUP_RESTORE,
+                ),
+            )
+        if helpers.is_db_reset_visible_for_workspace(workspace_record.team_id):
+            config_buttons.append(
+                orm.ButtonElement(
+                    label=":bomb: Reset Database",
+                    action=actions.CONFIG_DB_RESET,
+                    style="danger",
+                ),
+            )
+    blocks.append(orm.ActionsBlock(elements=config_buttons))
 
 
 def refresh_home_tab_for_workspace(workspace: Workspace, logger: Logger, context: dict | None = None) -> None:
@@ -167,104 +289,71 @@ def build_home_tab(
 
     blocks: list[orm.BaseBlock] = []
 
+    # Authorize is not a configuration action, so REQUIRE_ADMIN does not hide it:
+    # a non-admin still needs to authorize SyncBot to act as them. Refresh sits
+    # in SyncBot Configuration immediately under that, so anyone can reload Home
+    # after revoking. Everything below the lock line stays admin-only, and every
+    # configure handler keeps its own authorization check.
+    _build_authorize_section(blocks, workspace_record.team_id, user_id, context)
+    _build_configuration_section(blocks, workspace_record, include_admin_buttons=is_admin)
+
     if not is_admin:
-        blocks.append(block_context(":lock: Only Workspace Admins can configure SyncBot."))
-        block_dicts = orm.BlockView(blocks=blocks).as_form_field()
-        if return_blocks:
-            return block_dicts
-        client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})
-        return None
-
-    # Compute hash for admin view so we can update cache after publish (manual or automatic)
-    current_hash = _home_tab_content_hash(workspace_record)
-
-    # ── Workspace Groups ──────────────────────────────────────
-    blocks.append(header("Workspace Groups"))
-    blocks.append(block_context("_Groups of Workspaces that can Publish and Subscribe to Channels._"))
-    blocks.append(
-        orm.ActionsBlock(
-            elements=[
-                orm.ButtonElement(
-                    label="Create Group",
-                    action=actions.CONFIG_CREATE_GROUP,
-                ),
-                orm.ButtonElement(
-                    label="Join Group",
-                    action=actions.CONFIG_JOIN_GROUP,
-                ),
-            ]
-        )
-    )
-
-    my_groups = _get_groups_for_workspace(workspace_record.id)
-
-    pending_invites = DbManager.find_records(
-        WorkspaceGroupMember,
-        [
-            WorkspaceGroupMember.workspace_id == workspace_record.id,
-            WorkspaceGroupMember.status == "pending",
-            WorkspaceGroupMember.deleted_at.is_(None),
-        ],
-    )
-
-    if not my_groups and not pending_invites:
+        blocks.append(block_context(":lock: This area of SyncBot is limited to Workspace Admins."))
+    else:
+        # ── Workspace Groups ──────────────────────────────────────
+        blocks.append(header("Workspace Groups"))
+        blocks.append(block_context("_Groups of Workspaces that can Publish and Subscribe to Channels._"))
         blocks.append(
-            block_context(
-                "You are not in any Workspace Groups yet. Create or join a Group before you can Publish or Subscribe to Channels with other Workspaces."
+            orm.ActionsBlock(
+                elements=[
+                    orm.ButtonElement(
+                        label="Create Group",
+                        action=actions.CONFIG_CREATE_GROUP,
+                    ),
+                    orm.ButtonElement(
+                        label="Join Group",
+                        action=actions.CONFIG_JOIN_GROUP,
+                    ),
+                ]
             )
         )
-    else:
-        for group, my_membership in my_groups:
-            _build_group_section(blocks, group, my_membership, workspace_record, context)
 
-    for invite in pending_invites:
-        _build_pending_invite_section(blocks, invite, context)
+        my_groups = _get_groups_for_workspace(workspace_record.id)
 
-    # ── External Connections (federation) ─────────────────────
-    if constants.FEDERATION_ENABLED:
-        _build_federation_section(blocks, workspace_record)
-
-    # ── SyncBot Configuration ────────────────────
-    blocks.append(block_context("\u200b"))
-    blocks.append(divider())
-    blocks.append(header("SyncBot Configuration"))
-    config_buttons = [
-        orm.ButtonElement(
-            label="Refresh",
-            action=actions.CONFIG_REFRESH_HOME,
-        ),
-    ]
-    if helpers.is_settings_visible_for_workspace(workspace_record.team_id):
-        config_buttons.append(
-            orm.ButtonElement(
-                label="Settings",
-                action=actions.CONFIG_OPEN_SETTINGS,
-            ),
+        pending_invites = DbManager.find_records(
+            WorkspaceGroupMember,
+            [
+                WorkspaceGroupMember.workspace_id == workspace_record.id,
+                WorkspaceGroupMember.status == "pending",
+                WorkspaceGroupMember.deleted_at.is_(None),
+            ],
         )
-    if helpers.is_backup_visible_for_workspace(workspace_record.team_id):
-        config_buttons.append(
-            orm.ButtonElement(
-                label="Backup/Restore",
-                action=actions.CONFIG_BACKUP_RESTORE,
-            ),
-        )
-    if helpers.is_db_reset_visible_for_workspace(workspace_record.team_id):
-        config_buttons.append(
-            orm.ButtonElement(
-                label=":bomb: Reset Database",
-                action=actions.CONFIG_DB_RESET,
-                style="danger",
-            ),
-        )
-    blocks.append(orm.ActionsBlock(elements=config_buttons))
 
+        if not my_groups and not pending_invites:
+            blocks.append(
+                block_context(
+                    "You are not in any Workspace Groups yet. Create or join a Group before you can Publish or Subscribe to Channels with other Workspaces."
+                )
+            )
+        else:
+            for group, my_membership in my_groups:
+                _build_group_section(blocks, group, my_membership, workspace_record, context)
+
+        for invite in pending_invites:
+            _build_pending_invite_section(blocks, invite, context)
+
+        # ── External Connections (federation) ─────────────────────
+        if constants.FEDERATION_ENABLED:
+            _build_federation_section(blocks, workspace_record)
+
+    current_hash = _home_tab_content_hash(workspace_record, user_id, is_admin=is_admin)
     block_dicts = orm.BlockView(blocks=blocks).as_form_field()
     if return_blocks:
         return block_dicts
     client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})
     # Update cache so next manual Refresh skips full rebuild when data unchanged
     helpers.refresh_after_full(
-        f"home_tab_hash:{team_id}",
+        home_tab_hash_key(team_id, user_id),
         f"home_tab_blocks:{team_id}:{user_id}",
         f"refresh_at:home:{team_id}:{user_id}",
         current_hash,

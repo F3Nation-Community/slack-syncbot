@@ -61,11 +61,17 @@ def get_instance_id() -> str:
     return _INSTANCE_ID
 
 
-def get_public_url() -> str:
-    """Return the public base URL of this instance (no trailing slash)."""
-    url = os.environ.get("SYNCBOT_PUBLIC_URL", "").rstrip("/")
+def get_public_url(context: dict | None = None) -> str:
+    """Return the public base URL of this instance (no trailing slash).
+
+    Same origin Slack already uses for events: the Host of incoming requests,
+    via :func:`helpers.oauth.get_public_base_url`.
+    """
+    from helpers.oauth import get_public_base_url
+
+    url = get_public_base_url(context) or ""
     if not url:
-        _logger.warning("SYNCBOT_PUBLIC_URL is not set — federation will not work")
+        _logger.warning("public base URL is unknown — federation needs an incoming Slack request first")
     return url
 
 

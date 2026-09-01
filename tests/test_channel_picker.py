@@ -108,14 +108,54 @@ class TestValidateChannelSelection:
 
         assert "Private Channels cannot be synced" in result["errors"][self.ACTION]
 
-    def test_private_channel_allowed_when_setting_is_on(self, client):
+    def test_private_channel_allowed_when_setting_is_on_and_a_token_exists(self, client):
+        """With a user token to invite with, the pick is accepted without a lookup.
+
+        The bot often cannot see a private channel at all, so its own view of the
+        channel says nothing useful once either path would work.
+        """
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=True),
         ):
-            assert _validate_channel_selection(client, "C1", self.ACTION) is None
+            assert _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1") is None
 
         client.conversations_info.assert_not_called()
+
+    def test_private_pick_without_a_user_token_points_at_authorize(self, client):
+        """Only a member can add an app to a private channel, so say so up front."""
+        client.conversations_info.return_value = {"channel": {"is_private": True}}
+        with (
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
+        ):
+            result = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
+
+        assert "Authorize SyncBot" in result["errors"][self.ACTION]
+
+    def test_public_pick_without_a_user_token_still_passes(self, client):
+        """A public channel is joined with the bot token, so no authorization is needed."""
+        client.conversations_info.return_value = {"channel": {"is_private": False}}
+        with (
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
+        ):
+            assert _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1") is None
+
+    def test_unreadable_channel_is_treated_as_private_when_private_is_allowed(self, client):
+        """A private channel the bot has never been in is invisible to the bot token."""
+        client.conversations_info.side_effect = Exception("channel_not_found")
+        with (
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
+            patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
+        ):
+            result = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
+
+        assert "Authorize SyncBot" in result["errors"][self.ACTION]
 
     def test_unreadable_channel_fails_closed(self, client):
         """A channel SyncBot cannot inspect is one it cannot join either."""
@@ -151,7 +191,7 @@ class TestSubscribeAckSurfacesErrors:
         from handlers.channel_sync import handle_subscribe_channel_submit_ack
 
         client = MagicMock()
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -168,7 +208,7 @@ class TestSubscribeAckSurfacesErrors:
         from handlers.channel_sync import handle_subscribe_channel_submit_ack
 
         client = MagicMock()
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -181,7 +221,7 @@ class TestSubscribeAckSurfacesErrors:
 
         client = MagicMock()
         client.conversations_info.return_value = {"channel": {"is_private": False}}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),

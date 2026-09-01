@@ -142,7 +142,7 @@ class TestPublishModeSubmitAck:
     def test_missing_group_id_logs_warning(self):
         client = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
         body = {"view": {"team_id": "T1", "private_metadata": "{}"}}
 
         with (
@@ -161,7 +161,7 @@ class TestPublishChannelSubmitAck:
     def test_missing_group_id_exits_early(self):
         client = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -176,7 +176,7 @@ class TestPublishChannelSubmitAck:
     def test_missing_channel_selection_returns_ack_error(self):
         client = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -194,7 +194,7 @@ class TestPublishChannelSubmitAck:
     def test_existing_sync_channel_returns_ack_error(self):
         client = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -216,7 +216,7 @@ class TestSubscribeChannelSubmit:
         client = MagicMock()
         logger = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -231,7 +231,7 @@ class TestSubscribeChannelSubmit:
         client = MagicMock()
         logger = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
 
         with (
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
@@ -253,7 +253,7 @@ class TestSubscribeChannelSubmit:
         client = MagicMock()
         logger = MagicMock()
         context = {}
-        workspace = SimpleNamespace(id=10)
+        workspace = SimpleNamespace(id=10, team_id="T1")
         sync_record = SimpleNamespace(group_id=None)
 
         with (

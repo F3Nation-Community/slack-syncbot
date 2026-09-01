@@ -384,17 +384,8 @@ def resolve_channel_name(channel_id: str, workspace=None) -> str:
     if cached:
         return cached
 
-    ch_name = channel_id
-    ws_name = None
-
-    if workspace and hasattr(workspace, "bot_token") and workspace.bot_token:
-        ws_name = getattr(workspace, "workspace_name", None)
-        try:
-            ws_client = WebClient(token=decrypt_bot_token(workspace.bot_token))
-            info = ws_client.conversations_info(channel=channel_id)
-            ch_name = safe_get(info, "channel", "name") or channel_id
-        except Exception as exc:
-            _logger.debug(f"resolve_channel_name: conversations_info failed for {channel_id}: {exc}")
+    ch_name, _is_private = lookup_channel_meta(channel_id, workspace)
+    ws_name = getattr(workspace, "workspace_name", None) if workspace else None
 
     if ws_name:
         result = f"#{ch_name} ({ws_name})"
@@ -404,3 +395,54 @@ def resolve_channel_name(channel_id: str, workspace=None) -> str:
     if ch_name != channel_id:
         _cache_set(cache_key, result, ttl=3600)
     return result
+
+
+def lookup_channel_meta(
+    channel_id: str,
+    workspace=None,
+    *,
+    user_token: str | None = None,
+    client: WebClient | None = None,
+) -> tuple[str, bool]:
+    """Return ``(name, is_private)`` for a Slack channel.
+
+    Tries *client* (the request bot), then the workspace bot token, then
+    *user_token*. The bot cannot see a private Channel it has not joined yet,
+    which is why publish used to store the Channel ID as ``sync.title``.
+    Never log *user_token*.
+    """
+    if not channel_id:
+        return channel_id, False
+
+    cache_key = f"chan_meta:{channel_id}"
+    cached = _cache_get(cache_key)
+    if isinstance(cached, tuple) and len(cached) == 2:
+        return str(cached[0]), bool(cached[1])
+
+    clients: list[WebClient] = []
+    if client is not None:
+        clients.append(client)
+    if workspace and getattr(workspace, "bot_token", None):
+        try:
+            clients.append(WebClient(token=decrypt_bot_token(workspace.bot_token)))
+        except Exception as exc:
+            _logger.debug(f"lookup_channel_meta: bot token unusable for {channel_id}: {exc}")
+    if user_token:
+        clients.append(WebClient(token=user_token))
+
+    name, is_private = channel_id, False
+    for slack_client in clients:
+        try:
+            info = slack_client.conversations_info(channel=channel_id)
+            channel = safe_get(info, "channel") or {}
+            found = channel.get("name")
+            if found:
+                name = str(found)
+                is_private = bool(channel.get("is_private"))
+                break
+        except Exception as exc:
+            _logger.debug(f"lookup_channel_meta: conversations_info failed for {channel_id}: {exc}")
+
+    if name != channel_id:
+        _cache_set(cache_key, (name, is_private), ttl=3600)
+    return name, is_private

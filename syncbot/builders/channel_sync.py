@@ -19,6 +19,27 @@ from slack.blocks import (
 _logger = logging.getLogger(__name__)
 
 
+def _available_channel_label(channel_id: str | None, workspace, title: str | None) -> str:
+    """Name of a published channel on Home, with `` (private)`` when it is private.
+
+    ``sync.title`` used to be the Slack Channel ID when the bot looked up the
+    name before it had joined a private Channel. Ask the publisher workspace
+    now that the bot is in it. The Home context wraps this in backticks, same
+    as Type and Publisher — no hash, no emoji.
+    """
+    fallback = (title or channel_id or "Unknown").removeprefix("#")
+    if channel_id and workspace:
+        name, is_private = helpers.lookup_channel_meta(channel_id, workspace)
+        if name == channel_id:
+            name = fallback
+    else:
+        name, is_private = fallback, False
+    name = str(name).removeprefix("#")
+    if is_private:
+        return f"{name} (private)"
+    return name
+
+
 def _build_inline_channel_sync(
     blocks: list,
     group: WorkspaceGroup,
@@ -179,7 +200,7 @@ def _build_inline_channel_sync(
             )
         blocks.append(orm.ActionsBlock(elements=[teardown_btn]))
 
-    for sync, _other_chs in available_syncs:
+    for sync, other_chs in available_syncs:
         publisher_ws = helpers.get_workspace_by_id(sync.publisher_workspace_id, context=context)
         publisher_name = helpers.resolve_workspace_name(publisher_ws) if publisher_ws else "another Workspace"
         if sync.sync_mode == "direct":
@@ -187,8 +208,14 @@ def _build_inline_channel_sync(
         else:
             mode_tag = "Available to Any"
 
+        pub_ch = next(
+            (c for c in other_chs if c.workspace_id == sync.publisher_workspace_id),
+            other_chs[0] if other_chs else None,
+        )
+        channel_label = _available_channel_label(pub_ch.channel_id if pub_ch else None, publisher_ws, sync.title)
+
         blocks.append(section(":inbox_tray: Published Channel Available"))
-        blocks.append(block_context(f"Type: `{mode_tag}`\nPublisher: `{publisher_name}`\nChannel Name: `{sync.title}`"))
+        blocks.append(block_context(f"Type: `{mode_tag}`\nPublisher: `{publisher_name}`\nChannel: `{channel_label}`"))
         blocks.append(
             orm.ActionsBlock(
                 elements=[

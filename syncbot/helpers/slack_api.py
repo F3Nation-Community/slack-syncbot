@@ -1,5 +1,6 @@
 """Slack API wrappers with automatic retry and rate-limit handling."""
 
+import hashlib
 import json
 import logging
 import time as _time
@@ -57,16 +58,32 @@ def _users_info(client: WebClient, user_id: str) -> dict:
     return client.users_info(user=user_id)
 
 
-def _get_auth_info(client: WebClient) -> dict | None:
-    """Call ``auth.test`` once and cache both bot_id and user_id."""
-    cache_key = "own_auth_info"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
+def _token_fingerprint(client: WebClient) -> str | None:
+    """Short hash of this client's token for cache keys. Never log the token."""
+    token = getattr(client, "token", None)
+    if not isinstance(token, str) or not token:
+        return None
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:16]
+
+
+def _get_auth_info(client: WebClient, *, bypass_cache: bool = False) -> dict | None:
+    """Call ``auth.test`` and cache both bot_id and user_id per bot token.
+
+    The cache key must include the token. A single process-wide entry would
+    reuse workspace A's bot member ID on workspace B, and
+    ``conversations.invite`` then fails with ``user_not_found``.
+    """
+    fingerprint = _token_fingerprint(client)
+    cache_key = f"own_auth_info:{fingerprint}" if fingerprint else None
+    if cache_key and not bypass_cache:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return cached
     try:
         res = client.auth_test()
         info = {"bot_id": safe_get(res, "bot_id"), "user_id": safe_get(res, "user_id")}
-        _cache_set(cache_key, info, ttl=3600)
+        if cache_key:
+            _cache_set(cache_key, info, ttl=3600)
         return info
     except Exception:
         _logger.warning("Could not determine own identity via auth.test")
@@ -82,9 +99,23 @@ def get_own_bot_id(client: WebClient, context: dict) -> str | None:
     return info["bot_id"] if info else None
 
 
-def get_own_bot_user_id(client: WebClient) -> str | None:
-    """Return SyncBot's own *user* ID (``U…``) for the current workspace."""
-    info = _get_auth_info(client)
+def get_own_bot_user_id(
+    client: WebClient,
+    context: dict | None = None,
+    *,
+    bypass_cache: bool = False,
+) -> str | None:
+    """Return SyncBot's own *user* ID (``U…``) for the current workspace.
+
+    Prefer Bolt's request-scoped ``bot_user_id`` when present. ``auth.test`` is
+    cached per bot token so a warm Lambda cannot hand workspace A's identity
+    to workspace B.
+    """
+    if not bypass_cache and context:
+        bot_user_id = context.get("bot_user_id")
+        if bot_user_id:
+            return bot_user_id
+    info = _get_auth_info(client, bypass_cache=bypass_cache)
     return info["user_id"] if info else None
 
 

@@ -11,7 +11,7 @@ import builders
 import constants
 import helpers
 from db import DbManager, schemas
-from handlers._common import _sanitize_text
+from handlers._common import _ensure_membership_or_rollback, _sanitize_text
 from slack import actions, forms, orm
 
 _logger = logging.getLogger(__name__)
@@ -88,6 +88,28 @@ def handle_app_home_opened(
     builders.build_home_tab(body, client, logger, context)
 
 
+def handle_authorize_syncbot(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Acknowledge the Authorize SyncBot button.
+
+    The button is a link: Slack opens the OAuth install from its ``url`` and this
+    payload arrives only as a notification. Registering it keeps the click out of
+    the ``no_handler`` error log. The Home tab drops the section on the next
+    ``app_home_opened`` once the install writes a user token.
+    """
+    _logger.info(
+        "authorize_syncbot_clicked",
+        extra={
+            "team_id": helpers.safe_get(body, "team", "id"),
+            "user_id": helpers.safe_get(body, "user", "id"),
+        },
+    )
+
+
 def handle_refresh_home(
     body: dict,
     client: WebClient,
@@ -96,8 +118,11 @@ def handle_refresh_home(
 ) -> None:
     """Handle the Refresh button on the Home tab.
 
-    Uses content hash and cached blocks: full refresh only when data changed.
-    When hash matches and within 60s cooldown, re-publishes with cooldown message.
+    Available to everyone so a non-admin can reload Home after revoking
+    Authorize SyncBot. Uses content hash and cached blocks: full refresh only
+    when data changed. When hash matches and within 60s cooldown, re-publishes
+    with a cooldown message. Sweeping workspace names via ``team_info`` stays
+    admin-only; members do not see those names.
     """
     team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
@@ -108,8 +133,9 @@ def handle_refresh_home(
     if not workspace_record:
         return
 
-    current_hash = builders._home_tab_content_hash(workspace_record)
-    hash_key = f"home_tab_hash:{team_id}"
+    is_admin = helpers.is_user_authorized(client, user_id)
+    current_hash = builders._home_tab_content_hash(workspace_record, user_id, is_admin=is_admin)
+    hash_key = builders.home_tab_hash_key(team_id, user_id)
     blocks_key = f"home_tab_blocks:{team_id}:{user_id}"
     refresh_at_key = f"refresh_at:home:{team_id}:{user_id}"
 
@@ -128,39 +154,41 @@ def handle_refresh_home(
         helpers._cache_set(refresh_at_key, time.monotonic(), ttl=cooldown_sec * 2)
         return
 
-    # Full refresh: clear workspace name caches and refresh all workspace names
-    stale_keys = [k for k in helpers._CACHE if k.startswith("ws_name_refresh:")]
-    for k in stale_keys:
-        helpers._CACHE.pop(k, None)
+    # Full refresh. Workspace-name sweeps are admin-only: non-admins do not see
+    # group member names, and Refresh is now on Home for everyone.
+    if is_admin:
+        stale_keys = [k for k in helpers._CACHE if k.startswith("ws_name_refresh:")]
+        for k in stale_keys:
+            helpers._CACHE.pop(k, None)
 
-    all_workspaces = DbManager.find_records(
-        schemas.Workspace,
-        [schemas.Workspace.deleted_at.is_(None)],
-    )
-    for ws in all_workspaces:
-        try:
-            if ws.id == workspace_record.id:
-                ws_client = client
-            elif ws.bot_token:
-                ws_client = WebClient(token=helpers.decrypt_bot_token(ws.bot_token))
-            else:
-                continue
+        all_workspaces = DbManager.find_records(
+            schemas.Workspace,
+            [schemas.Workspace.deleted_at.is_(None)],
+        )
+        for ws in all_workspaces:
+            try:
+                if ws.id == workspace_record.id:
+                    ws_client = client
+                elif ws.bot_token:
+                    ws_client = WebClient(token=helpers.decrypt_bot_token(ws.bot_token))
+                else:
+                    continue
 
-            info = ws_client.team_info()
-            current_name = info["team"]["name"]
-            if current_name and current_name != ws.workspace_name:
-                DbManager.update_records(
-                    schemas.Workspace,
-                    [schemas.Workspace.id == ws.id],
-                    {schemas.Workspace.workspace_name: current_name},
-                )
-                _logger.info(
-                    "workspace_name_refreshed",
-                    extra={"workspace_id": ws.id, "new_name": current_name},
-                )
-        except Exception as e:
-            ws_label = f"{ws.workspace_name} ({ws.team_id})"
-            _logger.warning(f"Failed to refresh name for {ws_label}: {e}")
+                info = ws_client.team_info()
+                current_name = info["team"]["name"]
+                if current_name and current_name != ws.workspace_name:
+                    DbManager.update_records(
+                        schemas.Workspace,
+                        [schemas.Workspace.id == ws.id],
+                        {schemas.Workspace.workspace_name: current_name},
+                    )
+                    _logger.info(
+                        "workspace_name_refreshed",
+                        extra={"workspace_id": ws.id, "new_name": current_name},
+                    )
+            except Exception as e:
+                ws_label = f"{ws.workspace_name} ({ws.team_id})"
+                _logger.warning(f"Failed to refresh name for {ws_label}: {e}")
 
     block_dicts = builders.build_home_tab(body, client, logger, context, user_id=user_id, return_blocks=True)
     if block_dicts is None:
@@ -178,8 +206,9 @@ def handle_join_sync_submission(
     """Handles the join sync form submission by appending to the SyncChannel table.
 
     Requires admin/owner authorization (defense-in-depth).
-    The bot joins the channel *before* the DB record is created so that
-    a failed join doesn't leave an orphaned record.
+    The ``SyncChannel`` row is written *before* the bot is added, so the
+    unconfigured-channel leave handlers recognize the channel; if adding the bot
+    fails the row is removed again.
     """
     user_id = helpers.get_user_id_from_body(body)
     if not user_id or not helpers.is_user_authorized(client, user_id):
@@ -227,16 +256,32 @@ def handle_join_sync_submission(
     acting_user_id = helpers.safe_get(body, "user", "id") or user_id
     admin_name, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
+    channel_sync_record = schemas.SyncChannel(
+        sync_id=sync_id,
+        channel_id=channel_id,
+        workspace_id=workspace_record.id,
+        created_at=datetime.now(UTC),
+    )
+    try:
+        DbManager.create_record(channel_sync_record)
+    except Exception as e:
+        logger.error(f"Failed to join sync channel {channel_id}: {e}")
+        return
+
+    if not _ensure_membership_or_rollback(
+        client,
+        channel_id,
+        team_id=workspace_record.team_id,
+        acting_user_id=acting_user_id,
+        rollback=lambda: helpers.purge_sync_channels([channel_sync_record]),
+        log_event="join_sync_membership_failed",
+        log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_id},
+        context=context,
+    ):
+        return
+
     other_sync_channels: list = []
     try:
-        client.conversations_join(channel=channel_id)
-        channel_sync_record = schemas.SyncChannel(
-            sync_id=sync_id,
-            channel_id=channel_id,
-            workspace_id=workspace_record.id,
-            created_at=datetime.now(UTC),
-        )
-        DbManager.create_record(channel_sync_record)
         other_sync_channels = DbManager.find_records(
             schemas.SyncChannel,
             [
@@ -288,7 +333,7 @@ def handle_new_sync_submission(
     """Handles the new sync form submission.
 
     Creates a Sync named after the selected channel, links the channel
-    to the sync, joins the channel, and posts a welcome message.
+    to the sync, adds SyncBot to the channel, and posts a welcome message.
     Requires admin/owner authorization (defense-in-depth).
     """
     user_id = helpers.get_user_id_from_body(body)
@@ -325,7 +370,6 @@ def handle_new_sync_submission(
     admin_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
     try:
-        client.conversations_join(channel=channel_id)
         sync_record = schemas.Sync(title=sync_title, description=None)
         DbManager.create_record(sync_record)
         channel_sync_record = schemas.SyncChannel(
@@ -335,12 +379,29 @@ def handle_new_sync_submission(
             created_at=datetime.now(UTC),
         )
         DbManager.create_record(channel_sync_record)
+    except Exception as e:
+        logger.error(f"Failed to create sync for channel {channel_id}: {e}")
+        return
+
+    if not _ensure_membership_or_rollback(
+        client,
+        channel_id,
+        team_id=workspace_record.team_id,
+        acting_user_id=acting_user_id,
+        rollback=lambda: helpers.purge_sync(sync_record.id),
+        log_event="new_sync_membership_failed",
+        log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_record.id},
+        context=context,
+    ):
+        return
+
+    try:
         client.chat_postMessage(
             channel=channel_id,
             text=f":outbox_tray: *{admin_name}* published this Channel. Other Workspaces can now subscribe.",
         )
     except Exception as e:
-        logger.error(f"Failed to create sync for channel {channel_id}: {e}")
+        logger.warning(f"Failed to announce new sync in channel {channel_id}: {e}")
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
 
@@ -360,7 +421,7 @@ def handle_member_joined_channel(
     if not user_id or not channel_id or not team_id:
         return
 
-    own_user_id = helpers.get_own_bot_user_id(client)
+    own_user_id = helpers.get_own_bot_user_id(client, context)
     if user_id != own_user_id:
         return
 
