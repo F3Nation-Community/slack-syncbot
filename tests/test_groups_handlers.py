@@ -4,6 +4,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import constants
+
 os.environ.setdefault("DATABASE_HOST", "localhost")
 os.environ.setdefault("DATABASE_USER", "root")
 os.environ.setdefault("DATABASE_PASSWORD", "test")
@@ -165,26 +167,32 @@ class TestDeclineGroupInviteAuthorization:
         assert not delete_records.called
 
 
-class TestRequireAdminIsConditional:
-    """The admin gate rides on is_user_authorized, so REQUIRE_ADMIN=false lets non-admins through."""
+class TestWorkspaceManagerGate:
+    """Non-admins are never managers unless listed as extra managers in Settings."""
 
-    def test_non_admin_allowed_when_require_admin_disabled(self):
-        import helpers
-
-        client = MagicMock()
-        with patch.dict(os.environ, {"REQUIRE_ADMIN": "false"}):
-            assert helpers.is_user_authorized(client, "U1") is True
-        client.users_info.assert_not_called()
-
-    def test_non_admin_denied_when_require_admin_enabled(self):
+    def test_extra_manager_is_a_manager(self):
         import helpers
 
         client = MagicMock()
         with (
-            patch.dict(os.environ, {"REQUIRE_ADMIN": "true"}),
             patch("helpers.slack_api._users_info", return_value={"user": {"is_admin": False, "is_owner": False}}),
+            patch("helpers.workspace_settings.extra_manager_user_ids", return_value=["U1"]),
         ):
-            assert helpers.is_user_authorized(client, "U1") is False
+            assert helpers.is_workspace_manager(client, "U1", "T1") is True
+
+    def test_require_admin_env_is_ignored(self):
+        import helpers
+        from helpers import core as core_mod
+
+        client = MagicMock()
+        core_mod._REQUIRE_ADMIN_WARNED = False
+        with (
+            patch.dict(os.environ, {constants.REQUIRE_ADMIN: "false"}),
+            patch("helpers.slack_api._users_info", return_value={"user": {"is_admin": False, "is_owner": False}}),
+            patch("helpers.workspace_settings.extra_manager_user_ids", return_value=[]),
+        ):
+            assert helpers.is_workspace_manager(client, "U1", "T1") is False
+        assert core_mod._REQUIRE_ADMIN_WARNED is True
 
 
 class TestJoinGroupSubmit:

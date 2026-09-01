@@ -260,6 +260,7 @@ def _restore_workspace(
                 notify_admins_dm(
                     member_client,
                     f":arrow_forward: *{ws_name}* has been restored. Group syncing will resume.",
+                    team_id=member_ws.team_id,
                 )
 
                 syncs_in_group = DbManager.find_records(

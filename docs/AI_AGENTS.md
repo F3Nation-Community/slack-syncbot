@@ -54,7 +54,7 @@ The 1.3.2 list was built as follows; keep new rows on the same rails:
 
 ## Public origin and OAuth install
 
-This instance's public HTTPS origin is the Host of incoming Slack requests (the same URL Slack already uses for events). `helpers.oauth.get_public_base_url` / `capture_public_base` serve Authorize SyncBot (`/slack/install?team=`) and federation webhooks. Do not read `SYNCBOT_PUBLIC_URL`; if that leftover env var is set, the app logs a warning and ignores it.
+This instance's public HTTPS origin is the Host of incoming Slack requests (the same URL Slack already uses for events). `helpers.oauth.get_public_base_url` / `capture_public_base` serve Authorize SyncBot (`/slack/install?team=`) and federation webhooks. Do not read `SYNCBOT_PUBLIC_URL`; if that leftover env var is set, the app logs a warning and ignores it. **Authorize SyncBot** stores that person's user token for the destination workspace: private-channel invite **and** native reactions as them. Look up tokens with `get_user_token(dest_team_id, mapped_user_id)`; never send `xoxp` on federation payloads. Leftover Settings env (`ALLOW_PRIVATE_CHANNELS`, `BROADCAST_ALLOWED_WORKSPACES`, `SOFT_DELETE_RETENTION_DAYS`, `SYNCBOT_FEDERATION_ENABLED`, `REQUIRE_ADMIN`) is warned and ignored.
 
 Bolt OAuth must start at **this instance's** `GET /slack/install`. A Home-tab URL that points at Slack's authorize page skips the state cookie and fails after Allow with `invalid_browser`. On Lambda, Function URL payload 2.0 needs the OAuth cookie in the `cookies` array, and stray GETs such as `/favicon.ico` must not be treated as a second install. After a successful callback, call `refresh_home_after_oauth_install` so that user's Home tab updates without a manual Refresh.
 

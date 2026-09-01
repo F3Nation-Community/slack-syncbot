@@ -92,7 +92,7 @@ class WorkspaceGroupMember(BaseClass, GetDBClass):
     leave only while another active owner remains, and may disband a group they
     solely own and solely publish into. ``member`` is otherwise descriptive — it
     grants no restrictions beyond the owner-gated actions above, and all
-    per-user authorization still runs through ``helpers.is_user_authorized``.
+    per-user authorization still runs through ``helpers.is_workspace_manager``.
     """
 
     __tablename__ = "workspace_group_members"
@@ -141,6 +141,8 @@ class SyncChannel(BaseClass, GetDBClass):
     workspace = relationship("Workspace", backref="sync_channels")
     channel_id = Column(String(100))
     status = Column(String(20), nullable=False, default="active")
+    reaction_direction = Column(String(32), nullable=False, default="both")
+    reaction_style = Column(String(32), nullable=True)
     created_at = Column(DateTime, nullable=False)
     deleted_at = Column(DateTime, nullable=True, default=None)
 
@@ -238,6 +240,26 @@ class FederatedWorkspace(BaseClass, GetDBClass):
 
     def get_id():
         return FederatedWorkspace.id
+
+
+class WorkspaceSetting(BaseClass, GetDBClass):
+    """Per-workspace policy edited through the Settings modal.
+
+    Key/value storage scoped to one installed workspace. Values are strings;
+    typed accessors in ``helpers.workspace_settings`` parse them. Keys include
+    ``allow_private_channels`` and ``extra_manager_user_ids`` (JSON list of ``U…``
+    IDs).
+    """
+
+    __tablename__ = "workspace_settings"
+
+    workspace_id = Column(Integer, ForeignKey("workspaces.id"), primary_key=True)
+    key = Column(String(64), primary_key=True)
+    value = Column(Text, nullable=True)
+    updated_at = Column(DateTime, nullable=True)
+
+    def get_id():
+        return (WorkspaceSetting.workspace_id, WorkspaceSetting.key)
 
 
 class InstanceSetting(BaseClass, GetDBClass):

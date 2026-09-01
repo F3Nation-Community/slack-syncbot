@@ -33,18 +33,28 @@ def get_user_id_from_body(body: dict) -> str | None:
     return safe_get(body, "user_id") or safe_get(body, "user", "id")
 
 
-def is_user_authorized(client, user_id: str) -> bool:
-    """Return *True* if the user is allowed to configure SyncBot.
+_REQUIRE_ADMIN_WARNED = False
 
-    When ``REQUIRE_ADMIN`` is ``"true"`` (the default), only workspace
-    admins and owners are authorized.
-    """
+
+def _warn_require_admin_leftover() -> None:
+    global _REQUIRE_ADMIN_WARNED
+    if _REQUIRE_ADMIN_WARNED:
+        return
+    raw = os.environ.get(constants.REQUIRE_ADMIN)
+    if raw is None or raw.strip() == "":
+        return
+    _REQUIRE_ADMIN_WARNED = True
+    _logger.warning(
+        "%s is ignored; Slack admins and owners configure Settings, and managers come from Settings extra managers",
+        constants.REQUIRE_ADMIN,
+    )
+
+
+def is_workspace_admin(client, user_id: str) -> bool:
+    """Return *True* if the user is a Slack workspace admin or owner."""
     from .slack_api import _users_info
 
-    require_admin = os.environ.get(constants.REQUIRE_ADMIN, "true").lower()
-    if require_admin != "true":
-        return True
-
+    _warn_require_admin_leftover()
     try:
         res = _users_info(client, user_id)
     except SlackApiError:
@@ -53,6 +63,24 @@ def is_user_authorized(client, user_id: str) -> bool:
 
     user = safe_get(res, "user") or {}
     return bool(user.get("is_admin") or user.get("is_owner"))
+
+
+def is_workspace_manager(client, user_id: str, team_id: str | None) -> bool:
+    """Return *True* if the user may manage groups, syncs, and channel configuration."""
+    from .workspace_settings import extra_manager_user_ids
+
+    _warn_require_admin_leftover()
+    if is_workspace_admin(client, user_id):
+        return True
+    if not team_id or not user_id:
+        return False
+    return user_id in extra_manager_user_ids(team_id)
+
+
+def is_primary_workspace(team_id: str | None) -> bool:
+    """Return *True* when *team_id* matches ``PRIMARY_WORKSPACE``."""
+    primary = (os.environ.get(constants.PRIMARY_WORKSPACE) or "").strip()
+    return bool(primary and (team_id or "") == primary)
 
 
 def is_backup_visible_for_workspace(team_id: str | None) -> bool:
@@ -92,20 +120,13 @@ def is_db_reset_visible_for_workspace(team_id: str | None) -> bool:
 
 
 def is_settings_visible_for_workspace(team_id: str | None) -> bool:
-    """Return True if the operator Settings modal is allowed for this workspace.
+    """Return True if the Settings button may appear for this workspace.
 
-    Mirrors :func:`is_backup_visible_for_workspace`: requires PRIMARY_WORKSPACE
-    to be set and to match *team_id*. Settings are instance-wide operator
-    policy, so they are deliberately not exposed to member workspaces.
+    Any installed workspace may open Settings; Slack admin/owner is enforced
+    when the modal opens. Instance-wide fields inside the modal still require
+    ``PRIMARY_WORKSPACE`` to match.
     """
-    primary = (os.environ.get(constants.PRIMARY_WORKSPACE) or "").strip()
-    if not primary:
-        _logger.debug("settings hidden: PRIMARY_WORKSPACE not set")
-        return False
-    visible = (team_id or "") == primary
-    if not visible:
-        _logger.debug("settings hidden: team_id %r does not match PRIMARY_WORKSPACE", team_id)
-    return visible
+    return bool((team_id or "").strip())
 
 
 def format_admin_label(client, user_id: str, workspace) -> tuple[str, str]:
@@ -131,6 +152,7 @@ _PREFIXED_ACTIONS = (
     actions.CONFIG_DEMOTE_SELF,
     actions.CONFIG_DISBAND_GROUP,
     actions.CONFIG_SUBSCRIBE_CHANNEL,
+    actions.CONFIG_EDIT_REACTIONS,
     actions.CONFIG_UNPUBLISH_CHANNEL,
     actions.CONFIG_USER_MAPPING_EDIT,
     actions.CONFIG_RESUME_SYNC,

@@ -211,6 +211,7 @@ def _soft_delete_uninstalled_workspace(team_id: str) -> None:
                     f":double_vertical_bar: *{ws_name}* has uninstalled SyncBot. "
                     f"Syncing has been paused. If they reinstall within {retention_days} days, "
                     "Syncing will resume automatically.",
+                    team_id=member_ws.team_id,
                 )
 
                 member_channel_ids = []

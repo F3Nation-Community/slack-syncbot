@@ -145,6 +145,7 @@ def build_full_backup() -> dict:
         ("user_mappings", schemas.UserMapping),
         ("federated_workspaces", schemas.FederatedWorkspace),
         ("instance_keys", schemas.InstanceKey),
+        ("workspace_settings", schemas.WorkspaceSetting),
     ]
     for table_name, cls in tables:
         records = DbManager.find_records(cls, [])
@@ -203,6 +204,7 @@ def restore_full_backup(
         "user_mappings",
         "federated_workspaces",
         "instance_keys",
+        "workspace_settings",
     ]
     table_to_schema = {
         "workspaces": schemas.Workspace,
@@ -215,6 +217,7 @@ def restore_full_backup(
         "user_mappings": schemas.UserMapping,
         "federated_workspaces": schemas.FederatedWorkspace,
         "instance_keys": schemas.InstanceKey,
+        "workspace_settings": schemas.WorkspaceSetting,
     }
     datetime_keys = {"created_at", "updated_at", "deleted_at", "joined_at", "matched_at"}
     for table_name in tables:

@@ -6,7 +6,6 @@ from logging import Logger
 
 from slack_sdk.web import WebClient
 
-import constants
 import helpers
 from builders._common import (
     _get_group_members,
@@ -37,7 +36,9 @@ def _home_tab_content_hash(
     workspace_record: Workspace,
     user_id: str | None = None,
     *,
-    is_admin: bool = True,
+    is_manager: bool = False,
+    is_admin: bool = False,
+    extra_manager_ids: tuple[str, ...] = (),
 ) -> str:
     """Compute a stable hash of the data that drives the Home tab.
 
@@ -48,16 +49,16 @@ def _home_tab_content_hash(
     so adding a scope later busts the cache and the section comes back with the
     already-allowed list filled in.
 
-    Non-admins only see Authorize, Refresh, and the lock line, so their hash skips
-    groups and syncs. That keeps Refresh cheap and means a channel change does not
-    force every member to rebuild a tab they cannot see. Workspace-level changes
-    still bust every *admin* hash, because the workspace payload is hashed in too.
+    Non-managers only see Authorize, Refresh, and the lock line, so their hash skips
+    groups and syncs. Managers and admins share the full payload; ``is_admin`` and
+    ``extra_manager_ids`` bust the cache when Settings visibility changes.
     """
     workspace_id = workspace_record.id
     workspace_name = (workspace_record.workspace_name or "") or ""
     permission_lists = tuple(helpers.user_permission_lists(workspace_record.team_id, user_id)) if user_id else ((), ())
-    if not is_admin:
-        payload = (workspace_id, workspace_name, user_id or "", permission_lists)
+    role_sig = (is_manager, is_admin, extra_manager_ids)
+    if not is_manager:
+        payload = (workspace_id, workspace_name, user_id or "", permission_lists, role_sig)
         return hashlib.sha256(repr(payload).encode()).hexdigest()
 
     reset_visible = helpers.is_db_reset_visible_for_workspace(workspace_record.team_id)
@@ -134,6 +135,7 @@ def _home_tab_content_hash(
         reset_visible,
         user_id or "",
         permission_lists,
+        role_sig,
     )
     return hashlib.sha256(repr(payload).encode()).hexdigest()
 
@@ -199,13 +201,13 @@ def _build_configuration_section(
     blocks: list,
     workspace_record: Workspace,
     *,
-    include_admin_buttons: bool,
+    is_admin: bool,
 ) -> None:
     """Append SyncBot Configuration, directly under Authorize.
 
-    *Refresh* is for everyone so a non-admin can reload Home after revoking.
-    Settings, Backup/Restore, and Reset stay admin-only (and still require
-    ``PRIMARY_WORKSPACE`` / ``ENABLE_DB_RESET`` as before).
+    *Refresh* is for everyone so a non-manager can reload Home after revoking.
+    Settings, Backup/Restore, and Reset require Slack admin/owner (and primary
+    workspace where applicable).
     """
     blocks.append(header("SyncBot Configuration"))
     config_buttons = [
@@ -214,7 +216,7 @@ def _build_configuration_section(
             action=actions.CONFIG_REFRESH_HOME,
         ),
     ]
-    if include_admin_buttons:
+    if is_admin:
         if helpers.is_settings_visible_for_workspace(workspace_record.team_id):
             config_buttons.append(
                 orm.ButtonElement(
@@ -240,20 +242,31 @@ def _build_configuration_section(
     blocks.append(orm.ActionsBlock(elements=config_buttons))
 
 
+def _home_refresh_user_ids(workspace: Workspace, client: WebClient, context: dict) -> list[str]:
+    """Return Slack user IDs whose Home tab should refresh for *workspace*."""
+    try:
+        admin_ids = set(helpers.get_admin_ids(client, team_id=workspace.team_id, context=context))
+    except Exception as e:
+        _logger.warning(f"refresh_home_tab_for_workspace: failed to get admins: {e}")
+        admin_ids = set()
+    extra = set(helpers.extra_manager_user_ids(workspace.team_id))
+    return sorted(admin_ids | extra)
+
+
 def refresh_home_tab_for_workspace(workspace: Workspace, logger: Logger, context: dict | None = None) -> None:
-    """Publish an updated Home tab for every admin in *workspace*."""
+    """Publish an updated Home tab for every admin and extra manager in *workspace*."""
     if not workspace or not workspace.bot_token or workspace.deleted_at:
         return
     ctx = context if context is not None else {}
     try:
         ws_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
-        admin_ids = helpers.get_admin_ids(ws_client, team_id=workspace.team_id, context=ctx)
+        user_ids = _home_refresh_user_ids(workspace, ws_client, ctx)
     except Exception as e:
-        _logger.warning(f"refresh_home_tab_for_workspace: failed to get admins: {e}")
+        _logger.warning(f"refresh_home_tab_for_workspace: failed to get refresh targets: {e}")
         return
 
     synthetic_body = {"team": {"id": workspace.team_id}}
-    for uid in admin_ids:
+    for uid in user_ids:
         try:
             build_home_tab(synthetic_body, ws_client, logger, ctx, user_id=uid)
         except Exception as e:
@@ -285,20 +298,17 @@ def build_home_tab(
     if not workspace_record:
         return None
 
-    is_admin = helpers.is_user_authorized(client, user_id)
+    is_admin = helpers.is_workspace_admin(client, user_id)
+    is_manager = helpers.is_workspace_manager(client, user_id, team_id)
+    extra_manager_ids = tuple(sorted(helpers.extra_manager_user_ids(team_id)))
 
     blocks: list[orm.BaseBlock] = []
 
-    # Authorize is not a configuration action, so REQUIRE_ADMIN does not hide it:
-    # a non-admin still needs to authorize SyncBot to act as them. Refresh sits
-    # in SyncBot Configuration immediately under that, so anyone can reload Home
-    # after revoking. Everything below the lock line stays admin-only, and every
-    # configure handler keeps its own authorization check.
     _build_authorize_section(blocks, workspace_record.team_id, user_id, context)
-    _build_configuration_section(blocks, workspace_record, include_admin_buttons=is_admin)
+    _build_configuration_section(blocks, workspace_record, is_admin=is_admin)
 
-    if not is_admin:
-        blocks.append(block_context(":lock: This area of SyncBot is limited to Workspace Admins."))
+    if not is_manager:
+        blocks.append(block_context(":lock: This area of SyncBot is limited to Workspace managers."))
     else:
         # ── Workspace Groups ──────────────────────────────────────
         blocks.append(header("Workspace Groups"))
@@ -343,10 +353,16 @@ def build_home_tab(
             _build_pending_invite_section(blocks, invite, context)
 
         # ── External Connections (federation) ─────────────────────
-        if constants.FEDERATION_ENABLED:
+        if helpers.federation_enabled() and helpers.is_primary_workspace(team_id) and is_admin:
             _build_federation_section(blocks, workspace_record)
 
-    current_hash = _home_tab_content_hash(workspace_record, user_id, is_admin=is_admin)
+    current_hash = _home_tab_content_hash(
+        workspace_record,
+        user_id,
+        is_manager=is_manager,
+        is_admin=is_admin,
+        extra_manager_ids=extra_manager_ids,
+    )
     block_dicts = orm.BlockView(blocks=blocks).as_form_field()
     if return_blocks:
         return block_dicts

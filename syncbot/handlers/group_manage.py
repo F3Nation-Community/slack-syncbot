@@ -21,7 +21,12 @@ def handle_leave_group(
 ) -> None:
     """Show a confirmation modal before leaving a workspace group."""
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    team_id = (
+        helpers.safe_get(body, "team", "id")
+        or helpers.safe_get(body, "view", "team_id")
+        or helpers.safe_get(body, "team_id")
+    )
+    if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "leave_group"})
         return
 
@@ -138,7 +143,8 @@ def handle_leave_group_confirm(
     from handlers._common import _close_modal_done, _parse_private_metadata
 
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
+    if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "leave_group_confirm"})
         return
 
@@ -153,7 +159,6 @@ def handle_leave_group_confirm(
         # this guards a forged payload.
         return
 
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return
@@ -270,6 +275,7 @@ def handle_leave_group_confirm(
                 helpers.notify_admins_dm(
                     member_client,
                     f":wave: *{admin_label}* left the group *{group.name}*.",
+                    team_id=member_ws.team_id,
                 )
                 builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
             except Exception as e:
@@ -300,7 +306,7 @@ def _notify_group_admins(group_id: int, message: str, logger: Logger) -> None:
             continue
         try:
             member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
-            helpers.notify_admins_dm(member_client, message)
+            helpers.notify_admins_dm(member_client, message, team_id=member_ws.team_id)
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
         except Exception as e:
             _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
@@ -601,7 +607,8 @@ def handle_disband_group_confirm(
     from handlers._common import _close_modal_done, _parse_private_metadata
 
     user_id = helpers.get_user_id_from_body(body)
-    if not user_id or not helpers.is_user_authorized(client, user_id):
+    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
+    if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
         _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "disband_group_confirm"})
         return
 
@@ -610,7 +617,6 @@ def handle_disband_group_confirm(
     if not group_id or meta.get("blocked"):
         return
 
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return
