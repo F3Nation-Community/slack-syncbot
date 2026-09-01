@@ -14,12 +14,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from handlers.channel_sync import handle_publish_channel_submit_work
+from handlers.channel_sync import handle_publish_channel_submit_work, handle_subscribe_channel_submit
 from helpers.conversations import ConversationAccessError, authorize_url, ensure_bot_in_conversation
 
 
-def _slack_error(code: str) -> SlackApiError:
-    return SlackApiError(code, {"ok": False, "error": code})
+def _slack_error(code: str, *, errors=None) -> SlackApiError:
+    payload = {"ok": False, "error": code}
+    if errors is not None:
+        payload["errors"] = errors
+    return SlackApiError(code, payload)
 
 
 @pytest.fixture
@@ -147,6 +150,117 @@ class TestEnsureBotInConversation:
         assert "Authorize SyncBot" in str(exc.value)
         web_client.assert_not_called()
 
+    def test_invite_uses_the_request_scoped_bot_member_id(self, client):
+        """Bolt's context is this workspace. A cached auth.test from another is not."""
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="U_FROM_OTHER_WORKSPACE"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+        ):
+            ensure_bot_in_conversation(
+                client,
+                "C1",
+                team_id="T1",
+                acting_user_id="U1",
+                context={"bot_user_id": "U_THIS_WORKSPACE"},
+            )
+
+        user_client.conversations_invite.assert_called_once_with(channel="C1", users="U_THIS_WORKSPACE")
+
+    def test_invite_skips_a_bot_id_and_uses_the_member_id(self, client):
+        """Passing a ``B…`` bot_id to conversations.invite is ``user_not_found``."""
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOTUSER"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+        ):
+            ensure_bot_in_conversation(
+                client,
+                "C1",
+                team_id="T1",
+                acting_user_id="U1",
+                bot_user_id="B0BOT",
+            )
+
+        user_client.conversations_invite.assert_called_once_with(channel="C1", users="UBOTUSER")
+
+    def test_invite_retries_with_a_fresh_identity_on_user_not_found(self, client):
+        """A stale cached member ID from another workspace is retried once."""
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+        user_client.conversations_invite.side_effect = [_slack_error("user_not_found"), {"ok": True}]
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="U_THIS_WORKSPACE"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+        ):
+            ensure_bot_in_conversation(
+                client,
+                "C1",
+                team_id="T1",
+                acting_user_id="U1",
+                bot_user_id="U_OTHER_WORKSPACE",
+            )
+
+        invited = [call.kwargs["users"] for call in user_client.conversations_invite.call_args_list]
+        assert invited == ["U_OTHER_WORKSPACE", "U_THIS_WORKSPACE"]
+
+    def test_nested_cant_invite_user_not_found_is_retried(self, client):
+        """Slack sometimes wraps the unknown invitee as cant_invite + errors[]."""
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+        user_client.conversations_invite.side_effect = [
+            _slack_error(
+                "cant_invite",
+                errors=[{"ok": False, "error": "user_not_found", "user": "U_OTHER_WORKSPACE"}],
+            ),
+            {"ok": True},
+        ]
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="U_THIS_WORKSPACE"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+        ):
+            ensure_bot_in_conversation(
+                client,
+                "C1",
+                team_id="T1",
+                acting_user_id="U1",
+                bot_user_id="U_OTHER_WORKSPACE",
+            )
+
+        invited = [call.kwargs["users"] for call in user_client.conversations_invite.call_args_list]
+        assert invited == ["U_OTHER_WORKSPACE", "U_THIS_WORKSPACE"]
+
+    def test_user_not_found_with_the_same_id_explains_the_failure(self, client):
+        client.conversations_info.return_value = {"channel": {"is_private": True, "is_member": False}}
+        user_client = MagicMock()
+        user_client.conversations_invite.side_effect = _slack_error("user_not_found")
+
+        with (
+            patch("helpers.conversations.allow_private_channels", return_value=True),
+            patch("helpers.conversations.get_own_bot_user_id", return_value="UBOTUSER"),
+            patch("helpers.conversations.get_user_token", return_value="xoxp-acting-user"),
+            patch("helpers.conversations.WebClient", return_value=user_client),
+            pytest.raises(ConversationAccessError) as exc,
+        ):
+            ensure_bot_in_conversation(client, "C1", team_id="T1", acting_user_id="U1")
+
+        assert "recognise this app" in str(exc.value)
+        assert user_client.conversations_invite.call_count == 1
+
     def test_installation_lookup_is_scoped_to_the_acting_user(self):
         """``find_installation`` is always called with a ``user_id``.
 
@@ -259,6 +373,8 @@ class TestPublishWritesRowsBeforeAddingTheBot:
             patch("handlers.channel_sync._get_selected_conversation_or_option", return_value="C1"),
             patch("handlers.channel_sync._get_selected_option_value", return_value=None),
             patch("handlers.channel_sync._validate_channel_selection", return_value=None),
+            patch("handlers.channel_sync.helpers.get_user_token", return_value=None),
+            patch("handlers.channel_sync.helpers.lookup_channel_meta", return_value=("C1", False)),
             patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
             patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
             patch("handlers.channel_sync._refresh_group_member_homes"),
@@ -297,6 +413,110 @@ class TestPublishWritesRowsBeforeAddingTheBot:
             handle_publish_channel_submit_work(self.BODY, client, MagicMock(), {})
 
         purge_sync.assert_called_once_with(created[0].id)
+        assert client.chat_postMessage.call_args.kwargs["channel"] == "U1"
+        assert "no dice" in client.chat_postMessage.call_args.kwargs["text"]
+
+    def test_publish_stores_the_real_channel_name_not_the_id(self):
+        created: list = []
+        client = MagicMock()
+
+        with ExitStack() as stack:
+            self._enter_publish_patches(stack, created)
+            stack.enter_context(
+                patch("handlers.channel_sync.helpers.lookup_channel_meta", return_value=("2nd-f", True))
+            )
+            stack.enter_context(patch("handlers._common.helpers.ensure_bot_in_conversation"))
+            handle_publish_channel_submit_work(self.BODY, client, MagicMock(), {})
+
+        assert created[0].title == "2nd-f"
+
+    def test_publish_refreshes_title_after_the_bot_joins(self):
+        created: list = []
+        client = MagicMock()
+        names = iter([("C1", False), ("2nd-f", False)])
+
+        with ExitStack() as stack:
+            self._enter_publish_patches(stack, created)
+            stack.enter_context(
+                patch(
+                    "handlers.channel_sync.helpers.lookup_channel_meta",
+                    side_effect=lambda *_a, **_k: next(names),
+                )
+            )
+            update = stack.enter_context(patch("handlers.channel_sync.DbManager.update_records"))
+            stack.enter_context(patch("handlers._common.helpers.ensure_bot_in_conversation"))
+            handle_publish_channel_submit_work(self.BODY, client, MagicMock(), {})
+
+        assert created[0].title == "2nd-f"
+        update.assert_called_once()
+
+
+class TestSubscribeWritesRowsBeforeAddingTheBot:
+    """Subscribe has the same ordering requirement as publish."""
+
+    WORKSPACE = SimpleNamespace(id=10, team_id="T1")
+    BODY = {"view": {"team_id": "T1"}, "user": {"id": "U1"}}
+    CONTEXT = {"bot_user_id": "U_THIS_WORKSPACE"}
+
+    def _enter_subscribe_patches(self, stack: ExitStack, created: list) -> None:
+        def create_record(record):
+            record.id = 50 + len(created)
+            created.append(record)
+
+        for patcher in (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", self.WORKSPACE)),
+            patch("handlers.channel_sync._parse_private_metadata", return_value={"sync_id": 7}),
+            patch("handlers.channel_sync._get_selected_conversation_or_option", return_value="C1"),
+            patch("handlers.channel_sync._validate_channel_selection", return_value=None),
+            patch(
+                "handlers.channel_sync.DbManager.get_record",
+                return_value=SimpleNamespace(id=7, group_id=3, title="2nd-f"),
+            ),
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
+            patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
+            patch("handlers.channel_sync.helpers.resolve_channel_name", return_value="#c"),
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
+            patch("handlers.channel_sync._refresh_group_member_homes"),
+        ):
+            stack.enter_context(patcher)
+
+    def test_sync_channel_exists_before_the_bot_is_added_and_context_is_passed(self):
+        created: list = []
+        order: list[str] = []
+        seen_context: list = []
+        client = MagicMock()
+
+        def ensure(*_args, **kwargs):
+            order.append(f"membership after {len(created)} rows")
+            seen_context.append(kwargs.get("context"))
+
+        with ExitStack() as stack:
+            self._enter_subscribe_patches(stack, created)
+            stack.enter_context(patch("handlers._common.helpers.ensure_bot_in_conversation", side_effect=ensure))
+            handle_subscribe_channel_submit(self.BODY, client, MagicMock(), self.CONTEXT)
+
+        assert [type(record).__name__ for record in created] == ["SyncChannel"]
+        assert order == ["membership after 1 rows"]
+        assert seen_context == [self.CONTEXT]
+
+    def test_failed_membership_rolls_back_and_dms_the_admin(self):
+        created: list = []
+        client = MagicMock()
+
+        with ExitStack() as stack:
+            self._enter_subscribe_patches(stack, created)
+            stack.enter_context(
+                patch(
+                    "handlers._common.helpers.ensure_bot_in_conversation",
+                    side_effect=ConversationAccessError("no dice"),
+                )
+            )
+            purge = stack.enter_context(patch("handlers.channel_sync.helpers.purge_sync_channels"))
+            handle_subscribe_channel_submit(self.BODY, client, MagicMock(), self.CONTEXT)
+
+        purge.assert_called_once()
+        assert purge.call_args.args[0][0] is created[0]
         assert client.chat_postMessage.call_args.kwargs["channel"] == "U1"
         assert "no dice" in client.chat_postMessage.call_args.kwargs["text"]
 

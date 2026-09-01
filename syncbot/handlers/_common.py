@@ -88,6 +88,7 @@ def _ensure_membership_or_rollback(
     rollback,
     log_event: str,
     log_extra: dict | None = None,
+    context: dict | None = None,
 ) -> bool:
     """Add SyncBot to *channel_id*, undoing the caller's rows if that fails.
 
@@ -100,7 +101,13 @@ def _ensure_membership_or_rollback(
     Returns *True* when SyncBot is in the channel.
     """
     try:
-        helpers.ensure_bot_in_conversation(client, channel_id, team_id=team_id, acting_user_id=acting_user_id)
+        helpers.ensure_bot_in_conversation(
+            client,
+            channel_id,
+            team_id=team_id,
+            acting_user_id=acting_user_id,
+            context=context,
+        )
         return True
     except helpers.ConversationAccessError as exc:
         message = str(exc)

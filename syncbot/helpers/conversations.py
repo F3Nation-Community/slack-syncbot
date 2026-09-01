@@ -213,6 +213,21 @@ def _slack_error(exc: SlackApiError) -> str:
     return (safe_get(exc.response, "error") or "") if exc.response is not None else ""
 
 
+def _is_user_not_found(exc: SlackApiError) -> bool:
+    """True when Slack rejected the invitee as unknown in this workspace.
+
+    Top-level ``user_not_found`` is the usual shape. Slack also wraps it as
+    ``cant_invite`` with a per-user ``errors`` list when the ID is not a member
+    of this workspace (for example a ``B…`` bot_id, or another workspace's bot).
+    """
+    if _slack_error(exc) == "user_not_found":
+        return True
+    nested = safe_get(exc.response, "errors") if exc.response is not None else None
+    if not isinstance(nested, list):
+        return False
+    return any(isinstance(item, dict) and item.get("error") == "user_not_found" for item in nested)
+
+
 def _channel_visibility(client: WebClient, channel_id: str) -> tuple[bool, bool]:
     """Return ``(is_private, is_member)`` as seen by the bot token.
 
@@ -242,12 +257,37 @@ def _channel_visibility(client: WebClient, channel_id: str) -> tuple[bool, bool]
     return bool(channel.get("is_private")), bool(channel.get("is_member"))
 
 
+def _is_member_id(value) -> bool:
+    """True for a Slack member ID (``U…``). A ``B…`` bot_id is not invitable."""
+    return isinstance(value, str) and value.startswith("U")
+
+
+def _bot_member_id(
+    client: WebClient,
+    *,
+    bot_user_id: str | None = None,
+    context: dict | None = None,
+    bypass_cache: bool = False,
+) -> str | None:
+    """This workspace's bot member ID, never another workspace's and never a bot_id."""
+    if bypass_cache:
+        looked_up = get_own_bot_user_id(client, bypass_cache=True)
+        return looked_up if _is_member_id(looked_up) else None
+    for candidate in (bot_user_id, (context or {}).get("bot_user_id")):
+        if _is_member_id(candidate):
+            return candidate
+    looked_up = get_own_bot_user_id(client, context=context)
+    return looked_up if _is_member_id(looked_up) else None
+
+
 def ensure_bot_in_conversation(
     client: WebClient,
     channel_id: str,
     *,
     team_id: str | None,
     acting_user_id: str | None,
+    bot_user_id: str | None = None,
+    context: dict | None = None,
 ) -> None:
     """Make SyncBot a member of *channel_id*, whichever type it is.
 
@@ -282,8 +322,8 @@ def ensure_bot_in_conversation(
     if not allow_private_channels():
         raise ConversationAccessError("Private Channels cannot be synced. Pick a public Channel.")
 
-    bot_user_id = get_own_bot_user_id(client)
-    if not bot_user_id:
+    invite_user_id = _bot_member_id(client, bot_user_id=bot_user_id, context=context)
+    if not invite_user_id:
         raise ConversationAccessError("SyncBot could not determine its own identity. Please try again.")
 
     token = get_user_token(team_id, acting_user_id)
@@ -291,7 +331,7 @@ def ensure_bot_in_conversation(
         raise ConversationAccessError(AUTHORIZE_HINT)
 
     try:
-        WebClient(token=token).conversations_invite(channel=channel_id, users=bot_user_id)
+        WebClient(token=token).conversations_invite(channel=channel_id, users=invite_user_id)
     except SlackApiError as exc:
         error = _slack_error(exc)
         if error in _ALREADY_THERE_ERRORS:
@@ -302,6 +342,25 @@ def ensure_bot_in_conversation(
             raise ConversationAccessError(
                 "SyncBot could not be added to that private Channel, because you are not a "
                 "member of it. Open the Channel, then publish or subscribe it again."
+            ) from exc
+        if _is_user_not_found(exc):
+            # Warm containers used to cache one bot member ID for every
+            # workspace. Inviting that ID into a different workspace is exactly
+            # ``user_not_found``. Retry once with a fresh ``auth.test``.
+            fresh_id = _bot_member_id(client, bypass_cache=True)
+            if fresh_id and fresh_id != invite_user_id:
+                try:
+                    WebClient(token=token).conversations_invite(channel=channel_id, users=fresh_id)
+                    return
+                except SlackApiError as retry_exc:
+                    retry_error = _slack_error(retry_exc)
+                    if retry_error in _ALREADY_THERE_ERRORS:
+                        return
+                    exc = retry_exc
+            raise ConversationAccessError(
+                "SyncBot could not be added to that private Channel because Slack did not "
+                "recognise this app in the Channel's Workspace. Click Refresh on the Home tab, "
+                "then try again."
             ) from exc
         raise ConversationAccessError(
             f"SyncBot could not be added to that private Channel (`{error or 'unknown error'}`)."

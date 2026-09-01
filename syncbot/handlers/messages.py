@@ -748,7 +748,7 @@ def _handle_reaction(
     if not reaction or not channel_id or not msg_ts or item_type != "message":
         return
 
-    own_user_id = helpers.get_own_bot_user_id(client)
+    own_user_id = helpers.get_own_bot_user_id(client, context)
     if own_user_id and user_id == own_user_id:
         return
 

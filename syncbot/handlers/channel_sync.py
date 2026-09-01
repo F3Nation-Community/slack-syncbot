@@ -380,15 +380,14 @@ def handle_publish_channel_submit_work(
     ):
         return
 
-    try:
-        conv_info = client.conversations_info(channel=channel_id)
-        channel_name = helpers.safe_get(conv_info, "channel", "name") or channel_id
-    except Exception as exc:
-        _logger.debug(f"handle_publish_channel_submit_work: conversations_info failed for {channel_id}: {exc}")
-        channel_name = channel_id
-
     acting_user_id = helpers.safe_get(body, "user", "id") or user_id
     team_id = _extract_team_id(body) or workspace_record.team_id
+    channel_name, _is_private = helpers.lookup_channel_meta(
+        channel_id,
+        workspace_record,
+        user_token=helpers.get_user_token(team_id, acting_user_id),
+        client=client,
+    )
 
     try:
         sync_record = schemas.Sync(
@@ -423,8 +422,18 @@ def handle_publish_channel_submit_work(
         rollback=lambda: helpers.purge_sync(sync_record.id),
         log_event="publish_channel_membership_failed",
         log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_record.id},
+        context=context,
     ):
         return
+
+    refreshed_name, _is_private = helpers.lookup_channel_meta(channel_id, workspace_record)
+    if refreshed_name and refreshed_name != channel_id and refreshed_name != sync_record.title:
+        DbManager.update_records(
+            schemas.Sync,
+            [schemas.Sync.id == sync_record.id],
+            {schemas.Sync.title: _sanitize_text(refreshed_name)},
+        )
+        sync_record.title = refreshed_name
 
     _logger.info(
         "channel_published",
@@ -591,11 +600,16 @@ def _toggle_sync_status(
                     # row already exists, so nothing to roll back — a private
                     # channel simply needs the invite path instead of join.
                     try:
+                        # Resume only touches this workspace's channel, so Bolt's
+                        # request-scoped bot_user_id is the right invitee. Do not
+                        # pass context if that ever changes — another workspace's
+                        # bot member ID is ``user_not_found`` here.
                         helpers.ensure_bot_in_conversation(
                             ws_client,
                             sync_channel.channel_id,
                             team_id=channel_ws.team_id,
                             acting_user_id=user_id,
+                            context=context if channel_ws.id == workspace_record.id else None,
                         )
                     except Exception as exc:
                         _logger.warning(
@@ -973,6 +987,7 @@ def handle_subscribe_channel_submit(
         rollback=lambda: helpers.purge_sync_channels([sync_channel_record]),
         log_event="subscribe_channel_membership_failed",
         log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_id},
+        context=context,
     ):
         return
 

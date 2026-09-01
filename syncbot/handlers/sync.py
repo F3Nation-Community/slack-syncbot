@@ -276,6 +276,7 @@ def handle_join_sync_submission(
         rollback=lambda: helpers.purge_sync_channels([channel_sync_record]),
         log_event="join_sync_membership_failed",
         log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_id},
+        context=context,
     ):
         return
 
@@ -390,6 +391,7 @@ def handle_new_sync_submission(
         rollback=lambda: helpers.purge_sync(sync_record.id),
         log_event="new_sync_membership_failed",
         log_extra={"workspace_id": workspace_record.id, "channel_id": channel_id, "sync_id": sync_record.id},
+        context=context,
     ):
         return
 
@@ -419,7 +421,7 @@ def handle_member_joined_channel(
     if not user_id or not channel_id or not team_id:
         return
 
-    own_user_id = helpers.get_own_bot_user_id(client)
+    own_user_id = helpers.get_own_bot_user_id(client, context)
     if user_id != own_user_id:
         return
 

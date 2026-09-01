@@ -2,6 +2,7 @@
 
 import os
 import time
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -363,3 +364,115 @@ class TestResolveChannelReferences:
         text = "see <https://acme.slack.com/archives/CSRC|#general (Remote)>"
         result = helpers.resolve_channel_references(text, client, None, target_workspace_id=1)
         assert result == text
+
+
+# -----------------------------------------------------------------------
+# lookup_channel_meta
+# -----------------------------------------------------------------------
+
+
+class TestLookupChannelMeta:
+    """Name + private flag for Home and publish, without logging tokens."""
+
+    def setup_method(self):
+        helpers._CACHE.clear()
+
+    def test_request_client_is_tried_first(self):
+        client = MagicMock()
+        client.conversations_info.return_value = {"channel": {"name": "2nd-f", "is_private": False}}
+
+        name, is_private = helpers.lookup_channel_meta("C123", None, client=client)
+
+        assert name == "2nd-f"
+        assert is_private is False
+        client.conversations_info.assert_called_once_with(channel="C123")
+
+    def test_user_token_is_used_when_bot_cannot_see_the_channel(self):
+        bot_client = MagicMock()
+        bot_client.conversations_info.side_effect = Exception("channel_not_found")
+        user_client = MagicMock()
+        user_client.conversations_info.return_value = {"channel": {"name": "leadership", "is_private": True}}
+
+        def web_client(*, token=None, **_kwargs):
+            if token == "xoxb-bot":
+                return bot_client
+            if token == "xoxp-user":
+                return user_client
+            raise AssertionError(token)
+
+        ws = SimpleNamespace(bot_token="enc-bot")
+        with (
+            patch("helpers.workspace.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.workspace.WebClient", side_effect=web_client),
+        ):
+            name, is_private = helpers.lookup_channel_meta("CPRIV", ws, user_token="xoxp-user")
+
+        assert name == "leadership"
+        assert is_private is True
+        user_client.conversations_info.assert_called_once_with(channel="CPRIV")
+
+    def test_unresolved_name_is_the_channel_id_and_is_not_cached(self):
+        client = MagicMock()
+        client.conversations_info.side_effect = Exception("channel_not_found")
+
+        name, is_private = helpers.lookup_channel_meta("C123", None, client=client)
+        helpers.lookup_channel_meta("C123", None, client=client)
+
+        assert name == "C123"
+        assert is_private is False
+        assert client.conversations_info.call_count == 2
+
+    def test_successful_lookup_is_cached(self):
+        client = MagicMock()
+        client.conversations_info.return_value = {"channel": {"name": "general", "is_private": False}}
+
+        helpers.lookup_channel_meta("C123", None, client=client)
+        helpers.lookup_channel_meta("C123", None, client=client)
+
+        assert client.conversations_info.call_count == 1
+
+
+# -----------------------------------------------------------------------
+# Bot identity (per workspace)
+# -----------------------------------------------------------------------
+
+
+class TestOwnAuthInfoIsPerWorkspace:
+    """A process-wide auth.test cache invites the wrong workspace's bot."""
+
+    def setup_method(self):
+        helpers._CACHE.clear()
+
+    def test_auth_info_is_not_shared_across_bot_tokens(self):
+        client_a = MagicMock()
+        client_a.token = "xoxb-workspace-a"
+        client_a.auth_test.return_value = {"bot_id": "BA", "user_id": "UA"}
+        client_b = MagicMock()
+        client_b.token = "xoxb-workspace-b"
+        client_b.auth_test.return_value = {"bot_id": "BB", "user_id": "UB"}
+
+        assert helpers.get_own_bot_user_id(client_a) == "UA"
+        assert helpers.get_own_bot_user_id(client_b) == "UB"
+        assert helpers.get_own_bot_id(client_a, {}) == "BA"
+        assert helpers.get_own_bot_id(client_b, {}) == "BB"
+        assert helpers.get_own_bot_user_id(client_a) == "UA"
+        assert client_a.auth_test.call_count == 1
+        assert client_b.auth_test.call_count == 1
+
+    def test_context_bot_user_id_wins_over_auth_test(self):
+        client = MagicMock()
+        client.token = "xoxb-a"
+        client.auth_test.return_value = {"bot_id": "BA", "user_id": "UA"}
+
+        assert helpers.get_own_bot_user_id(client, {"bot_user_id": "U_FROM_CONTEXT"}) == "U_FROM_CONTEXT"
+        client.auth_test.assert_not_called()
+
+    def test_bypass_cache_calls_auth_test_again(self):
+        client = MagicMock()
+        client.token = "xoxb-a"
+        client.auth_test.return_value = {"bot_id": "BA", "user_id": "UA"}
+
+        helpers.get_own_bot_user_id(client)
+        helpers.get_own_bot_user_id(client, bypass_cache=True)
+
+        assert client.auth_test.call_count == 2
