@@ -244,15 +244,15 @@ class TestSubscribeIsRoutedForDeferredAck:
         )
 
 
-class TestLegacyFormsRespectPolicy:
-    """The legacy new/join sync modals share the picker, so they share the policy."""
+class TestPublishSubscribeFormsRespectPolicy:
+    """Publish / Subscribe modals share the conversations picker policy."""
 
     def test_deep_copied_form_can_be_switched_to_public_only(self):
         import copy
 
         from slack import forms
 
-        form = copy.deepcopy(forms.NEW_SYNC_FORM)
+        form = copy.deepcopy(forms.PUBLISH_CHANNEL_FORM)
         form.set_conversations_include_private(False)
         rendered = form.as_form_field()
 
@@ -265,7 +265,7 @@ class TestLegacyFormsRespectPolicy:
 
         from slack import forms
 
-        form = copy.deepcopy(forms.JOIN_SYNC_FORM)
+        form = copy.deepcopy(forms.SUBSCRIBE_CHANNEL_FORM)
         form.set_conversations_include_private(True)
         rendered = form.as_form_field()
 

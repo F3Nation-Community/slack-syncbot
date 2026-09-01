@@ -80,7 +80,7 @@ Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name we
 - **Imports are `import helpers`, not `from syncbot.helpers`.** Pytest `pythonpath` is `syncbot/`.
 - **Link buttons still need a no-op in `ACTION_MAPPER`.** Slack fires `block_actions` for URL buttons (`handle_authorize_syncbot` is the example); without a handler you get `no_handler` in the logs.
 - **Never log tokens.** `_redact_sensitive` must include `user_token` and `bot_token`. Do not print `xoxp` / `xoxb`.
-- **Unpublish is a full `purge_sync`.** Pause/resume only toggles that workspace's channel. Home teardown is **Unpublish** / **Stop Syncing** (`CONFIG_UNPUBLISH_CHANNEL` / `CONFIG_STOP_SYNC`). `CONFIG_REMOVE_SYNC` / `handle_remove_sync` is leftover DeSync — do not wire new buttons to it.
+- **Unpublish is a full `purge_sync`.** Pause/resume only toggles that workspace's channel. Home teardown is **Unpublish** / **Stop Syncing**.
 - **Events API dedup is envelope `event_id` + `team_id`** (`run_claimed`), not `event.ts` or `X-Slack-Retry-Num`. Missing `event_id` always runs. Failed work releases the claim.
 - **Message loop / double-post.** Skip only SyncBot's own `bot_id`, not other bots. A plain `message` with files waits for `file_share`. Other bots' `bot_message` events are synced.
 - **In-process cache is per warm container (60s).** Writes that change fan-out or Home must invalidate (`sync_list:{channel_id}`, settings keys, `home_tab_hash:` prefix).

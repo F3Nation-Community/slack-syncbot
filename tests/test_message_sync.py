@@ -1,12 +1,10 @@
-"""Tests for sync list / post record deduplication and join-sync duplicate guard."""
+"""Tests for sync list / post record deduplication."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from handlers.sync import handle_join_sync_submission
 from helpers.slack_api import get_post_records
 from helpers.workspace import get_sync_list
-from slack import actions
 
 
 class TestGetSyncListDeduplication:
@@ -71,37 +69,3 @@ class TestGetPostRecordsDeduplication:
         assert len(result) == 1
         assert result[0][0].id == 10
         assert result[0][0].ts == 111.111
-
-
-class TestJoinSyncDuplicateSkip:
-    def test_duplicate_channel_skips_join_and_create(self):
-        client = MagicMock()
-        logger = MagicMock()
-        context = {}
-        workspace = SimpleNamespace(id=10, team_id="T1")
-        sync_record = SimpleNamespace(id=5, title="Other")
-
-        body = {
-            "user": {"id": "Uadmin"},
-            "view": {"team_id": "T1", "state": {"values": {}}},
-        }
-        form_values = {
-            actions.CONFIG_JOIN_SYNC_SELECT: 5,
-            actions.CONFIG_JOIN_SYNC_CHANNEL_SELECT: "Cdup",
-        }
-
-        with (
-            patch("handlers.sync.helpers.get_user_id_from_body", return_value="Uadmin"),
-            patch("handlers.sync.helpers.is_user_authorized", return_value=True),
-            patch("handlers.sync.forms.JOIN_SYNC_FORM.get_selected_values", return_value=form_values),
-            patch("handlers.sync.DbManager.get_record", side_effect=[workspace, sync_record]),
-            patch("handlers.sync.DbManager.find_records", return_value=[object()]),
-            patch("handlers.sync.DbManager.create_record") as create_record,
-            patch("handlers.sync.helpers.format_admin_label", return_value=("Admin", "Admin")),
-            patch("handlers.sync.builders.refresh_home_tab_for_workspace") as refresh_home,
-        ):
-            handle_join_sync_submission(body, client, logger, context)
-
-        create_record.assert_not_called()
-        client.conversations_join.assert_not_called()
-        refresh_home.assert_called_once()

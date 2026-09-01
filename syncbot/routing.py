@@ -15,10 +15,6 @@ import handlers
 from slack import actions
 
 ACTION_MAPPER = {
-    actions.CONFIG_JOIN_EXISTING_SYNC: builders.build_join_sync_form,
-    actions.CONFIG_CREATE_NEW_SYNC: builders.build_new_sync_form,
-    actions.CONFIG_REMOVE_SYNC: handlers.handle_remove_sync,
-    actions.CONFIG_JOIN_SYNC_CHANNEL_SELECT: handlers.check_join_sync_channel,
     actions.CONFIG_MANAGE_USER_MATCHING: builders.build_user_matching_entry,
     actions.CONFIG_USER_MAPPING_BACK: handlers.handle_user_mapping_back,
     actions.CONFIG_USER_MAPPING_EDIT: builders.build_user_mapping_edit_modal,
@@ -75,8 +71,6 @@ EVENT_MAPPER = {
 """Event ``type`` -> handler."""
 
 VIEW_MAPPER = {
-    actions.CONFIG_JOIN_SYNC_SUBMIT: handlers.handle_join_sync_submission,
-    actions.CONFIG_NEW_SYNC_SUBMIT: handlers.handle_new_sync_submission,
     actions.CONFIG_USER_MAPPING_EDIT_SUBMIT: handlers.handle_user_mapping_edit_submit,
     actions.CONFIG_CREATE_GROUP_SUBMIT: handlers.handle_create_group_submit,
     actions.CONFIG_JOIN_GROUP_SUBMIT: handlers.handle_join_group_submit,

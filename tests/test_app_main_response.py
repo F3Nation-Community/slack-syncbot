@@ -90,7 +90,7 @@ class TestMainResponseLocalDevViewSubmission:
             assert ack.call_count == 1
             return None
 
-        cid = actions.CONFIG_NEW_SYNC_SUBMIT
+        cid = actions.CONFIG_SETTINGS_SUBMIT
         custom = {cid: handler}
         with (
             patch.object(app_module, "MAIN_MAPPER", {"view_submission": custom}),
@@ -112,7 +112,7 @@ class TestMainResponseProdViewSubmission:
         def handler(b, c, log, ctx):
             return None
 
-        cid = actions.CONFIG_NEW_SYNC_SUBMIT
+        cid = actions.CONFIG_SETTINGS_SUBMIT
         custom = {cid: handler}
         with (
             patch.object(app_module, "MAIN_MAPPER", {"view_submission": custom}),

@@ -5,30 +5,6 @@ throughout the UI forms and handler routing tables.  Keeping them in one
 place avoids typos and makes refactoring easier.
 """
 
-CONFIG_JOIN_EXISTING_SYNC = "join_existing_sync"
-"""Action: user clicked "Join existing Sync" button."""
-
-CONFIG_CREATE_NEW_SYNC = "create_new_sync"
-"""Action: user clicked "Create new Sync" button."""
-
-CONFIG_REMOVE_SYNC = "remove_sync"
-"""Leftover DeSync action. Home uses CONFIG_STOP_SYNC / CONFIG_UNPUBLISH_CHANNEL."""
-
-CONFIG_NEW_SYNC_CHANNEL_SELECT = "config_new_sync_channel_select"
-"""Input: channel picker in the new-sync form."""
-
-CONFIG_NEW_SYNC_SUBMIT = "config_new_sync_submit"
-"""Callback: new-sync modal submitted."""
-
-CONFIG_JOIN_SYNC_SELECT = "config_join_sync_select"
-"""Input: sync selector in the join-sync form."""
-
-CONFIG_JOIN_SYNC_CHANNEL_SELECT = "config_join_sync_channel_select"
-"""Input: channel selector in the join-sync form (dispatches an action on change)."""
-
-CONFIG_JOIN_SYNC_SUBMIT = "config_join_sync_submit"
-"""Callback: join-sync modal submitted."""
-
 # ---------------------------------------------------------------------------
 # User Matching actions
 # ---------------------------------------------------------------------------
@@ -159,7 +135,7 @@ CONFIG_PUBLISH_DIRECT_TARGET = "publish_direct_target"
 """Input: workspace picker for direct (1-to-1) sync target."""
 
 CONFIG_UNPUBLISH_CHANNEL = "unpublish_channel"
-"""Action: user clicked "Unpublish" on a published channel (prefix-matched with sync_channel_id)."""
+"""Action: user clicked "Unpublish" on a published channel (prefix-matched with sync.id)."""
 
 CONFIG_PAUSE_SYNC = "pause_sync"
 """Action: user clicked "Pause Syncing" on an active channel sync (prefix-matched with sync_id)."""
@@ -206,9 +182,6 @@ CONFIG_BACKUP_RESTORE = "backup_restore"
 CONFIG_BACKUP_RESTORE_SUBMIT = "backup_restore_submit"
 """Callback: Backup/Restore modal submitted (restore from backup)."""
 
-CONFIG_BACKUP_RESTORE_CONFIRM = "backup_restore_confirm"
-"""Callback: Confirm restore when HMAC or encryption key mismatch."""
-
 CONFIG_BACKUP_RESTORE_PROCEED = "backup_restore_proceed"
 """Action: danger button to proceed with restore despite warnings."""
 
@@ -223,9 +196,6 @@ CONFIG_DATA_MIGRATION = "data_migration"
 
 CONFIG_DATA_MIGRATION_SUBMIT = "data_migration_submit"
 """Callback: Data Migration modal submitted (import migration file)."""
-
-CONFIG_DATA_MIGRATION_CONFIRM = "data_migration_confirm"
-"""Callback: Confirm import when signature check failed."""
 
 CONFIG_DATA_MIGRATION_PROCEED = "data_migration_proceed"
 """Action: danger button to proceed with import despite warnings."""
@@ -267,9 +237,6 @@ CONFIG_REMOVE_FEDERATION_CONNECTION = "remove_federation_connection"
 
 CONFIG_DB_RESET = "db_reset"
 """Action: user clicked "Reset Database" on the Home tab."""
-
-CONFIG_DB_RESET_CONFIRM = "db_reset_confirm"
-"""Callback: database reset confirmation view submitted."""
 
 CONFIG_DB_RESET_PROCEED = "db_reset_proceed"
 """Action: danger button to proceed with database reset."""
