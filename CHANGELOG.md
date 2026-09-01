@@ -10,59 +10,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.3.2] - 2026-08-31
 
-### Fixed
-
-- Private Channels can now actually be synced when an operator allows them in **Settings**. Publishing or subscribing a private Channel adds SyncBot to it for you, using the permission of the admin who picked it, because Slack does not let an app add itself to a private Channel. Previously the Channel was silently never published and SyncBot never appeared in it.
-- Adding SyncBot to a private Channel by hand no longer backfires. SyncBot is now recorded as belonging to the Channel before it joins, so it stays instead of announcing that the Channel is not part of a Channel Sync and leaving.
-- If SyncBot cannot be added to the Channel after all, the half-finished Channel Sync is removed and the admin is sent a direct message explaining why, rather than leaving a Channel on the Home tab that SyncBot cannot read.
-- Clicking **Authorize SyncBot** and then Allow no longer fails with `invalid_browser`. The button now always starts at this instance's `/slack/install` URL, which is the only starting point Bolt will accept. After Allow, the Home tab updates so the Authorize section disappears without a manual Refresh.
-- Revoking your own authorization no longer pauses syncing for the whole workspace. Slack can include `tokens.bot` on a personal revoke; SyncBot now checks that the bot token still works before treating it as an uninstall.
-- After a revoke, **Authorize SyncBot** comes back and that person's Home tab still opens. SyncBot deletes their installation row instead of leaving an empty one that made Slack show "This is still a work in progress." **Refresh** is on Home for everyone so a non-admin can reload the tab if it did not update on its own.
-- Uninstalling SyncBot now drops every stored bot and user token for that workspace (Bolt's `delete_all`), so a later reinstall does not reuse dead authorizations. Paste the updated app manifest so Slack also sends `app_uninstalled`.
-- Published Channels waiting for a subscriber on the Home tab now show the Channel's name instead of its Slack ID, tagged `(private)` when the Channel is private.
-- Subscribing (or publishing) a private Channel no longer fails with `user_not_found` after SyncBot has been used in another workspace. The bot's member ID is remembered per workspace, so the invite asks Slack to add *this* workspace's SyncBot.
-
 ### Added
 
-- **Authorize SyncBot** on the Home tab: a short section, shown to anyone who has not granted every current user permission, with a plain-language list of what is still needed (and, on a later scope change, a checkmarked list of what they already allowed so it does not look like a redo). It disappears once that person is fully authorized. The original installer already has this from adding the app, so they usually never see the button; another admin's authorization is not reused. Picking a private Channel without it now explains the problem in the dialog instead of failing after the dialog closes. The button opens this instance's `/slack/install` page (not Slack's copy of the authorize URL) so the browser can complete OAuth after Allow.
+- **Authorize SyncBot** on Home for anyone missing user permissions (starts at `/slack/install`)
 
 ### Changed
 
-- `REQUIRE_ADMIN` no longer blanks the whole Home tab for non-admins. It restricts configuration — creating groups, publishing, Settings — while every user can open Home, authorize SyncBot, and use **Refresh**. **SyncBot Configuration** sits directly under **Authorize SyncBot**; the rest of Home stays behind "This area of SyncBot is limited to Workspace Admins."
-- `SYNCBOT_PUBLIC_URL` is leftover deploy config and is ignored. Authorize SyncBot and federation use the Host of incoming Slack requests (the same origin as the Event URL) instead.
+- `REQUIRE_ADMIN` still limits configuration; every user can open Home, authorize, and Refresh
+- `SYNCBOT_PUBLIC_URL` is ignored; Authorize and federation use the request Host
+
+### Fixed
+
+- Private Channels can be published and subscribed: SyncBot is invited in, stays when added by hand, and a failed invite rolls back with a DM
+- OAuth Allow no longer fails with `invalid_browser`; Home updates after Authorize
+- Revoking your own token no longer pauses the workspace; Authorize returns, and uninstall still clears all tokens
+- Home lists available Channels by name, not Slack ID
+- Private-Channel invites no longer fail with `user_not_found` after use in another workspace
 
 
 ## [1.3.1] - 2026-08-31
 
 ### Fixed
 
-- Channel pickers no longer stop at the first 100 channels. Publishing and subscribing now use Slack's own channel search, so every channel in the workspace is reachable by typing a few letters, however many channels you have.
-- Picking a channel that is already part of a Channel Sync now explains the problem in the dialog and asks for a different channel, instead of closing the modal as though it had worked. Subscribing reports this the same way publishing already did.
+- Channel pickers search the whole workspace instead of stopping at 100 channels
+- Picking a channel already in a Channel Sync explains the problem in the dialog
 
 ### Changed
 
-- A channel may belong to only one Channel Sync at a time, and this is now enforced instance-wide rather than per workspace. Two syncs sharing a channel had no defined message routing. Channels that were previously unpublished are still free to reuse.
-- Retention, private-channel publishing, and the broadcast allow-list are set only in the **Settings** modal. They are no longer read from the environment; leftover deploy values are ignored and a warning is logged.
-- Private channels are off by default. When an operator turns them on in **Settings**, the dialog warns that a private channel's messages will be copied into the other workspaces in the group. The new and join sync dialogs follow the same policy.
-- **Publish Channel** vs **Subscribe** — The group button that used to say Sync Channel is now **Publish Channel**, matching the Unpublish teardown on the publishing side. Other workspaces join with **Subscribe** rather than Start Syncing. Channel notices match: subscribe posts say a workspace subscribed, and publishing no longer says "for Syncing". Pause, Resume, and Stop Syncing are unchanged: they still describe a live two-way link, not the join action.
-- A channel SyncBot cannot read is rejected rather than accepted and then failing during setup.
+- A channel may belong to only one Channel Sync instance-wide
+- Retention, private-channel publishing, and the broadcast allow-list are set only in **Settings**
+- Private channels are off by default; the dialog warns that messages will be copied
+- **Publish Channel** and **Subscribe** replace Sync Channel and Start Syncing
+- A channel SyncBot cannot read is rejected rather than failing later
 
 
 ## [1.3.0] - 2026-08-30
 
 ### Added
 
-- Group ownership: an owner can promote another workspace with **Promote to Owner**, and step down itself with **Give Up Ownership** while another owner remains. A group always keeps at least one owner, so a sole owner is asked to promote a successor before leaving instead of failing silently.
-- **Disband Group** removes a group, its syncs, and its user mappings in one step, offered only to a workspace that is both the sole owner and the sole publisher so it cannot destroy another workspace's syncs. It confirms first and lists what will be removed.
-- A group owner can now cancel a pending invite, alongside the workspace that sent it.
-- Operator **Settings** modal in the Home tab, visible only to `PRIMARY_WORKSPACE`, for instance-wide policy: soft-delete retention days, whether private channels may be synced, and which workspaces may publish broadcasts. Settings are stored in the database, so changing them no longer needs a redeploy.
+- Group ownership: **Promote to Owner** and **Give Up Ownership**, keeping at least one owner
+- **Disband Group** for a sole owner that is also the sole publisher
+- Group owners can cancel a pending invite
+- Operator **Settings** for retention, private channels, and the broadcast allow-list
 
 ### Changed
 
-- `SOFT_DELETE_RETENTION_DAYS`, `ALLOW_PRIVATE_CHANNELS`, and `BROADCAST_ALLOWED_WORKSPACES` are now seed values: the database value from the Settings modal wins once saved, otherwise the environment variable applies, otherwise a built-in default. `PRIMARY_WORKSPACE`, `ENABLE_DB_RESET`, and `REQUIRE_ADMIN` stay environment-only on purpose, since they gate who can reach the modal and the destructive actions beside it.
-- Retention is read at call time rather than at process start, so a change applies without a restart. The private-channel and broadcast settings are stored now and begin taking effect with the channel picker rework and broadcast channels.
-- Ownership survives an uninstall: it passes to the longest-standing remaining member only when a workspace's data is actually deleted, so reinstalling within the retention window restores the group unchanged.
-- Destructive confirmations (leave group, disband group, stop syncing) now show a red confirmation button in the dialog, matching the Reset Database prompt, so the action you are about to take reads as destructive rather than routine.
+- `SOFT_DELETE_RETENTION_DAYS`, `ALLOW_PRIVATE_CHANNELS`, and `BROADCAST_ALLOWED_WORKSPACES` are seed values; Settings wins once saved
+- Retention changes apply without a restart
+- Ownership survives uninstall until the workspace's data is deleted
+- Destructive confirmations use a red button
 
 
 ## [1.2.6] - 2026-08-30

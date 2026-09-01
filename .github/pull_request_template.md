@@ -1,10 +1,10 @@
 ## Summary
 
-<!-- What does this PR change and why? -->
+<!-- A few short bullets. What changed, not Slack API background. -->
 
 ## PR title (Conventional Commit)
 
-<!-- Squash merge uses the PR title as the commit subject. Example: feat: add channel sync toggle -->
+<!-- One line; squash merge uses this as the commit subject. Example: feat: add channel sync toggle -->
 
 ## How to test
 
@@ -24,7 +24,7 @@
 
 ## Commits
 
-Copy this list into the squash merge body. GitHub will add one Co-authored-by trailer.
+Copy this list into the squash merge body. Keep **subject lines only**. GitHub will add one Co-authored-by trailer.
 
 <!-- commits -->
 <!-- /commits -->

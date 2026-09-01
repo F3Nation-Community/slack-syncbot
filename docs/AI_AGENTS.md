@@ -8,8 +8,8 @@ This repository is set up so coding agents (Cursor, GitHub Copilot, Codex, Claud
 |------|---------|
 | [AGENTS.md](../AGENTS.md) | Primary guardrails, commands, pitfalls, docs voice |
 | [.github/copilot-instructions.md](../.github/copilot-instructions.md) | Short Copilot-specific checklist |
-| [.cursor/rules/](../.cursor/rules/) | Cursor rules (architecture, tests, infra, no-touch files) |
-| [CONTRIBUTING.md](../CONTRIBUTING.md) | Conventional Commits + workflow |
+| [.cursor/rules/](../.cursor/rules/) | Cursor rules (architecture, short commits/changelog, helpers imports, tests, infra) |
+| [CONTRIBUTING.md](../CONTRIBUTING.md) | Short Conventional Commits + workflow |
 
 ## How CI guards agents
 
@@ -34,7 +34,8 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 
 ## Reviewing AI-authored PRs
 
-- Confirm the PR title matches **Conventional Commits** (required for squash merges).
+- Confirm the PR title matches **Conventional Commits** (required for squash merges). Subject only; no essay body.
+- Changelog bullets stay **1.2.0** length (one short line). Reject paragraph dumps.
 - Look for forbidden-file edits; CI should fail them, but reviewers should still watch for secrets.
 - Ensure tests cover behavior changes; spot-check Slack/event flows when touching handlers.
 
@@ -58,6 +59,22 @@ This instance's public HTTPS origin is the Host of incoming Slack requests (the 
 Bolt OAuth must start at **this instance's** `GET /slack/install`. A Home-tab URL that points at Slack's authorize page skips the state cookie and fails after Allow with `invalid_browser`. On Lambda, Function URL payload 2.0 needs the OAuth cookie in the `cookies` array, and stray GETs such as `/favicon.ico` must not be treated as a second install. After a successful callback, call `refresh_home_after_oauth_install` so that user's Home tab updates without a manual Refresh.
 
 Token rows live in Bolt's `SQLAlchemyInstallationStore` (`slack_bots` / `slack_installations`). Use those store methods; do not hand-edit token columns. A personal revoke is `delete_installation(..., user_id=...)`. A workspace uninstall is `delete_all` (same as Bolt's `app_uninstalled` listener) plus SyncBot's workspace pause. Do not call `App.enable_token_revocation_listeners()`: that deletes the bot whenever Slack fills `tokens.bot`, including on a personal revoke, which blanks Home. `tokens_revoked` with a live bot token is user-only even if `tokens.bot` is set. Do not leave a tokenless per-user `slack_installations` row; Bolt authorize looks that user up first and will skip the workspace bot token.
+
+## Slack request lifecycle
+
+All Slack traffic enters through [`syncbot/app.py`](../syncbot/app.py). Bolt matches `.*` once for events and actions; handlers are looked up in [`syncbot/routing.py`](../syncbot/routing.py) (`MAIN_MAPPER`, `VIEW_ACK_MAPPER`, `ACTION_MAPPER`, `EVENT_MAPPER`). Do not add a second `@app.action` / `@app.event` — it double-fires. Prefixed destructive `action_id`s go through the confirmation flow in [`.cursor/rules/60-slack-confirmations.mdc`](../.cursor/rules/60-slack-confirmations.mdc).
+
+View submissions: ack-phase handlers in `VIEW_ACK_MAPPER` may return field errors (`{"response_action": "errors", ...}`) within Slack's ~3s budget and should avoid Slack/DB of consequence. After ack, the modal is gone — work-phase failures DM the user. Production wires `view_ack` then lazy `main_response`; local often runs one-shot.
+
+Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Authorize SyncBot is the example) or the click shows up as `no_handler`.
+
+## DB identity and deletes
+
+`DbManager.get_record(Model, id)` filters on that model's `get_id()` column, not always the integer primary key. `Workspace.get_id()` is Slack `team_id`; `SyncChannel` is Slack `channel_id`; `PostMeta` is `post_id`. Integer PK lookups use `find_records(... id == n)` or helpers such as `get_workspace_by_id`. Returned objects are expunged; each `DbManager` call opens and commits its own session, so there is no multi-call transaction.
+
+Active rows are soft-delete aware: filter `deleted_at.is_(None)`. There is no `ON DELETE CASCADE` on sync graphs. Hard deletes go through `purge_sync` / `purge_workspace` in [`syncbot/helpers/sync_cleanup.py`](../syncbot/helpers/sync_cleanup.py) (children first, including soft-deleted rows). Unpublish is a full `purge_sync`; pause/resume only toggles that workspace's channel.
+
+Inside `helpers/*.py`, import submodules only (`from helpers._cache import …`, `from db import …`). Never `import helpers` from a helper submodule — `helpers/__init__.py` would circular-import at Lambda cold start.
 
 ## Fork compatibility
 

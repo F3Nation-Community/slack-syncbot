@@ -8,6 +8,8 @@ alwaysApply: false
 
 Match README: friendly, helpful, explanatory. Full sentences (do not drop “the” or “a” to shorten a line). Not clipped, not wordy.
 
+**CHANGELOG.md and GitHub Release notes are not this voice.** They stay short, one line per bullet, like **1.2.0**. See `.cursor/rules/50-changelog.mdc`. Do not write operator-guide paragraphs into the changelog.
+
 - Stage is only `test` or `prod`. Write `--env test` (or `prod`), `slack-manifest_test.json`, `syncbot_test`. Do not invent `YOURSTAGE`.
 - Keep `YOUR_*` for values that really vary (region, host, username).
 - Prefer “set up” (verb) over “setup” when you mean the action.

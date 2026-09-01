@@ -242,7 +242,8 @@ class InstanceSetting(BaseClass, GetDBClass):
 
     Key/value on purpose, so adding a setting never needs a migration. Values
     are stored as strings; the typed accessors in ``helpers.settings`` parse
-    them and apply the database-over-environment-over-default precedence.
+    them and apply the database-then-default precedence (leftover env vars for
+    these keys are ignored and warned; see ``helpers.settings``).
 
     Only operational policy lives here. Secrets, connection details, and
     break-glass switches (``ENABLE_DB_RESET``) stay in environment variables.
