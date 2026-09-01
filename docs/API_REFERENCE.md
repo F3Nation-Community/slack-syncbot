@@ -15,7 +15,7 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 | `POST` | `/api/federation/message/delete` | Receive a message deletion from a connected instance |
 | `POST` | `/api/federation/message/react` | Receive a reaction from a connected instance |
 | `POST` | `/api/federation/users` | Exchange user directory with a connected instance |
-| `GET` | `/api/federation/ping` | Health check for connected instances |
+| `GET` | `/api/federation/ping` | Health check for connected instances (still answers when federation is off in Settings) |
 
 ## Subscribed Slack Events
 

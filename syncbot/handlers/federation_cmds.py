@@ -8,13 +8,35 @@ from logging import Logger
 from slack_sdk.web import WebClient
 
 import builders
-import constants
 import federation
 import helpers
 from db import DbManager, schemas
 from slack import actions, orm
 
 _logger = logging.getLogger(__name__)
+
+
+def _require_primary_admin(
+    body: dict,
+    client: WebClient,
+    context: dict,
+    *,
+    action: str,
+) -> schemas.Workspace | None:
+    """Return the workspace when the actor is a primary-workspace Slack admin."""
+    user_id = helpers.get_user_id_from_body(body)
+    team_id = (
+        helpers.safe_get(body, "view", "team_id")
+        or helpers.safe_get(body, "team", "id")
+        or helpers.safe_get(body, "team_id")
+    )
+    if not user_id or not team_id:
+        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": action})
+        return None
+    if not helpers.is_primary_workspace(team_id) or not helpers.is_workspace_admin(client, user_id):
+        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": action, "team_id": team_id})
+        return None
+    return helpers.get_workspace_record(team_id, body, context, client)
 
 
 def _exchange_user_directory(
@@ -93,7 +115,9 @@ def handle_generate_federation_code(
     context: dict,
 ) -> None:
     """Open a modal asking for a label before generating the connection code."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
+        return
+    if not _require_primary_admin(body, client, context, action="generate_federation_code"):
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -137,11 +161,10 @@ def handle_federation_label_submit(
     context: dict,
 ) -> None:
     """Generate the connection code after the admin provides a label."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return
 
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team_id")
-    workspace_record = helpers.get_workspace_record(team_id, body, context, client)
+    workspace_record = _require_primary_admin(body, client, context, action="federation_label_submit")
     if not workspace_record:
         return
 
@@ -191,7 +214,9 @@ def handle_enter_federation_code(
     context: dict,
 ) -> None:
     """Open a modal for the admin to paste a federation code."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
+        return
+    if not _require_primary_admin(body, client, context, action="enter_federation_code"):
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -230,11 +255,10 @@ def handle_federation_code_submit(
     context: dict,
 ) -> None:
     """Process a submitted federation code and initiate cross-instance connection."""
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return
 
-    team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team_id")
-    workspace_record = helpers.get_workspace_record(team_id, body, context, client)
+    workspace_record = _require_primary_admin(body, client, context, action="federation_code_submit")
     if not workspace_record:
         return
 
@@ -329,6 +353,10 @@ def handle_remove_federation_connection(
     context: dict,
 ) -> None:
     """Remove a federation connection (group membership)."""
+    workspace_record = _require_primary_admin(body, client, context, action="remove_federation_connection")
+    if not workspace_record:
+        return
+
     action_data = helpers.safe_get(body, "actions", 0) or {}
     action_id: str = action_data.get("action_id", "")
     member_id_str = action_id.replace(f"{actions.CONFIG_REMOVE_FEDERATION_CONNECTION}_", "")

@@ -45,14 +45,13 @@ except ImportError:  # pragma: no cover - exercised in tests via subprocess
     SlackRequestHandler = None
 
 from constants import (
-    FEDERATION_ENABLED,
     HAS_REAL_BOT_TOKEN,
     LOCAL_DEVELOPMENT,
     validate_config,
 )
 from db import initialize_database
 from federation.api import dispatch_federation_request
-from helpers import capture_public_base, get_oauth_flow, get_request_type, safe_get
+from helpers import capture_public_base, federation_enabled, get_oauth_flow, get_request_type, safe_get
 from logger import (
     configure_logging,
     emit_metric,
@@ -369,7 +368,7 @@ def run_syncbot_http_server(
     """Start the HTTP server used by Cloud Run and ``python app.py``.
 
     Serves Slack (``bolt_path``), OAuth install/callback, ``/health``, and
-    ``/api/federation/*`` when :data:`~constants.FEDERATION_ENABLED` is true.
+    ``/api/federation/*`` when federation is enabled in Settings.
     Mirrors :class:`slack_bolt.app.app.SlackAppDevelopmentServer` routing with
     extra paths for production parity with Lambda Function URL.
     """
@@ -377,7 +376,6 @@ def run_syncbot_http_server(
     _bolt_app = app
     _bolt_oauth_flow = app.oauth_flow
     _bolt_endpoint_path = bolt_path
-    _fed_enabled = FEDERATION_ENABLED
     _http_log = http_server_logger_enabled
     _fed_max_body = 1_048_576  # 1 MB
 
@@ -423,7 +421,7 @@ def run_syncbot_http_server(
                     json.dumps({"status": "ok"}),
                 )
                 return
-            if _fed_enabled and path.startswith("/api/federation"):
+            if federation_enabled() and path.startswith("/api/federation"):
                 self._handle_federation("GET")
                 return
             if _bolt_oauth_flow:
@@ -452,7 +450,7 @@ def run_syncbot_http_server(
 
         def do_POST(self) -> None:
             path = self._path_no_query()
-            if _fed_enabled and path.startswith("/api/federation"):
+            if federation_enabled() and path.startswith("/api/federation"):
                 self._handle_federation("POST")
                 return
             if path != _bolt_endpoint_path:
