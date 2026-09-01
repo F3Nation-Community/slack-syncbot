@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extra workspace managers can configure groups and syncs without opening Settings
 - Per-workspace Allow private Channels in Settings on every installed workspace
 - Per-channel send/receive reaction direction and direct vs hybrid reaction type
-- Edit reactions on synced Channel rows on Home
+- Home **Edit** on synced Channel rows for Any vs Specific and this workspace’s reactions
 
 ### Changed
 

@@ -143,8 +143,11 @@ CONFIG_PUBLISH_DIRECT_TARGET = "publish_direct_target"
 CONFIG_PUBLISH_REACTION_DIRECTION = "publish_reaction_direction"
 CONFIG_PUBLISH_REACTION_STYLE = "publish_reaction_style"
 
-CONFIG_EDIT_REACTIONS = "edit_reactions"
-CONFIG_EDIT_REACTIONS_SUBMIT = "edit_reactions_submit"
+CONFIG_EDIT_SYNC = "edit_sync"
+"""Action: user clicked Edit on a synced Channel row (prefix-matched; value encodes channel or sync)."""
+
+CONFIG_EDIT_SYNC_SUBMIT = "edit_sync_submit"
+"""Callback: Edit modal submitted (policy and/or reactions)."""
 
 CONFIG_UNPUBLISH_CHANNEL = "unpublish_channel"
 """Action: user clicked "Unpublish" on a published channel (prefix-matched with sync.id)."""

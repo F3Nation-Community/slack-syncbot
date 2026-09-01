@@ -1200,13 +1200,34 @@ def handle_subscribe_channel_submit(
         _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
 
 
-def _sync_channel_id_from_action(body: dict, prefix: str) -> int | None:
+def _parse_edit_sync_ref(body: dict) -> tuple[str | None, int | None]:
+    """Parse Edit button value ``c:{sync_channel_id}`` or ``s:{sync_id}``.
+
+    Channel and Sync PKs both autoincrement from 1, so a bare integer is unsafe.
+    """
     action_data = helpers.safe_get(body, "actions", 0) or {}
-    raw = action_data.get("value") or (action_data.get("action_id", "") or "").replace(f"{prefix}_", "")
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return None
+    raw = (action_data.get("value") or "").strip()
+    if not raw and action_data.get("action_id"):
+        # Fallback from action_id edit_sync_c_12 / edit_sync_s_12
+        aid = action_data.get("action_id") or ""
+        prefix = f"{actions.CONFIG_EDIT_SYNC}_"
+        if aid.startswith(prefix):
+            rest = aid[len(prefix) :]
+            if rest.startswith("c_"):
+                raw = f"c:{rest[2:]}"
+            elif rest.startswith("s_"):
+                raw = f"s:{rest[2:]}"
+    if raw.startswith("c:"):
+        try:
+            return "channel", int(raw[2:])
+        except (TypeError, ValueError):
+            return None, None
+    if raw.startswith("s:"):
+        try:
+            return "sync", int(raw[2:])
+        except (TypeError, ValueError):
+            return None, None
+    return None, None
 
 
 def _sync_channel_by_pk(sync_channel_id: int) -> schemas.SyncChannel | None:
@@ -1215,90 +1236,328 @@ def _sync_channel_by_pk(sync_channel_id: int) -> schemas.SyncChannel | None:
     return rows[0] if rows else None
 
 
-def handle_edit_reactions(
+def _can_edit_sync_policy(sync: schemas.Sync, workspace_record: schemas.Workspace) -> bool:
+    """Publisher or group owner may change Any vs Specific."""
+    if sync.publisher_workspace_id == workspace_record.id:
+        return True
+    return bool(sync.group_id and helpers.is_workspace_owner(sync.group_id, workspace_record.id))
+
+
+def _who_can_subscribe_blocks(sync: schemas.Sync) -> list[orm.BaseBlock]:
+    """Any vs Specific radios plus optional single-target picker."""
+    mode = sync.sync_mode or "group"
+    if mode not in ("group", "direct"):
+        mode = "group"
+    mode_options = [
+        orm.SelectorOption(
+            name="Available to All Workspaces\nAny current or future Workspace Group Member can subscribe.",
+            value="group",
+        ),
+        orm.SelectorOption(
+            name="Only with Specific Workspace\nChoose a specific Workspace Group Member to allow to subscribe.",
+            value="direct",
+        ),
+    ]
+    blocks: list[orm.BaseBlock] = [
+        orm.InputBlock(
+            label="Who can subscribe",
+            action=actions.CONFIG_PUBLISH_SYNC_MODE,
+            element=orm.RadioButtonsElement(
+                initial_value=mode,
+                options=orm.as_selector_options(
+                    [o.name for o in mode_options],
+                    [o.value for o in mode_options],
+                ),
+            ),
+            optional=False,
+        ),
+        block_context("Any vs Specific can be changed without republishing."),
+    ]
+
+    if not sync.group_id:
+        return blocks
+
+    # Potential Specific targets are group members other than the publisher.
+    publisher_id = sync.publisher_workspace_id
+    group_members = _get_group_members(sync.group_id)
+    ws_options: list[orm.SelectorOption] = []
+    seen: set[str] = set()
+    for member in group_members:
+        if not member.workspace_id or member.workspace_id == publisher_id:
+            continue
+        value = str(member.workspace_id)
+        if value in seen:
+            continue
+        seen.add(value)
+        other_workspace = helpers.get_workspace_by_id(member.workspace_id)
+        name = (
+            helpers.resolve_workspace_name(other_workspace) if other_workspace else f"Workspace {member.workspace_id}"
+        )
+        ws_options.append(orm.SelectorOption(name=name, value=value))
+
+    if ws_options:
+        initial_target = None
+        if sync.target_workspace_id and str(sync.target_workspace_id) in seen:
+            initial_target = str(sync.target_workspace_id)
+        blocks.append(
+            orm.InputBlock(
+                label="Target Workspace",
+                action=actions.CONFIG_PUBLISH_DIRECT_TARGET,
+                element=orm.StaticSelectElement(
+                    placeholder="Select target Workspace",
+                    options=ws_options,
+                    initial_value=initial_target,
+                ),
+                optional=True,
+            )
+        )
+        blocks.append(block_context("Required when who can subscribe is Specific. Leave blank when Available to All."))
+    return blocks
+
+
+def _live_subscriber_workspace_ids(sync_id: int, publisher_workspace_id: int | None) -> set[int]:
+    """Workspace IDs of live SyncChannels that are not the publisher."""
+    channels = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.sync_id == sync_id, schemas.SyncChannel.deleted_at.is_(None)],
+    )
+    return {c.workspace_id for c in channels if c.workspace_id and c.workspace_id != publisher_workspace_id}
+
+
+def _specific_would_drop_subscribers(
+    sync: schemas.Sync,
+    *,
+    target_workspace_id: int | None,
+) -> bool:
+    """True when switching to Specific would leave other live subscribers stranded."""
+    live = _live_subscriber_workspace_ids(sync.id, sync.publisher_workspace_id)
+    if not live:
+        return False
+    if target_workspace_id is None:
+        return True
+    return bool(live - {target_workspace_id})
+
+
+def handle_edit_sync(
     body: dict,
     client: WebClient,
     logger: Logger,
     context: dict,
 ) -> None:
-    """Open a modal to edit reaction direction/type for one synced channel row."""
-    if not _get_authorized_workspace(body, client, context, "edit_reactions"):
+    """Open the one-step Edit modal for policy and/or this channel's reactions."""
+    auth_result = _get_authorized_workspace(body, client, context, "edit_sync")
+    if not auth_result:
         return
+    _, workspace_record = auth_result
 
-    sync_channel_id = _sync_channel_id_from_action(body, actions.CONFIG_EDIT_REACTIONS)
-    if not sync_channel_id:
-        return
-
-    sync_channel = _sync_channel_by_pk(sync_channel_id)
-    if not sync_channel or sync_channel.deleted_at:
+    kind, ref_id = _parse_edit_sync_ref(body)
+    if not kind or not ref_id:
+        _logger.warning("edit_sync: invalid action value")
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
     if not trigger_id:
         return
 
+    sync_channel: schemas.SyncChannel | None = None
+    sync_record: schemas.Sync | None = None
+
+    if kind == "channel":
+        sync_channel = _sync_channel_by_pk(ref_id)
+        if not sync_channel or sync_channel.deleted_at:
+            return
+        if sync_channel.workspace_id != workspace_record.id:
+            _logger.warning("edit_sync: channel not in acting workspace")
+            return
+        sync_record = DbManager.get_record(schemas.Sync, id=sync_channel.sync_id)
+    else:
+        sync_record = DbManager.get_record(schemas.Sync, id=ref_id)
+
+    if not sync_record:
+        return
+
+    can_policy = _can_edit_sync_policy(sync_record, workspace_record)
+    if kind == "sync" and not can_policy:
+        _logger.warning("edit_sync: available-row edit denied")
+        return
+
     from helpers.reactions import reaction_direction, reaction_style
 
-    direction = reaction_direction(sync_channel)
-    blocks: list[orm.BaseBlock] = [
-        _reaction_direction_block(actions.CONFIG_PUBLISH_REACTION_DIRECTION, initial=direction),
-        _reaction_style_block(
-            actions.CONFIG_PUBLISH_REACTION_STYLE,
-            initial=reaction_style(sync_channel) or constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE,
-        ),
-        block_context("Reaction type is used only when this Workspace receives reactions."),
-    ]
+    blocks: list[orm.BaseBlock] = []
+    metadata: dict = {"sync_id": sync_record.id}
+    if sync_channel:
+        metadata["sync_channel_id"] = sync_channel.id
+
+    if can_policy:
+        blocks.extend(_who_can_subscribe_blocks(sync_record))
+
+    if sync_channel:
+        direction = reaction_direction(sync_channel)
+        blocks.append(_reaction_direction_block(actions.CONFIG_PUBLISH_REACTION_DIRECTION, initial=direction))
+        blocks.append(
+            _reaction_style_block(
+                actions.CONFIG_PUBLISH_REACTION_STYLE,
+                initial=reaction_style(sync_channel) or constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE,
+            )
+        )
+        blocks.append(block_context("Reaction type is used only when this Workspace receives reactions."))
+
+    if not blocks:
+        return
 
     orm.BlockView(blocks=blocks).post_modal(
         client=client,
         trigger_id=trigger_id,
-        callback_id=actions.CONFIG_EDIT_REACTIONS_SUBMIT,
-        title_text="Edit Reactions",
+        callback_id=actions.CONFIG_EDIT_SYNC_SUBMIT,
+        title_text="Edit",
         submit_button_text="Save",
-        parent_metadata={"sync_channel_id": sync_channel_id},
+        parent_metadata=metadata,
         new_or_add="new",
         body=body,
     )
 
 
-def handle_edit_reactions_submit(
+def handle_edit_sync_submit_ack(
+    body: dict,
+    client: WebClient,
+    context: dict,
+) -> dict | None:
+    """Ack phase: refuse Specific when it would drop live subscribers."""
+    auth_result = _get_authorized_workspace(body, client, context, "edit_sync_submit_ack")
+    if not auth_result:
+        return None
+    _, workspace_record = auth_result
+
+    metadata = _parse_private_metadata(body)
+    sync_id = metadata.get("sync_id")
+    if not sync_id:
+        return None
+
+    sync_record = DbManager.get_record(schemas.Sync, id=int(sync_id))
+    if not sync_record:
+        return None
+
+    if not _can_edit_sync_policy(sync_record, workspace_record):
+        return None
+
+    # Only validate when the mode field is present (policy editors see it).
+    values = helpers.safe_get(body, "view", "state", "values") or {}
+    has_mode = any(actions.CONFIG_PUBLISH_SYNC_MODE in block for block in values.values())
+    if not has_mode:
+        return None
+
+    sync_mode = _get_selected_option_value(body, actions.CONFIG_PUBLISH_SYNC_MODE) or "group"
+    if sync_mode != "direct":
+        return None
+
+    target_raw = _get_selected_option_value(body, actions.CONFIG_PUBLISH_DIRECT_TARGET)
+    target_workspace_id: int | None = None
+    if target_raw:
+        try:
+            target_workspace_id = int(target_raw)
+        except (TypeError, ValueError):
+            target_workspace_id = None
+
+    if target_workspace_id is None:
+        return {
+            "response_action": "errors",
+            "errors": {
+                actions.CONFIG_PUBLISH_DIRECT_TARGET: (
+                    "Pick a specific Workspace, or switch Who can subscribe back to Available to All."
+                ),
+            },
+        }
+
+    if _specific_would_drop_subscribers(sync_record, target_workspace_id=target_workspace_id):
+        return {
+            "response_action": "errors",
+            "errors": {
+                actions.CONFIG_PUBLISH_SYNC_MODE: (
+                    "Other Workspaces are already subscribed. They must Stop Syncing first, or keep Available to All."
+                ),
+            },
+        }
+    return None
+
+
+def handle_edit_sync_submit(
     body: dict,
     client: WebClient,
     logger: Logger,
     context: dict,
 ) -> None:
-    """Persist reaction direction/type for an existing SyncChannel."""
-    auth_result = _get_authorized_workspace(body, client, context, "edit_reactions_submit")
+    """Persist policy (when allowed) and this channel's reaction settings."""
+    auth_result = _get_authorized_workspace(body, client, context, "edit_sync_submit")
     if not auth_result:
         return
     _, workspace_record = auth_result
 
     metadata = _parse_private_metadata(body)
+    sync_id = metadata.get("sync_id")
     sync_channel_id = metadata.get("sync_channel_id")
-    if not sync_channel_id:
+    if not sync_id:
         return
 
-    sync_channel = _sync_channel_by_pk(sync_channel_id)
-    if not sync_channel or sync_channel.workspace_id != workspace_record.id:
+    sync_record = DbManager.get_record(schemas.Sync, id=int(sync_id))
+    if not sync_record:
         return
 
-    direction = (
-        _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_DIRECTION) or constants.REACTION_DIRECTION_BOTH
-    )
-    from helpers.reactions import (
-        default_reaction_style_for_new_channel,
-        direction_receives,
-        update_sync_channel_reactions,
-    )
+    mode_changed = False
+    if _can_edit_sync_policy(sync_record, workspace_record):
+        values = helpers.safe_get(body, "view", "state", "values") or {}
+        has_mode = any(actions.CONFIG_PUBLISH_SYNC_MODE in block for block in values.values())
+        if has_mode:
+            sync_mode = _get_selected_option_value(body, actions.CONFIG_PUBLISH_SYNC_MODE) or "group"
+            if sync_mode not in ("group", "direct"):
+                sync_mode = "group"
+            target_workspace_id: int | None = None
+            if sync_mode == "direct":
+                target_raw = _get_selected_option_value(body, actions.CONFIG_PUBLISH_DIRECT_TARGET)
+                try:
+                    target_workspace_id = int(target_raw) if target_raw else None
+                except (TypeError, ValueError):
+                    target_workspace_id = None
+                if target_workspace_id is None or _specific_would_drop_subscribers(
+                    sync_record, target_workspace_id=target_workspace_id
+                ):
+                    # Ack should have blocked; skip policy write.
+                    sync_mode = None
+            if sync_mode is not None:
+                new_target = target_workspace_id if sync_mode == "direct" else None
+                if sync_record.sync_mode != sync_mode or sync_record.target_workspace_id != new_target:
+                    DbManager.update_records(
+                        schemas.Sync,
+                        [schemas.Sync.id == sync_record.id],
+                        {
+                            schemas.Sync.sync_mode: sync_mode,
+                            schemas.Sync.target_workspace_id: new_target,
+                        },
+                    )
+                    mode_changed = True
 
-    style = None
-    if direction_receives(direction):
-        style = _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_STYLE)
-        if style not in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
-            style = default_reaction_style_for_new_channel(direction)
+    if sync_channel_id:
+        sync_channel = _sync_channel_by_pk(int(sync_channel_id))
+        if sync_channel and sync_channel.workspace_id == workspace_record.id:
+            direction = (
+                _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_DIRECTION)
+                or constants.REACTION_DIRECTION_BOTH
+            )
+            from helpers.reactions import (
+                default_reaction_style_for_new_channel,
+                direction_receives,
+                update_sync_channel_reactions,
+            )
 
-    update_sync_channel_reactions(sync_channel_id, direction=direction, style=style)
+            style = None
+            if direction_receives(direction):
+                style = _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_STYLE)
+                if style not in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
+                    style = default_reaction_style_for_new_channel(direction)
+            update_sync_channel_reactions(int(sync_channel_id), direction=direction, style=style)
+
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    if mode_changed and sync_record.group_id:
+        _refresh_group_member_homes(sync_record.group_id, workspace_record.id, logger, context=context)
 
 
 def _refresh_group_member_homes(

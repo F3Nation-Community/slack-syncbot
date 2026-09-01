@@ -11,8 +11,9 @@ from handlers._common import (
     _sanitize_text,
 )
 from handlers.channel_sync import (
-    handle_edit_reactions,
-    handle_edit_reactions_submit,
+    handle_edit_sync,
+    handle_edit_sync_submit,
+    handle_edit_sync_submit_ack,
     handle_pause_sync,
     handle_publish_channel,
     handle_publish_channel_submit_ack,
@@ -145,8 +146,9 @@ __all__ = [
     "handle_subscribe_channel_submit",
     "handle_subscribe_channel_submit_ack",
     "handle_subscribe_direction_submit_ack",
-    "handle_edit_reactions",
-    "handle_edit_reactions_submit",
+    "handle_edit_sync",
+    "handle_edit_sync_submit",
+    "handle_edit_sync_submit_ack",
     "handle_team_join",
     "handle_tokens_revoked",
     "handle_app_uninstalled",
