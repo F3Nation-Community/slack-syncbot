@@ -20,9 +20,25 @@ _logger = logging.getLogger(__name__)
 _TTL = timedelta(minutes=10)
 
 
+def slack_message_ts(ts: object) -> str:
+    """Normalize a Slack message timestamp to six fractional digits.
+
+    Echo remember uses dest ``PostMeta.ts`` (Decimal); inbound ``event.item.ts`` is
+    Slack's string. ``str(Decimal)`` drops trailing zeros, so the fingerprint must
+    not use either form raw.
+    """
+    raw = str(ts).strip()
+    if not raw:
+        return raw
+    if "." in raw:
+        whole, frac = raw.split(".", 1)
+        return f"{whole}.{(frac + '000000')[:6]}"
+    return f"{raw}.000000"
+
+
 def reaction_echo_fingerprint(channel_id: str, ts: str, name: str) -> str:
     """Stable key for a native reaction on *channel_id* at *ts*."""
-    return f"{channel_id}:{ts}:{name}"
+    return f"{channel_id}:{slack_message_ts(ts)}:{name}"
 
 
 def _utcnow() -> datetime:

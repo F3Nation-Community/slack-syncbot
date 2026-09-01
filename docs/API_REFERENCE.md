@@ -13,7 +13,7 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 | `POST` | `/api/federation/message` | Receive a forwarded message from a connected instance; resolves `@` mentions and `#` channel references locally before posting |
 | `POST` | `/api/federation/message/edit` | Receive a message edit from a connected instance; applies the same local mention and channel resolution before updating |
 | `POST` | `/api/federation/message/delete` | Receive a message deletion from a connected instance |
-| `POST` | `/api/federation/message/react` | Receive a reaction from a connected instance |
+| `POST` | `/api/federation/message/react` | Receive a reaction from a connected instance; applies the destination channel's reaction type (native, Hybrid thread, or skip) |
 | `POST` | `/api/federation/users` | Exchange user directory with a connected instance |
 | `GET` | `/api/federation/ping` | Health check for connected instances (still answers when federation is off in Settings) |
 

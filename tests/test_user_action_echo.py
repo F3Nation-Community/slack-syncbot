@@ -9,13 +9,16 @@ from sqlalchemy import inspect
 from helpers.user_action_echo import (
     reaction_echo_fingerprint,
     remember_user_action,
+    slack_message_ts,
     take_user_action_echo,
 )
 
 
 class TestReactionEchoFingerprint:
-    def test_fingerprint_uses_raw_ts(self):
-        assert reaction_echo_fingerprint("C1", "100.000001", "thumbsup") == "C1:100.000001:thumbsup"
+    def test_fingerprint_pads_short_fraction(self):
+        assert reaction_echo_fingerprint("C1", "100.0", "thumbsup") == "C1:100.000000:thumbsup"
+        assert slack_message_ts("100.000001") == "100.000001"
+        assert slack_message_ts(100.0) == "100.000000"
 
 
 class TestRememberAndTake:

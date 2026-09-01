@@ -14,7 +14,7 @@ from db import DbManager, schemas
 from helpers.conversations import get_user_token
 from helpers.core import safe_get
 from helpers.encryption import decrypt_bot_token
-from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_action
+from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_action, slack_message_ts
 
 _logger = logging.getLogger(__name__)
 
@@ -158,8 +158,10 @@ def _dest_reaction_name_is_invalid(
     """Whether dest Slack rejects this emoji name.
 
     Returns ``True`` for ``invalid_name``, ``False`` when the name exists, and
-    ``None`` when the probe did not settle it. ``invalid_name`` is per workspace;
-    pass *cache* so one event does not probe the same dest name twice.
+    ``None`` when the probe did not settle it. Called only on the Hybrid thread
+    path (no dest user token, or that token hit an auth error). ``invalid_name``
+    is per workspace; pass *cache* so one event does not probe the same dest
+    name twice.
     """
     cache_key = (str(team_id or ""), reaction)
     if cache is not None and cache_key in cache:
@@ -232,29 +234,19 @@ def apply_reaction_to_target(
     mapped_user_id: str | None = None,
     name_probe_cache: dict[tuple[str, str], bool] | None = None,
 ) -> tuple[ApplyResult, schemas.PostMeta | None]:
-    """Apply a reaction add/remove on a target channel. Never writes to the origin."""
+    """Apply a reaction add/remove on a target channel. Never writes to the origin.
+
+    User-token add/remove runs first when dest has an ``xoxp``. Bot name probe
+    (`_dest_reaction_name_is_invalid`) runs only on the Hybrid thread path: no
+    dest token, or that token hit ``_NO_AUTHORIZE_ERRORS``. Direct-only never
+    probes. ``invalid_name`` always skips; it never becomes a thread notice.
+    """
     if not should_sync_reaction_between(source_sync_channel, target_sync_channel):
         return "skipped", None
 
     style = reaction_style(target_sync_channel)
-    target_ts = str(target_post_meta.ts)
+    target_ts = slack_message_ts(target_post_meta.ts)
     channel_id = target_sync_channel.channel_id
-    bot_client: WebClient | None = None
-    name_exists = False
-
-    if action == "add" and getattr(target_workspace, "bot_token", None):
-        bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
-        name_invalid = _dest_reaction_name_is_invalid(
-            bot_client,
-            team_id=getattr(target_workspace, "team_id", None),
-            channel_id=channel_id,
-            target_ts=target_ts,
-            reaction=reaction,
-            cache=name_probe_cache,
-        )
-        if name_invalid is True:
-            return "skipped", None
-        name_exists = name_invalid is False
 
     resolved_user = mapped_user_id or _mapped_user_for_target(
         source_user_id,
@@ -302,11 +294,17 @@ def apply_reaction_to_target(
     if style != constants.REACTION_STYLE_THREADED_AND_DIRECT:
         return "skipped", None
 
-    if not name_exists:
+    bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+    name_invalid = _dest_reaction_name_is_invalid(
+        bot_client,
+        team_id=getattr(target_workspace, "team_id", None),
+        channel_id=channel_id,
+        target_ts=target_ts,
+        reaction=reaction,
+        cache=name_probe_cache,
+    )
+    if name_invalid is not False:
         return "skipped", None
-
-    if bot_client is None:
-        bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
 
     notice = _post_threaded_reaction_notice(
         target_client=bot_client,

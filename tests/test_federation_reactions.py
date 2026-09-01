@@ -213,6 +213,74 @@ class TestFederationInboundTokenLookup:
         assert status == 200
         assert resp["applied"] == 1
         get_token.assert_called_once_with("T_DEST", "U_LOCAL")
-        assert user_client.reactions_add.call_count == 2
-        user_client.reactions_remove.assert_called_once()
+        user_client.reactions_add.assert_called_once()
+        user_client.reactions_remove.assert_not_called()
         assert all("xoxp" not in str(v) for v in body.values())
+
+    def test_direct_inbound_without_token_does_not_probe(self):
+        body = {
+            "post_id": "post-1",
+            "channel_id": "C123",
+            "reaction": "thumbsup",
+            "action": "add",
+            "user_name": "Remote Alice",
+        }
+        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        sync_channel = SimpleNamespace(
+            id=101,
+            channel_id="C123",
+            reaction_direction="both",
+            reaction_style="direct_only",
+        )
+        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        post_meta = SimpleNamespace(ts=123.456)
+
+        with (
+            patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
+            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch("helpers.reactions.get_user_token", return_value=None),
+            patch("helpers.reactions.decrypt_bot_token") as decrypt,
+            patch("helpers.reactions.WebClient") as web_client,
+        ):
+            status, resp = federation_api.handle_message_react(body, fed_ws)
+
+        assert status == 200
+        assert resp["applied"] == 0
+        decrypt.assert_not_called()
+        web_client.assert_not_called()
+
+    def test_hybrid_inbound_without_token_probes_then_threads(self):
+        body = {
+            "post_id": "post-1",
+            "channel_id": "C123",
+            "reaction": "thumbsup",
+            "action": "add",
+            "user_name": "Remote Alice",
+        }
+        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        sync_channel = SimpleNamespace(
+            id=101,
+            channel_id="C123",
+            reaction_direction="both",
+            reaction_style="threaded_and_direct",
+        )
+        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        post_meta = SimpleNamespace(ts=123.456)
+        bot_client = MagicMock()
+        bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
+        bot_client.chat_postMessage.return_value = {"ts": "200.000001"}
+
+        with (
+            patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
+            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch("helpers.reactions.get_user_token", return_value=None),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
+        ):
+            status, resp = federation_api.handle_message_react(body, fed_ws)
+
+        assert status == 200
+        assert resp["applied"] == 1
+        bot_client.reactions_add.assert_called_once()
+        bot_client.reactions_remove.assert_called_once()
+        bot_client.chat_postMessage.assert_called_once()

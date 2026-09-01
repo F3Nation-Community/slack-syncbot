@@ -70,6 +70,8 @@ Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Au
 
 **User-token echo:** Slack does not mark an `xoxp` write as a bot action. After a successful user-token side effect, `remember_user_action` in [`syncbot/helpers/user_action_echo.py`](../syncbot/helpers/user_action_echo.py); matching handlers call `take_user_action_echo` inside `run_claimed` before fan-out. Do not store echo rows in `processed_events`. Import the helper submodule directly (`from helpers.user_action_echo import …`), not via `helpers/__init__.py`.
 
+**Hybrid emoji probe:** `_dest_reaction_name_is_invalid` in [`syncbot/helpers/reactions.py`](../syncbot/helpers/reactions.py) runs only when Hybrid is about to post a thread notice (no dest user token, or that token hit an auth error). Direct-only and a successful native `reactions_add` must not probe. Do not use `emoji.list` for dest names.
+
 ## DB identity and deletes
 
 `DbManager.get_record(Model, id)` filters on that model's `get_id()` column, not always the integer primary key. Pass the matching value positional or as `id=` only (extra keywords such as `team_id=` raise `TypeError`). `Workspace.get_id()` is Slack `team_id`; `SyncChannel` is Slack `channel_id`; `PostMeta` is `post_id`. Integer PK lookups use `find_records(... id == n)` or helpers such as `get_workspace_by_id`. Returned objects are expunged; each `DbManager` call opens and commits its own session, so there is no multi-call transaction.
