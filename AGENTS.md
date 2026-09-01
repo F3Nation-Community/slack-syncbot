@@ -66,6 +66,7 @@ Stage is only **`test`** or **`prod`**. Do not use `YOURSTAGE` as if the name we
 
 ## Common pitfalls
 
+- **Bot identity is per workspace.** Never cache `auth.test` under a process-wide key. A warm Lambda handles many workspaces; reusing workspace A's bot member ID on B makes `conversations.invite` fail with `user_not_found` and can skip the unconfigured-channel leave handler. Prefer Bolt's request-scoped `context["bot_user_id"]`, and cache `auth.test` keyed by bot token.
 - **Lambda migrations**: AWS deploy invokes migrations **once post-deploy** — avoid relying on slow migration work during Slack request handling / cold start ack timeouts.
 - **SQLite vs MySQL/Postgres** — local SQLite behaves differently for locking and types; don’t assume parity without checking migration scripts.
 - **`ENABLE_DB_RESET`** — boolean (`true`/`1`/`yes`), gated by `PRIMARY_WORKSPACE`; don't treat as team-id string anymore.

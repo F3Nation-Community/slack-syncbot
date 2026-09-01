@@ -498,6 +498,7 @@ After deploying a build that changes Slack listener wiring, verify **in the depl
 3. **Backup / Restore** — Open Backup/Restore; try restore validation (e.g. missing file) and, if possible, the integrity-warning confirmation path (`push`).
 4. **Data migration** (if federation enabled) — Same style of checks for import validation and confirmation.
 5. **Optional** — Trigger a Home tab action that opens a modal via **`views_open`** (uses `trigger_id`) after a cold start to spot-check latency.
+6. **Optional, private Channels** — If they are allowed in **Settings**, click **Authorize SyncBot**, then publish a private Channel in one workspace and subscribe to it from another. SyncBot should appear in both Channels without a warning DM.
 
 ---
 

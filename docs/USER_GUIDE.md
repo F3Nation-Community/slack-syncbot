@@ -24,7 +24,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 - Do not add SyncBot manually to channels. SyncBot adds itself when you Publish or Subscribe. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
 - When you pick a channel to publish or subscribe, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
 - A channel can belong to only one Channel Sync at a time. If you pick one that is already syncing, SyncBot tells you so in the dialog and asks for a different channel rather than quietly doing nothing. A channel you previously unpublished is free to use again.
-- Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. When they are allowed, you publish or subscribe a private channel the same way you would a public one, and SyncBot adds itself for you using your permission to invite it — see **Authorize SyncBot** below.
+- Public channels are supported out of the box. Private channels are only available if the operator turned them on in **Settings**; if they have not, SyncBot asks you to pick a public channel. When they are allowed, you publish or subscribe a private channel the same way you would a public one, and SyncBot adds itself for you using your permission to invite it — see **Authorize SyncBot** below. If it cannot be added, that Channel Sync is undone and you get a direct message explaining why.
 
 ## Authorize SyncBot
 
@@ -88,7 +88,7 @@ Disbanding always asks for confirmation before anything is removed, and tells yo
 
 ## Sync Modes
 
-When publishing a channel inside a group, use **Publish Channel**. The first step chooses either **1-to-1** (only a specific workspace can subscribe) or **group-wide** (any group member can subscribe independently). Other workspaces then use **Subscribe** to pick a local channel that receives the published one.
+When publishing a channel inside a group, use **Publish Channel**. The first step chooses either **1-to-1** (only a specific workspace can subscribe) or **group-wide** (any group member can subscribe independently). Other workspaces then use **Subscribe** to pick a local channel that receives the published one. A published channel waiting for a subscriber is listed on Home by its name, in the same code style as Type and Publisher. A private channel is tagged `(private)`. Once you subscribe, the row becomes a link to your local channel.
 
 ## Pause / Resume / Stop
 

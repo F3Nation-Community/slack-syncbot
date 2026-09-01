@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Revoking your own authorization no longer pauses syncing for the whole workspace. Slack can include `tokens.bot` on a personal revoke; SyncBot now checks that the bot token still works before treating it as an uninstall.
 - After a revoke, **Authorize SyncBot** comes back and that person's Home tab still opens. SyncBot deletes their installation row instead of leaving an empty one that made Slack show "This is still a work in progress." **Refresh** is on Home for everyone so a non-admin can reload the tab if it did not update on its own.
 - Uninstalling SyncBot now drops every stored bot and user token for that workspace (Bolt's `delete_all`), so a later reinstall does not reuse dead authorizations. Paste the updated app manifest so Slack also sends `app_uninstalled`.
+- Published Channels waiting for a subscriber on the Home tab now show the Channel's name instead of its Slack ID, tagged `(private)` when the Channel is private.
+- Subscribing (or publishing) a private Channel no longer fails with `user_not_found` after SyncBot has been used in another workspace. The bot's member ID is remembered per workspace, so the invite asks Slack to add *this* workspace's SyncBot.
 
 ### Added
 

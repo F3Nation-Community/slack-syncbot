@@ -186,6 +186,7 @@ To keep database and Slack API usage low when people use the **Refresh** button 
 - **Cached built blocks** — After a full refresh, the built Block Kit payload is cached (keyed by workspace and user). When the hash matches, the app re-publishes that cached view with one `views.publish` instead of re-running all DB and Slack calls.
 - **60-second cooldown** — If the user clicks Refresh again within 60 seconds and the hash is unchanged, the app re-publishes the cached view with a message: "No new data. Wait __ seconds before refreshing again." (seconds remaining from the last refresh). This avoids redundant full refreshes from repeated clicks.
 - **Request-scoped caching** — Within a single Lambda invocation, `get_workspace_by_id` and `get_admin_ids` use the request `context` as a cache so repeated lookups for the same workspace or admin list do not hit the DB or Slack again. The same context is passed through all "push refresh" paths (e.g. when one workspace publishes a channel and other workspaces' Home tabs are updated), so those updates share the cache and stay lightweight.
+- **Bot identity** — `auth.test` (bot_id and the bot's member ID) is cached per bot token, not once for the process. A warm Lambda serves many workspaces; a shared identity made private-channel invites fail with `user_not_found`. Prefer Bolt's request-scoped `context["bot_user_id"]` when inviting SyncBot into a private Channel.
 
 ## Backup, Restore, and Data Migration
 
