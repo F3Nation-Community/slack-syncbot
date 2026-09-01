@@ -133,7 +133,7 @@ def build_full_backup() -> dict:
         "exported_at": datetime.now(UTC).isoformat() + "Z",
         "encryption_key_hash": _compute_encryption_key_hash(),
     }
-    # processed_events is ephemeral Slack event_id dedup — omit from backup.
+    # processed_events and user_action_echoes are ephemeral — omit from backup.
     tables = [
         ("workspaces", schemas.Workspace),
         ("workspace_groups", schemas.WorkspaceGroup),

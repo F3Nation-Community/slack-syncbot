@@ -137,12 +137,14 @@ class TestApplyDirect:
         target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
+        bot_client = MagicMock()
         user_client = MagicMock()
 
         with (
             patch("helpers.reactions.get_user_token", return_value="xoxp-test") as get_token,
             patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
-            patch("helpers.reactions.WebClient", return_value=user_client),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", side_effect=[bot_client, user_client]),
         ):
             result, notice = _apply(
                 source_sync_channel=source,
@@ -152,6 +154,8 @@ class TestApplyDirect:
             )
 
         get_token.assert_called_once_with("T_DEST", "U_MAPPED")
+        bot_client.reactions_add.assert_called_once()
+        bot_client.reactions_remove.assert_called_once()
         user_client.reactions_add.assert_called_once()
         assert result == "direct"
         assert notice is None
@@ -161,13 +165,14 @@ class TestApplyDirect:
         target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
-        user_client = MagicMock()
-        user_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "invalid_name"})
+        bot_client = MagicMock()
+        bot_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "invalid_name"})
 
         with (
-            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test") as get_token,
             patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
-            patch("helpers.reactions.WebClient", return_value=user_client),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
         ):
             result, notice = _apply(
                 reaction="custom_emoji",
@@ -179,22 +184,130 @@ class TestApplyDirect:
 
         assert result == "skipped"
         assert notice is None
+        get_token.assert_not_called()
+        bot_client.chat_postMessage.assert_not_called()
 
-    def test_hybrid_invalid_name_threads(self):
+    def test_hybrid_invalid_name_skips(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
         target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
+        bot_client = MagicMock()
+        bot_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "invalid_name"})
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
+        ):
+            result, notice = _apply(
+                reaction="custom_emoji",
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        assert result == "skipped"
+        assert notice is None
+        bot_client.chat_postMessage.assert_not_called()
+
+    def test_hybrid_already_reacted_is_direct_no_thread(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
+        bot_client = MagicMock()
+        bot_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "already_reacted"})
         user_client = MagicMock()
-        user_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "invalid_name"})
+        user_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "already_reacted"})
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", side_effect=[bot_client, user_client]),
+        ):
+            result, notice = _apply(
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        assert result == "direct"
+        assert notice is None
+        user_client.chat_postMessage.assert_not_called()
+        bot_client.chat_postMessage.assert_not_called()
+
+    def test_hybrid_unknown_error_does_not_thread(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
+        bot_client = MagicMock()
+        bot_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "message_not_found"})
+        user_client = MagicMock()
+        user_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "message_not_found"})
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", side_effect=[bot_client, user_client]),
+        ):
+            result, notice = _apply(
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        assert result == "failed"
+        assert notice is None
+        bot_client.chat_postMessage.assert_not_called()
+
+    def test_hybrid_no_token_threads(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
         bot_client = MagicMock()
         bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
         bot_client.chat_postMessage.return_value = {"ts": "200.000001"}
 
         with (
-            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions.get_user_token", return_value=None),
             patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
-            patch("helpers.reactions.WebClient", side_effect=[user_client, bot_client]),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+        ):
+            result, notice = _apply(
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        assert result == "thread"
+        assert notice is not None
+        bot_client.reactions_add.assert_called_once()
+        bot_client.reactions_remove.assert_called_once()
+        bot_client.chat_postMessage.assert_called_once()
+
+    def test_hybrid_no_token_invalid_name_skips(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
+        bot_client = MagicMock()
+        bot_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "invalid_name"})
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value=None),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
             patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
         ):
             result, notice = _apply(
@@ -205,9 +318,67 @@ class TestApplyDirect:
                 target_workspace=workspace,
             )
 
+        assert result == "skipped"
+        assert notice is None
+        bot_client.chat_postMessage.assert_not_called()
+
+    def test_hybrid_auth_error_threads(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
+        user_client = MagicMock()
+        user_client.reactions_add.side_effect = SlackApiError("bad", response={"error": "token_revoked"})
+        bot_client = MagicMock()
+        bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
+        bot_client.chat_postMessage.return_value = {"ts": "200.000001"}
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", side_effect=[bot_client, user_client]),
+        ):
+            result, notice = _apply(
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
         assert result == "thread"
         assert notice is not None
+        bot_client.reactions_add.assert_called_once()
         bot_client.chat_postMessage.assert_called_once()
+
+    def test_successful_native_reaction_remembers_echo(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
+        bot_client = MagicMock()
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", side_effect=[bot_client, user_client]),
+            patch("helpers.reactions.remember_user_action") as remember_mock,
+        ):
+            _apply(
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        remember_mock.assert_called_once_with(
+            "T_DEST",
+            "U_MAPPED",
+            "reaction_added",
+            "C_TARGET:100.0:thumbsup",
+        )
 
     def test_reaction_removed_never_threads(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
@@ -235,6 +406,39 @@ class TestApplyDirect:
         assert notice is None
         decrypt.assert_not_called()
         assert web_client.call_count == 1
+
+    def test_name_probe_runs_once_per_workspace_when_cached(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        bot_client = MagicMock()
+        bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
+        bot_client.chat_postMessage.side_effect = [{"ts": "200.000001"}, {"ts": "200.000002"}]
+        cache: dict = {}
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value=None),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
+        ):
+            _apply(
+                source_sync_channel=source,
+                target_post_meta=SimpleNamespace(ts=100.0),
+                target_sync_channel=target,
+                target_workspace=workspace,
+                name_probe_cache=cache,
+            )
+            _apply(
+                source_sync_channel=source,
+                target_post_meta=SimpleNamespace(ts=101.0),
+                target_sync_channel=target,
+                target_workspace=workspace,
+                name_probe_cache=cache,
+            )
+
+        assert bot_client.reactions_add.call_count == 1
+        assert bot_client.chat_postMessage.call_count == 2
 
 
 class TestPublishSubscribeBuilders:

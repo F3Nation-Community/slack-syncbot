@@ -14,6 +14,7 @@ from db import DbManager, schemas
 from helpers.conversations import get_user_token
 from helpers.core import safe_get
 from helpers.encryption import decrypt_bot_token
+from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_action
 
 _logger = logging.getLogger(__name__)
 
@@ -128,6 +129,90 @@ def _post_threaded_reaction_notice(
 
 
 _NO_AUTHORIZE_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "missing_scope", "account_inactive"})
+_IDEMPOTENT_ADD_ERRORS = frozenset({"already_reacted", "already_added"})
+
+
+def _slack_error_code(exc: SlackApiError) -> str:
+    response = exc.response
+    if response is None:
+        return ""
+    if isinstance(response, dict):
+        err = response.get("error")
+        return str(err) if err else ""
+    data = getattr(response, "data", None)
+    if isinstance(data, dict):
+        err = data.get("error")
+        return str(err) if err else ""
+    return ""
+
+
+def _dest_reaction_name_is_invalid(
+    bot_client: WebClient,
+    *,
+    team_id: str | None,
+    channel_id: str,
+    target_ts: str,
+    reaction: str,
+    cache: dict[tuple[str, str], bool] | None = None,
+) -> bool | None:
+    """Whether dest Slack rejects this emoji name.
+
+    Returns ``True`` for ``invalid_name``, ``False`` when the name exists, and
+    ``None`` when the probe did not settle it. ``invalid_name`` is per workspace;
+    pass *cache* so one event does not probe the same dest name twice.
+    """
+    cache_key = (str(team_id or ""), reaction)
+    if cache is not None and cache_key in cache:
+        return cache[cache_key]
+
+    result: bool | None
+    try:
+        bot_client.reactions_add(channel=channel_id, timestamp=target_ts, name=reaction)
+    except SlackApiError as exc:
+        error_code = _slack_error_code(exc)
+        if error_code == "invalid_name":
+            result = True
+        elif error_code in _IDEMPOTENT_ADD_ERRORS:
+            result = False
+        else:
+            _logger.debug(
+                "reaction_name_probe_failed",
+                extra={"channel_id": channel_id, "error": error_code or str(exc)},
+            )
+            result = None
+        if cache is not None and result is not None:
+            cache[cache_key] = result
+        return result
+    try:
+        bot_client.reactions_remove(channel=channel_id, timestamp=target_ts, name=reaction)
+    except SlackApiError as exc:
+        _logger.debug(
+            "reaction_name_probe_remove_failed",
+            extra={"channel_id": channel_id, "error": _slack_error_code(exc) or str(exc)},
+        )
+    if cache is not None:
+        cache[cache_key] = False
+    return False
+
+
+def _remember_native_reaction(
+    *,
+    team_id: str | None,
+    user_id: str | None,
+    action: str,
+    channel_id: str,
+    target_ts: str,
+    reaction: str,
+) -> None:
+    if not team_id or not user_id:
+        return
+    kind = "reaction_added" if action == "add" else "reaction_removed"
+    remember_user_action(
+        team_id,
+        user_id,
+        kind,
+        reaction_echo_fingerprint(channel_id, target_ts, reaction),
+    )
 
 
 def apply_reaction_to_target(
@@ -145,6 +230,7 @@ def apply_reaction_to_target(
     posted_from: str,
     author_is_mapped: bool,
     mapped_user_id: str | None = None,
+    name_probe_cache: dict[tuple[str, str], bool] | None = None,
 ) -> tuple[ApplyResult, schemas.PostMeta | None]:
     """Apply a reaction add/remove on a target channel. Never writes to the origin."""
     if not should_sync_reaction_between(source_sync_channel, target_sync_channel):
@@ -153,6 +239,22 @@ def apply_reaction_to_target(
     style = reaction_style(target_sync_channel)
     target_ts = str(target_post_meta.ts)
     channel_id = target_sync_channel.channel_id
+    bot_client: WebClient | None = None
+    name_exists = False
+
+    if action == "add" and getattr(target_workspace, "bot_token", None):
+        bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+        name_invalid = _dest_reaction_name_is_invalid(
+            bot_client,
+            team_id=getattr(target_workspace, "team_id", None),
+            channel_id=channel_id,
+            target_ts=target_ts,
+            reaction=reaction,
+            cache=name_probe_cache,
+        )
+        if name_invalid is True:
+            return "skipped", None
+        name_exists = name_invalid is False
 
     resolved_user = mapped_user_id or _mapped_user_for_target(
         source_user_id,
@@ -168,23 +270,31 @@ def apply_reaction_to_target(
                 user_client.reactions_add(channel=channel_id, timestamp=target_ts, name=reaction)
             else:
                 user_client.reactions_remove(channel=channel_id, timestamp=target_ts, name=reaction)
+            _remember_native_reaction(
+                team_id=target_workspace.team_id,
+                user_id=resolved_user,
+                action=action,
+                channel_id=channel_id,
+                target_ts=target_ts,
+                reaction=reaction,
+            )
             return "direct", None
         except SlackApiError as exc:
-            error_code = (safe_get(exc.response, "error") if exc.response else "") or ""
+            error_code = _slack_error_code(exc)
             if action == "remove":
+                return "skipped", None
+            if error_code in _IDEMPOTENT_ADD_ERRORS:
+                return "direct", None
+            if error_code == "invalid_name":
                 return "skipped", None
             if error_code in _NO_AUTHORIZE_ERRORS:
                 user_token = None
-            elif error_code == "invalid_name":
-                if style == constants.REACTION_STYLE_DIRECT_ONLY:
-                    return "skipped", None
             else:
                 _logger.warning(
                     "reaction_direct_failed",
                     extra={"channel_id": channel_id, "error": error_code or str(exc)},
                 )
-                if style == constants.REACTION_STYLE_DIRECT_ONLY:
-                    return "failed", None
+                return "failed", None
 
     if action != "add":
         return "skipped", None
@@ -192,7 +302,12 @@ def apply_reaction_to_target(
     if style != constants.REACTION_STYLE_THREADED_AND_DIRECT:
         return "skipped", None
 
-    bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+    if not name_exists:
+        return "skipped", None
+
+    if bot_client is None:
+        bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+
     notice = _post_threaded_reaction_notice(
         target_client=bot_client,
         sync_channel=target_sync_channel,

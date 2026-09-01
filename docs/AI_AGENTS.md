@@ -68,6 +68,8 @@ View submissions: ack-phase handlers in `VIEW_ACK_MAPPER` may return field error
 
 Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Authorize SyncBot is the example) or the click shows up as `no_handler`.
 
+**User-token echo:** Slack does not mark an `xoxp` write as a bot action. After a successful user-token side effect, `remember_user_action` in [`syncbot/helpers/user_action_echo.py`](../syncbot/helpers/user_action_echo.py); matching handlers call `take_user_action_echo` inside `run_claimed` before fan-out. Do not store echo rows in `processed_events`. Import the helper submodule directly (`from helpers.user_action_echo import …`), not via `helpers/__init__.py`.
+
 ## DB identity and deletes
 
 `DbManager.get_record(Model, id)` filters on that model's `get_id()` column, not always the integer primary key. Pass the matching value positional or as `id=` only (extra keywords such as `team_id=` raise `TypeError`). `Workspace.get_id()` is Slack `team_id`; `SyncChannel` is Slack `channel_id`; `PostMeta` is `post_id`. Integer PK lookups use `find_records(... id == n)` or helpers such as `get_workspace_by_id`. Returned objects are expunged; each `DbManager` call opens and commits its own session, so there is no multi-call transaction.

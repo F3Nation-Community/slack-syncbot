@@ -17,6 +17,8 @@ Tables:
   explicit "no match" records to avoid redundant lookups).
 * **processed_events** — Slack Events API ``event_id`` claims (at-least-once
   dedup). Ephemeral; not included in full-instance backup.
+* **user_action_echoes** — Remembered user-token Slack writes so inbound echo
+  events can be skipped. Ephemeral; not included in full-instance backup.
 """
 
 from typing import Any
@@ -302,3 +304,28 @@ class ProcessedEvent(BaseClass, GetDBClass):
 
     def get_id():
         return ProcessedEvent.id
+
+
+class UserActionEcho(BaseClass, GetDBClass):
+    """Remembered user-token side effect so the matching inbound event is skipped."""
+
+    __tablename__ = "user_action_echoes"
+    __table_args__ = (
+        UniqueConstraint(
+            "team_id",
+            "user_id",
+            "kind",
+            "fingerprint",
+            name="uq_user_action_echoes_team_user_kind_fp",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    team_id = Column(String(100), nullable=False)
+    user_id = Column(String(100), nullable=False)
+    kind = Column(String(64), nullable=False)
+    fingerprint = Column(String(256), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+
+    def get_id():
+        return UserActionEcho.id

@@ -595,6 +595,7 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
 
     applied = 0
     synthetic_source = schemas.SyncChannel(reaction_direction=constants.REACTION_DIRECTION_SEND)
+    name_probe_cache: dict[tuple[str, str], bool] = {}
 
     for post_meta in post_records:
         try:
@@ -612,6 +613,7 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
                 posted_from=f"({workspace_name})" if workspace_name else "",
                 author_is_mapped=bool(mapped_local),
                 mapped_user_id=mapped_local,
+                name_probe_cache=name_probe_cache,
             )
             if result in ("direct", "thread"):
                 applied += 1

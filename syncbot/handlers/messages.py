@@ -654,6 +654,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
     post_list: list[schemas.PostMeta] = []
     synced = 0
     failed = 0
+    name_probe_cache: dict[tuple[str, str], bool] = {}
 
     for post_meta, sync_channel, workspace in reacted_records:
         if sync_channel.channel_id == channel_id:
@@ -706,6 +707,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                 icon_url=target_icon_url or user_profile_url,
                 posted_from=posted_from,
                 author_is_mapped=author_is_mapped,
+                name_probe_cache=name_probe_cache,
             )
             if notice:
                 post_list.append(notice)
@@ -759,7 +761,15 @@ def _handle_reaction(
         )
         return
 
+    team_id = helpers.safe_get(body, "team_id") or helpers.safe_get(body, "team", "id")
+
     def _sync_reaction() -> None:
+        from helpers.user_action_echo import reaction_echo_fingerprint, take_user_action_echo
+
+        if team_id and user_id and reaction and channel_id and msg_ts:
+            fingerprint = reaction_echo_fingerprint(channel_id, msg_ts, reaction)
+            if take_user_action_echo(str(team_id), user_id, event_type, fingerprint):
+                return
         _sync_reaction_records(body, client, reacted_records)
 
     run_claimed(body, _sync_reaction)

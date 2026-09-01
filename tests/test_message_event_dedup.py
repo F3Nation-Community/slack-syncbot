@@ -339,3 +339,73 @@ class TestHandleReactionClaim:
             _handle_reaction(body, MagicMock(), MagicMock(), {})
             _handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_sync.assert_called_once()
+
+
+class TestHandleReactionEchoSkip:
+    def test_dest_echo_skips_fan_out_inside_claim(self, event_db):
+        body = {
+            "event_id": "EvECHO1",
+            "team_id": "T2",
+            "event": {
+                "type": "reaction_added",
+                "user": "U_MAPPED",
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": "C_DST", "ts": "200.0"},
+            },
+        }
+        records = [(MagicMock(), MagicMock(), MagicMock())]
+        with (
+            patch("handlers.messages.helpers.get_own_bot_user_id", return_value="UBOT"),
+            patch("handlers.messages.helpers.get_post_records", return_value=records),
+            patch("helpers.user_action_echo.take_user_action_echo", return_value=True) as take_mock,
+            patch("handlers.messages._sync_reaction_records") as sync_mock,
+        ):
+            _handle_reaction(body, MagicMock(), MagicMock(), {})
+
+        take_mock.assert_called_once()
+        sync_mock.assert_not_called()
+
+    def test_human_reaction_still_syncs(self, event_db):
+        body = {
+            "event_id": "EvHUMAN1",
+            "team_id": "T2",
+            "event": {
+                "type": "reaction_added",
+                "user": "U_HUMAN",
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": "C_DST", "ts": "200.0"},
+            },
+        }
+        records = [(MagicMock(), MagicMock(), MagicMock())]
+        with (
+            patch("handlers.messages.helpers.get_own_bot_user_id", return_value="UBOT"),
+            patch("handlers.messages.helpers.get_post_records", return_value=records),
+            patch("helpers.user_action_echo.take_user_action_echo", return_value=False),
+            patch("handlers.messages._sync_reaction_records") as sync_mock,
+        ):
+            _handle_reaction(body, MagicMock(), MagicMock(), {})
+
+        sync_mock.assert_called_once()
+
+    def test_duplicate_event_id_still_skips_after_echo_take(self, event_db):
+        body = {
+            "event_id": "EvDUP1",
+            "team_id": "T2",
+            "event": {
+                "type": "reaction_added",
+                "user": "U_MAPPED",
+                "reaction": "thumbsup",
+                "item": {"type": "message", "channel": "C_DST", "ts": "200.0"},
+            },
+        }
+        records = [(MagicMock(), MagicMock(), MagicMock())]
+        with (
+            patch("handlers.messages.helpers.get_own_bot_user_id", return_value="UBOT"),
+            patch("handlers.messages.helpers.get_post_records", return_value=records),
+            patch("helpers.user_action_echo.take_user_action_echo", return_value=True),
+            patch("handlers.messages._sync_reaction_records") as sync_mock,
+        ):
+            _handle_reaction(body, MagicMock(), MagicMock(), {})
+            _handle_reaction(body, MagicMock(), MagicMock(), {})
+
+        sync_mock.assert_not_called()

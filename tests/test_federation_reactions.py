@@ -205,6 +205,7 @@ class TestFederationInboundTokenLookup:
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-bot"),
             patch.object(federation_api.helpers, "get_user_info", return_value=("Local Alice", None)),
             patch("helpers.reactions.get_user_token", return_value="xoxp-local") as get_token,
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
             patch("helpers.reactions.WebClient", return_value=user_client),
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
@@ -212,5 +213,6 @@ class TestFederationInboundTokenLookup:
         assert status == 200
         assert resp["applied"] == 1
         get_token.assert_called_once_with("T_DEST", "U_LOCAL")
-        user_client.reactions_add.assert_called_once()
+        assert user_client.reactions_add.call_count == 2
+        user_client.reactions_remove.assert_called_once()
         assert all("xoxp" not in str(v) for v in body.values())

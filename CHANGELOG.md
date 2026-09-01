@@ -26,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Reaction notices no longer echo into the origin Channel
+- Reaction sync ignores user-token echo events and no longer threads on `already_reacted` or missing custom emoji
 - Workspace-settings upgrade quotes the reserved MySQL `key` column
 - Schema errors are not retried, and view acks still return if a handler raises
 
