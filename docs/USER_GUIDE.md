@@ -5,10 +5,11 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 ## Getting Started
 
 1. Click the install link from a desktop browser (make sure you have selected the correct workspace in the upper right).
-2. Open the **SyncBot** app from the sidebar and click the **Home** tab (this requires a workspace admin or owner).
+2. Open the **SyncBot** app from the sidebar and click the **Home** tab. Everyone can open it; configuring groups and channels is still limited to workspace admins and owners unless the operator set `REQUIRE_ADMIN=false`.
 3. The Home tab shows everything in one view:
-   - **SyncBot Configuration (bottom row)** — **Refresh**, plus **Backup/Restore** and **Settings** only if the host set `PRIMARY_WORKSPACE` (the Slack Team ID) and redeployed. If you do not see them, ask the operator. **Settings** is where the operator adjusts instance-wide policy, such as how long the data of a workspace that uninstalled is kept before it is deleted for good.
-   - **Workspace Groups** — create or join groups of workspaces that can sync channels together.
+   - **Authorize SyncBot** — at the top, when this person still needs to grant user permissions. See **Authorize SyncBot** below.
+   - **SyncBot Configuration** — directly under that. **Refresh** is for everyone, so you can reload Home after revoking your authorization. **Backup/Restore** and **Settings** stay on this row for admins of the primary workspace (`PRIMARY_WORKSPACE` set and redeployed). If you do not see them, ask the operator. **Settings** is where the operator adjusts instance-wide policy, such as how long the data of a workspace that uninstalled is kept before it is deleted for good.
+   - **Workspace Groups** — create or join groups of workspaces that can sync channels together (admins).
    - **Per-group sections** — for each group you can **Publish Channel**, manage user mapping (a dedicated Home tab screen), and see or manage channel syncs inline. Other workspaces in the group see published channels as **Subscribe**.
    - **Synced Channels** — each row shows the local channel and workspace list in brackets (for example _[Any: Your Workspace, Other Workspace]_), with pause/resume and stop controls, a synced-since date, and a tracked message count.
    - **External Connections** *(when federation is enabled)* — Generate or Enter a Connection Code, and **Data Migration** (export workspace data to another instance, or import a migration file).
@@ -37,7 +38,7 @@ Everyone sees this section until they have granted every current permission, whe
 
 ### Revoke your authorization
 
-This is personal: it only drops SyncBot's permission to act as *you*. It does not uninstall the app from the workspace, and it does not remove SyncBot from private channels it already joined. After you revoke, SyncBot can no longer invite itself into a private channel as you. Use **Authorize SyncBot** again if you change your mind; try **Refresh** on the Home tab if the section does not reappear right away.
+This is personal: it only drops SyncBot's permission to act as *you*. It does not uninstall the app from the workspace, and it does not remove SyncBot from private channels it already joined. After you revoke, SyncBot can no longer invite itself into a private channel as you. **Authorize SyncBot** should come back on its own; if the Home tab still looks the same, click **Refresh** in **SyncBot Configuration** (just under Authorize). Use **Authorize SyncBot** again if you change your mind.
 
 Slack owns this screen (there is no button for it on the Home tab). From the desktop app:
 
@@ -98,7 +99,7 @@ When publishing a channel inside a group, use **Publish Channel**. The first ste
 
 ## Uninstall / Reinstall
 
-If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted). Reinstalling within the retention period (default 30 days, which the operator can change in **Settings**) automatically restores everything, including group ownership. Group members are notified via DMs and channel messages.
+If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted), and every stored bot and user token for that workspace is removed. Reinstalling within the retention period (default 30 days, which the operator can change in **Settings**) automatically restores groups and channel syncs, including group ownership. People who had clicked **Authorize SyncBot** will need to do that again for private channels. Group members are notified via DMs and channel messages.
 
 ## User Mapping
 
@@ -106,7 +107,7 @@ Users are automatically mapped across workspaces by email or display name. Admin
 
 ## Refresh Behavior
 
-The Home tab and User Mapping screens have Refresh buttons. To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again."
+The Home tab and User Mapping screens have Refresh buttons. On Home, Refresh sits in **SyncBot Configuration** for everyone, not only admins. To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again."
 
 ## Media Sync
 

@@ -89,7 +89,7 @@ Runs from repo root (or `./deploy.sh --env test` with `CLOUD_PROVIDER=aws`). It:
    | Keep-warm | `ENABLE_KEEP_WARM` defaults on (EventBridge ScheduleV2 invoke — not HTTP `/health`) |
    | Abort | Leftover `RDSInstance*` stops the deploy; there is no `--force` |
 
-6. **Post-deploy** — stack outputs, `slack-manifest_test.json` or `slack-manifest_prod.json`, Slack API, optional **`gh`**, and a receipt under `deploy-receipts/` (gitignored). The receipt has config, secrets, and Slack **Event**, **Interactivity**, **Redirect**, and **Install** URLs. Those Slack URLs are the public origin SyncBot uses for OAuth install and federation (the app reads the Host of incoming Slack requests). `--verbose` adds SAM parameters and an inline manifest.
+6. **Post-deploy** — stack outputs, `slack-manifest_test.json` or `slack-manifest_prod.json`, Slack API, optional **`gh`**, and a receipt under `deploy-receipts/` (gitignored). The receipt has config, secrets, and Slack **Event**, **Interactivity**, **Redirect**, and **Install** URLs. Those Slack URLs are the public origin SyncBot uses for OAuth install and federation (the app reads the Host of incoming Slack requests). Paste the generated manifest into the Slack app so event subscriptions stay in sync (including `app_uninstalled` and `tokens_revoked`). `--verbose` adds SAM parameters and an inline manifest.
 
 ### GCP: `infra/gcp/scripts/deploy.sh`
 

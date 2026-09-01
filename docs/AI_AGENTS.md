@@ -57,6 +57,8 @@ This instance's public HTTPS origin is the Host of incoming Slack requests (the 
 
 Bolt OAuth must start at **this instance's** `GET /slack/install`. A Home-tab URL that points at Slack's authorize page skips the state cookie and fails after Allow with `invalid_browser`. On Lambda, Function URL payload 2.0 needs the OAuth cookie in the `cookies` array, and stray GETs such as `/favicon.ico` must not be treated as a second install. After a successful callback, call `refresh_home_after_oauth_install` so that user's Home tab updates without a manual Refresh.
 
+Token rows live in Bolt's `SQLAlchemyInstallationStore` (`slack_bots` / `slack_installations`). Use those store methods; do not hand-edit token columns. A personal revoke is `delete_installation(..., user_id=...)`. A workspace uninstall is `delete_all` (same as Bolt's `app_uninstalled` listener) plus SyncBot's workspace pause. Do not call `App.enable_token_revocation_listeners()`: that deletes the bot whenever Slack fills `tokens.bot`, including on a personal revoke, which blanks Home. `tokens_revoked` with a live bot token is user-only even if `tokens.bot` is set. Do not leave a tokenless per-user `slack_installations` row; Bolt authorize looks that user up first and will skip the workspace bot token.
+
 ## Fork compatibility
 
 `release.yml`, Dependabot auto-merge, and semantic-release config apply to **F3Nation-Community/slack-syncbot** only. Deploy forks keep `test`/`prod` Environments and must not mint duplicate GitHub Releases. CODEOWNERS handles are organization-specific; replace `@sprocktech-dev` on other orgs. See [INFRA_CONTRACT.md](INFRA_CONTRACT.md) Fork Compatibility Policy.

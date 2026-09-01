@@ -76,7 +76,7 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | Variable | Description |
 |----------|-------------|
 | `SLACK_BOT_TOKEN` | Set by OAuth flow; placeholder until first install. |
-| `REQUIRE_ADMIN` | `true` (default) or `false`; restricts who can configure SyncBot (groups, publishing, Settings) to admins and owners. It does not decide whether the Home tab opens: every user can open it and authorize SyncBot to act as them. |
+| `REQUIRE_ADMIN` | `true` (default) or `false`; restricts who can configure SyncBot (groups, publishing, Settings) to admins and owners. It does not decide whether the Home tab opens: every user can open it, authorize SyncBot to act as them, and use **Refresh**. |
 | `PRIMARY_WORKSPACE` | Slack Team ID of the primary workspace. Required for backup/restore to be visible. DB reset (if enabled) is also scoped to this workspace. |
 | `ENABLE_DB_RESET` | When `true` / `1` / `yes` and `PRIMARY_WORKSPACE` matches the current workspace, shows the Reset Database button. Not prompted during deploy; set it in the env file (AWS `--setup-github` copies it when present), or in SAM / Terraform. |
 | `LOCAL_DEVELOPMENT` | `true` only for local dev; disables token verification and enables dev shortcuts. |

@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Adding SyncBot to a private Channel by hand no longer backfires. SyncBot is now recorded as belonging to the Channel before it joins, so it stays instead of announcing that the Channel is not part of a Channel Sync and leaving.
 - If SyncBot cannot be added to the Channel after all, the half-finished Channel Sync is removed and the admin is sent a direct message explaining why, rather than leaving a Channel on the Home tab that SyncBot cannot read.
 - Clicking **Authorize SyncBot** and then Allow no longer fails with `invalid_browser`. The button now always starts at this instance's `/slack/install` URL, which is the only starting point Bolt will accept. After Allow, the Home tab updates so the Authorize section disappears without a manual Refresh.
+- Revoking your own authorization no longer pauses syncing for the whole workspace. Slack can include `tokens.bot` on a personal revoke; SyncBot now checks that the bot token still works before treating it as an uninstall.
+- After a revoke, **Authorize SyncBot** comes back and that person's Home tab still opens. SyncBot deletes their installation row instead of leaving an empty one that made Slack show "This is still a work in progress." **Refresh** is on Home for everyone so a non-admin can reload the tab if it did not update on its own.
+- Uninstalling SyncBot now drops every stored bot and user token for that workspace (Bolt's `delete_all`), so a later reinstall does not reuse dead authorizations. Paste the updated app manifest so Slack also sends `app_uninstalled`.
 
 ### Added
 
@@ -23,7 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- `REQUIRE_ADMIN` no longer blanks the whole Home tab for non-admins. It restricts configuration — creating groups, publishing, Settings — while every user can open Home and authorize SyncBot.
+- `REQUIRE_ADMIN` no longer blanks the whole Home tab for non-admins. It restricts configuration — creating groups, publishing, Settings — while every user can open Home, authorize SyncBot, and use **Refresh**. **SyncBot Configuration** sits directly under **Authorize SyncBot**; the rest of Home stays behind "This area of SyncBot is limited to Workspace Admins."
 - `SYNCBOT_PUBLIC_URL` is leftover deploy config and is ignored. Authorize SyncBot and federation use the Host of incoming Slack requests (the same origin as the Event URL) instead.
 
 

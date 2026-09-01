@@ -22,9 +22,10 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 | Event | Handler | Description |
 |-------|---------|-------------|
 | `app_home_opened` | `handle_app_home_opened` | Publishes the Home tab with workspace groups, channel syncs, and user matching. |
+| `app_uninstalled` | `handle_app_uninstalled` | Workspace uninstall: Bolt `InstallationStore.delete_all` (bot + every user install row), then pause groups and channel syncs. |
 | `member_joined_channel` | `handle_member_joined_channel` | Detects when SyncBot is added to an unconfigured channel; posts a message and leaves. |
 | `message.channels` / `message.groups` | `respond_to_message_event` | Fires on new messages, edits, deletes, and file shares in public/private channels. Dispatches to sub-handlers for new posts, thread replies, edits, deletes, and reactions. |
 | `reaction_added` / `reaction_removed` | `_handle_reaction` | Syncs emoji reactions to the corresponding message in all target channels. |
 | `team_join` | `handle_team_join` | Fires when a new user joins a connected workspace. Adds the user to the directory and re-checks unmatched user mappings. |
-| `tokens_revoked` | `handle_tokens_revoked` | Handles workspace uninstall — soft-deletes workspace data and notifies group members. |
+| `tokens_revoked` | `handle_tokens_revoked` | User-token revoke: Bolt `delete_installation` for that person, then republish Home. A `tokens.bot` array is treated as uninstall only when the stored bot token fails `auth.test`. |
 | `user_profile_changed` | `handle_user_profile_changed` | Detects display name or email changes and updates the user directory and mappings. |
