@@ -24,7 +24,6 @@ import logging
 import re
 from datetime import UTC, datetime
 
-from slack_sdk.errors import SlackApiError
 from slack_sdk.web import WebClient
 
 import constants
@@ -556,6 +555,8 @@ def handle_message_delete(body: dict, fed_ws: schemas.FederatedWorkspace) -> tup
 
 def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int, dict]:
     """Receive and apply a reaction add/remove from a federated workspace."""
+    from helpers.reactions import apply_reaction_to_target, channel_receives_reactions
+
     err = _validate_fields(body, ["post_id", "channel_id", "reaction"], extras=["action"])
     if err:
         return 400, {"error": err}
@@ -573,57 +574,47 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
         return _NOT_FOUND
     sync_channel, workspace = resolved
 
+    if not channel_receives_reactions(sync_channel):
+        return 200, {"ok": True, "applied": 0}
+
     post_records = _find_post_records(post_id, sync_channel.id)
-
-    applied = 0
-    bot_token = helpers.decrypt_bot_token(workspace.bot_token)
-    ws_client = WebClient(token=bot_token)
-
     source_user_id = body.get("user_id")
+    mapped_local = None
     if source_user_id:
         mapping = _pick_user_mapping_for_federated_target(source_user_id, workspace.id)
         if mapping and mapping.target_user_id:
-            local_name, local_icon = helpers.get_user_info(ws_client, mapping.target_user_id)
+            mapped_local = mapping.target_user_id
+            local_name, local_icon = helpers.get_user_info(
+                WebClient(token=helpers.decrypt_bot_token(workspace.bot_token)),
+                mapped_local,
+            )
             if local_name:
                 user_name = helpers.normalize_display_name(local_name)
                 user_avatar_url = local_icon or user_avatar_url
                 workspace_name = None
 
+    applied = 0
+    synthetic_source = schemas.SyncChannel(reaction_direction=constants.REACTION_DIRECTION_SEND)
+
     for post_meta in post_records:
         try:
-            if action == "add":
-                ws_client.reactions_add(channel=channel_id, timestamp=str(post_meta.ts), name=reaction)
-            else:
-                ws_client.reactions_remove(channel=channel_id, timestamp=str(post_meta.ts), name=reaction)
-            applied += 1
-        except SlackApiError as exc:
-            error_code = ""
-            if exc.response:
-                if isinstance(exc.response, dict):
-                    error_code = str(exc.response.get("error") or "")
-                else:
-                    error_code = str(getattr(exc.response, "get", lambda _k, _d=None: "")("error", ""))
-
-            if action == "add" and error_code == "invalid_name":
-                try:
-                    helpers.post_message(
-                        bot_token=bot_token,
-                        channel_id=channel_id,
-                        msg_text=f"reacted with :{reaction}:",
-                        user_name=user_name,
-                        user_profile_url=user_avatar_url,
-                        workspace_name=workspace_name,
-                        thread_ts=str(post_meta.ts),
-                    )
-                    applied += 1
-                    continue
-                except Exception:
-                    _logger.warning(
-                        "federation_react_fallback_failed",
-                        extra={"channel_id": channel_id, "ts": str(post_meta.ts)},
-                    )
-
-            _logger.warning("federation_react_failed", extra={"channel_id": channel_id, "ts": str(post_meta.ts)})
+            result, _notice = apply_reaction_to_target(
+                action=action,
+                reaction=reaction,
+                source_user_id=source_user_id,
+                source_workspace_id=None,
+                source_sync_channel=synthetic_source,
+                target_post_meta=post_meta,
+                target_sync_channel=sync_channel,
+                target_workspace=workspace,
+                display_name=user_name,
+                icon_url=user_avatar_url,
+                posted_from=f"({workspace_name})" if workspace_name else "",
+                author_is_mapped=bool(mapped_local),
+                mapped_user_id=mapped_local,
+            )
+            if result in ("direct", "thread"):
+                applied += 1
         except Exception:
             _logger.warning("federation_react_failed", extra={"channel_id": channel_id, "ts": str(post_meta.ts)})
 
@@ -738,7 +729,7 @@ def dispatch_federation_request(method: str, path: str, body_str: str, headers: 
     if path == "/api/federation/ping" and method == "GET":
         return handle_ping()
 
-    if not constants.FEDERATION_ENABLED:
+    if not helpers.federation_enabled():
         return _NOT_FOUND
 
     if method != "POST":

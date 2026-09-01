@@ -8,6 +8,7 @@ from logging import Logger
 from slack_sdk.web import WebClient
 
 import builders
+import constants
 import helpers
 from builders._common import _format_channel_ref, _get_group_members
 from db import DbManager, schemas
@@ -28,7 +29,61 @@ from slack.blocks import section
 _logger = logging.getLogger(__name__)
 
 
-def _channel_picker_block(label: str, action_id: str) -> orm.InputBlock:
+def _reaction_direction_block(action_id: str, *, initial: str = constants.REACTION_DIRECTION_BOTH) -> orm.InputBlock:
+    return orm.InputBlock(
+        label="Reaction direction",
+        action=action_id,
+        element=orm.RadioButtonsElement(
+            initial_value=initial,
+            options=[
+                orm.SelectorOption(name="Send and receive", value=constants.REACTION_DIRECTION_BOTH),
+                orm.SelectorOption(name="Send only", value=constants.REACTION_DIRECTION_SEND),
+                orm.SelectorOption(name="Receive only", value=constants.REACTION_DIRECTION_RECEIVE),
+                orm.SelectorOption(name="No reactions", value=constants.REACTION_DIRECTION_OFF),
+            ],
+        ),
+        optional=False,
+    )
+
+
+def _reaction_style_block(
+    action_id: str,
+    *,
+    initial: str = constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE,
+) -> orm.InputBlock:
+    return orm.InputBlock(
+        label="Reaction type in this Workspace",
+        action=action_id,
+        element=orm.RadioButtonsElement(
+            initial_value=initial,
+            options=[
+                orm.SelectorOption(
+                    name="Direct — native emoji on the synced message",
+                    value=constants.REACTION_STYLE_DIRECT_ONLY,
+                ),
+                orm.SelectorOption(
+                    name="Hybrid — direct when possible, otherwise a thread notice",
+                    value=constants.REACTION_STYLE_THREADED_AND_DIRECT,
+                ),
+            ],
+        ),
+        optional=False,
+    )
+
+
+def _parse_reaction_fields(body: dict, metadata: dict, *, style_action: str) -> tuple[str, str | None]:
+    from helpers.reactions import default_reaction_style_for_new_channel, direction_receives
+
+    direction = metadata.get("reaction_direction") or constants.REACTION_DIRECTION_BOTH
+    if not direction_receives(direction):
+        return direction, None
+    style = _get_selected_option_value(body, style_action)
+    if style not in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
+        style = default_reaction_style_for_new_channel(direction)
+    return direction, style
+
+
+def _channel_picker_block(label: str, action_id: str, *, team_id: str | None) -> orm.InputBlock:
     """Build a native channel picker, honoring the private-channel policy.
 
     Slack renders ``conversations_select`` as a searchable list over all of the
@@ -50,19 +105,19 @@ def _channel_picker_block(label: str, action_id: str) -> orm.InputBlock:
         action=action_id,
         element=orm.ConversationsSelectElement(
             placeholder="Search for a Channel",
-            include_private=helpers.allow_private_channels(),
+            include_private=helpers.allow_private_channels(team_id),
         ),
         optional=False,
     )
 
 
-def _channel_picker_help_text(*, subscribe: bool = False) -> str:
+def _channel_picker_help_text(*, team_id: str | None, subscribe: bool = False) -> str:
     """Explain what may be selected, including the private-channel warning when relevant."""
     if subscribe:
         base = "Search for a Channel in your Workspace to receive the published Channel."
     else:
         base = "Search for a Channel in your Workspace to publish."
-    if helpers.allow_private_channels():
+    if helpers.allow_private_channels(team_id):
         if subscribe:
             return (
                 f"{base} :warning: Private Channels are currently allowed. Messages from the "
@@ -136,7 +191,7 @@ def _validate_channel_selection(
             "errors": {action_id: "That Channel is already part of a Channel Sync. Pick a different Channel."},
         }
 
-    if not helpers.allow_private_channels():
+    if not helpers.allow_private_channels(team_id or ""):
         try:
             conv_info = client.conversations_info(channel=channel_id)
             is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
@@ -170,12 +225,28 @@ def _validate_channel_selection(
 def _build_publish_step2(
     sync_mode: str,
     other_members: list,
+    *,
+    team_id: str | None,
+    reaction_direction: str,
 ) -> orm.BlockView:
     """Build the step-2 modal blocks: native channel picker + optional target workspace."""
+    from helpers.reactions import direction_receives
+
     modal_blocks: list[orm.BaseBlock] = []
 
-    modal_blocks.append(_channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT))
-    modal_blocks.append(block_context(_channel_picker_help_text()))
+    modal_blocks.append(
+        _channel_picker_block("Channel to Publish", actions.CONFIG_PUBLISH_CHANNEL_SELECT, team_id=team_id)
+    )
+    modal_blocks.append(block_context(_channel_picker_help_text(team_id=team_id)))
+
+    if direction_receives(reaction_direction):
+        modal_blocks.append(_reaction_style_block(actions.CONFIG_PUBLISH_REACTION_STYLE))
+        modal_blocks.append(
+            block_context(
+                "Authorize SyncBot in each Workspace where you want reactions to appear as you. "
+                "Custom emoji the other Workspace does not have will not appear as a native reaction there."
+            )
+        )
 
     if sync_mode == "direct" and other_members:
         ws_options: list[orm.SelectorOption] = []
@@ -247,6 +318,11 @@ def handle_publish_channel(
             ),
             optional=False,
         ),
+        _reaction_direction_block(actions.CONFIG_PUBLISH_REACTION_DIRECTION),
+        block_context(
+            "Reactions only show in a Workspace that chose to receive them. Custom emoji the other "
+            "Workspace does not have will not appear as a reaction there."
+        ),
     ]
     orm.BlockView(blocks=step1_blocks).post_modal(
         client=client,
@@ -285,17 +361,29 @@ def handle_publish_mode_submit_ack(
         return None
 
     sync_mode = _get_selected_option_value(body, actions.CONFIG_PUBLISH_SYNC_MODE) or "group"
+    reaction_direction = (
+        _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_DIRECTION) or constants.REACTION_DIRECTION_BOTH
+    )
 
     group_members = _get_group_members(group_id)
     other_members = [
         member for member in group_members if member.workspace_id != workspace_record.id and member.workspace_id
     ]
-    step2 = _build_publish_step2(sync_mode, other_members)
+    step2 = _build_publish_step2(
+        sync_mode,
+        other_members,
+        team_id=workspace_record.team_id,
+        reaction_direction=reaction_direction,
+    )
     updated_view = step2.as_ack_update(
         callback_id=actions.CONFIG_PUBLISH_CHANNEL_SUBMIT,
         title_text="Publish Channel",
         submit_button_text="Publish",
-        parent_metadata={"group_id": group_id, "sync_mode": sync_mode},
+        parent_metadata={
+            "group_id": group_id,
+            "sync_mode": sync_mode,
+            "reaction_direction": reaction_direction,
+        },
     )
     return {"response_action": "update", "view": updated_view}
 
@@ -358,6 +446,11 @@ def handle_publish_channel_submit_work(
         return
 
     sync_mode = metadata.get("sync_mode", "group")
+    reaction_direction, reaction_style = _parse_reaction_fields(
+        body,
+        metadata,
+        style_action=actions.CONFIG_PUBLISH_REACTION_STYLE,
+    )
     target_workspace_id = None
     selected_target = _get_selected_option_value(body, actions.CONFIG_PUBLISH_DIRECT_TARGET)
     if selected_target:
@@ -405,6 +498,8 @@ def handle_publish_channel_submit_work(
             channel_id=channel_id,
             workspace_id=workspace_record.id,
             created_at=datetime.now(UTC),
+            reaction_direction=reaction_direction,
+            reaction_style=reaction_style,
         )
         DbManager.create_record(sync_channel_record)
     except Exception as e:
@@ -524,6 +619,7 @@ def handle_unpublish_channel(
                 client,
                 ":warning: Unpublishing that Channel failed, so it is still published. "
                 "Please try again, and let your SyncBot operator know if it keeps failing.",
+                team_id=workspace_record.team_id if workspace_record else None,
             )
         return
 
@@ -828,11 +924,7 @@ def handle_subscribe_channel(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Push the channel picker modal for subscribing to an available channel.
-
-    Uses Slack's native searchable picker, so every channel in the workspace is
-    reachable. Whether the chosen channel is eligible is validated on submit.
-    """
+    """Open subscribe step 1: published-channel context and reaction direction."""
     if not _get_authorized_workspace(body, client, context, "subscribe_channel"):
         return
 
@@ -852,18 +944,69 @@ def handle_subscribe_channel(
             ch_ref = _format_channel_ref(pub_ch.channel_id, pub_ws, is_local=False)
             blocks.append(section(f"Published Channel: {ch_ref}"))
 
-    blocks.append(_channel_picker_block("Channel to Subscribe", actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT))
-    blocks.append(block_context(_channel_picker_help_text(subscribe=True)))
+    blocks.extend(
+        [
+            _reaction_direction_block(actions.CONFIG_SUBSCRIBE_REACTION_DIRECTION),
+            block_context(
+                "Reactions only show in a Workspace that chose to receive them. Pick how this "
+                "Workspace participates before choosing your local Channel."
+            ),
+        ]
+    )
 
     orm.BlockView(blocks=blocks).post_modal(
         client=client,
         trigger_id=trigger_id,
-        callback_id=actions.CONFIG_SUBSCRIBE_CHANNEL_SUBMIT,
+        callback_id=actions.CONFIG_SUBSCRIBE_DIRECTION_SUBMIT,
         title_text="Subscribe",
-        submit_button_text="Subscribe",
+        submit_button_text="Next",
         parent_metadata={"sync_id": int(sync_id)} if sync_id else None,
         new_or_add="new",
     )
+
+
+def handle_subscribe_direction_submit_ack(
+    body: dict,
+    client: WebClient,
+    context: dict,
+) -> dict | None:
+    """Ack phase for subscribe step 1: channel picker (+ type when receiving)."""
+    auth_result = _get_authorized_workspace(body, client, context, "subscribe_direction_submit")
+    if not auth_result:
+        return None
+    _, workspace_record = auth_result
+
+    metadata = _parse_private_metadata(body)
+    sync_id = metadata.get("sync_id")
+    if not sync_id:
+        _logger.warning("subscribe_direction_submit: missing sync_id")
+        return None
+
+    reaction_direction = (
+        _get_selected_option_value(body, actions.CONFIG_SUBSCRIBE_REACTION_DIRECTION)
+        or constants.REACTION_DIRECTION_BOTH
+    )
+    from helpers.reactions import direction_receives
+
+    modal_blocks: list[orm.BaseBlock] = [
+        _channel_picker_block(
+            "Channel to Subscribe",
+            actions.CONFIG_SUBSCRIBE_CHANNEL_SELECT,
+            team_id=workspace_record.team_id,
+        ),
+        block_context(_channel_picker_help_text(team_id=workspace_record.team_id, subscribe=True)),
+    ]
+    if direction_receives(reaction_direction):
+        modal_blocks.append(_reaction_style_block(actions.CONFIG_SUBSCRIBE_REACTION_STYLE))
+
+    step2 = orm.BlockView(blocks=modal_blocks)
+    updated_view = step2.as_ack_update(
+        callback_id=actions.CONFIG_SUBSCRIBE_CHANNEL_SUBMIT,
+        title_text="Subscribe",
+        submit_button_text="Subscribe",
+        parent_metadata={"sync_id": sync_id, "reaction_direction": reaction_direction},
+    )
+    return {"response_action": "update", "view": updated_view}
 
 
 def handle_subscribe_channel_submit_ack(
@@ -965,12 +1108,20 @@ def handle_subscribe_channel_submit(
 
     team_id = _extract_team_id(body) or workspace_record.team_id
 
+    reaction_direction, reaction_style = _parse_reaction_fields(
+        body,
+        metadata,
+        style_action=actions.CONFIG_SUBSCRIBE_REACTION_STYLE,
+    )
+
     try:
         sync_channel_record = schemas.SyncChannel(
             sync_id=sync_id,
             channel_id=channel_id,
             workspace_id=workspace_record.id,
             created_at=datetime.now(UTC),
+            reaction_direction=reaction_direction,
+            reaction_style=reaction_style,
         )
         DbManager.create_record(sync_channel_record)
     except Exception as e:
@@ -1044,6 +1195,106 @@ def handle_subscribe_channel_submit(
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
     if group_id:
         _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
+
+
+def _sync_channel_id_from_action(body: dict, prefix: str) -> int | None:
+    action_data = helpers.safe_get(body, "actions", 0) or {}
+    raw = action_data.get("value") or (action_data.get("action_id", "") or "").replace(f"{prefix}_", "")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sync_channel_by_pk(sync_channel_id: int) -> schemas.SyncChannel | None:
+    """Look up SyncChannel by integer PK (``get_record`` uses Slack ``channel_id``)."""
+    rows = DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.id == sync_channel_id])
+    return rows[0] if rows else None
+
+
+def handle_edit_reactions(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Open a modal to edit reaction direction/type for one synced channel row."""
+    if not _get_authorized_workspace(body, client, context, "edit_reactions"):
+        return
+
+    sync_channel_id = _sync_channel_id_from_action(body, actions.CONFIG_EDIT_REACTIONS)
+    if not sync_channel_id:
+        return
+
+    sync_channel = _sync_channel_by_pk(sync_channel_id)
+    if not sync_channel or sync_channel.deleted_at:
+        return
+
+    trigger_id = helpers.safe_get(body, "trigger_id")
+    if not trigger_id:
+        return
+
+    from helpers.reactions import reaction_direction, reaction_style
+
+    direction = reaction_direction(sync_channel)
+    blocks: list[orm.BaseBlock] = [
+        _reaction_direction_block(actions.CONFIG_PUBLISH_REACTION_DIRECTION, initial=direction),
+        _reaction_style_block(
+            actions.CONFIG_PUBLISH_REACTION_STYLE,
+            initial=reaction_style(sync_channel) or constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE,
+        ),
+        block_context("Reaction type is used only when this Workspace receives reactions."),
+    ]
+
+    orm.BlockView(blocks=blocks).post_modal(
+        client=client,
+        trigger_id=trigger_id,
+        callback_id=actions.CONFIG_EDIT_REACTIONS_SUBMIT,
+        title_text="Edit Reactions",
+        submit_button_text="Save",
+        parent_metadata={"sync_channel_id": sync_channel_id},
+        new_or_add="new",
+    )
+
+
+def handle_edit_reactions_submit(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Persist reaction direction/type for an existing SyncChannel."""
+    auth_result = _get_authorized_workspace(body, client, context, "edit_reactions_submit")
+    if not auth_result:
+        return
+    _, workspace_record = auth_result
+
+    metadata = _parse_private_metadata(body)
+    sync_channel_id = metadata.get("sync_channel_id")
+    if not sync_channel_id:
+        return
+
+    sync_channel = _sync_channel_by_pk(sync_channel_id)
+    if not sync_channel or sync_channel.workspace_id != workspace_record.id:
+        return
+
+    direction = (
+        _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_DIRECTION) or constants.REACTION_DIRECTION_BOTH
+    )
+    from helpers.reactions import (
+        default_reaction_style_for_new_channel,
+        direction_receives,
+        update_sync_channel_reactions,
+    )
+
+    style = None
+    if direction_receives(direction):
+        style = _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_STYLE)
+        if style not in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
+            style = default_reaction_style_for_new_channel(direction)
+
+    update_sync_channel_reactions(sync_channel_id, direction=direction, style=style)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
 
 
 def _refresh_group_member_homes(

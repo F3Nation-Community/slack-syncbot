@@ -176,7 +176,12 @@ def _build_inline_channel_sync(
                 value=str(sync.id),
                 style="danger",
             )
-        blocks.append(orm.ActionsBlock(elements=[toggle_btn, teardown_btn]))
+        edit_btn = orm.ButtonElement(
+            label="Edit reactions",
+            action=f"{actions.CONFIG_EDIT_REACTIONS}_{my_ch.id}",
+            value=str(my_ch.id),
+        )
+        blocks.append(orm.ActionsBlock(elements=[toggle_btn, teardown_btn, edit_btn]))
 
     for sync, my_ch in waiting_syncs:
         if sync.publisher_workspace_id == workspace_record.id:
