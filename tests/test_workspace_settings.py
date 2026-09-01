@@ -87,6 +87,33 @@ class TestMigration005:
         assert len(rows) == 1
         assert rows[0].value == "true"
 
+    def test_mysql_quotes_reserved_key_column(self):
+        import importlib.util
+        from pathlib import Path
+
+        from sqlalchemy import insert, select
+        from sqlalchemy.dialects.mysql.base import MySQLDialect
+
+        path = Path(__file__).resolve().parents[1] / "syncbot/db/alembic/versions/005_workspace_settings.py"
+        spec = importlib.util.spec_from_file_location("alembic_005_workspace_settings", path)
+        mod = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(mod)
+
+        dialect = MySQLDialect()
+        inst = mod._instance_settings()
+        ws_settings = mod._workspace_settings()
+        select_sql = str(select(inst.c.value).where(inst.c.key == "allow_private_channels").compile(dialect=dialect))
+        insert_sql = str(
+            insert(ws_settings)
+            .values(workspace_id=1, key="allow_private_channels", value="true")
+            .compile(dialect=dialect)
+        )
+        assert "`key`" in select_sql
+        assert "`key`" in insert_sql
+        assert "WHERE key =" not in select_sql
+        assert "WHERE instance_settings.key" not in select_sql
+
 
 class TestAllowPrivateChannelsPerWorkspace:
     def test_default_off_without_row(self, real_db):

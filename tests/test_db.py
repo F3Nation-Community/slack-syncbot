@@ -13,9 +13,9 @@ os.environ.setdefault("DATABASE_SCHEMA", "syncbot")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from sqlalchemy import inspect, text
-from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
-from db import _MAX_RETRIES, _with_retry
+from db import _MAX_RETRIES, _is_retryable_db_error, _with_retry
 
 # -----------------------------------------------------------------------
 # _with_retry decorator
@@ -69,6 +69,38 @@ class TestWithRetry:
         with pytest.raises(ValueError):
             fn()
         assert call_count == 1
+
+    def test_unknown_column_is_not_retried(self):
+        call_count = 0
+
+        class _UnknownColumn(Exception):
+            args = (1054, "Unknown column 'sync_channels.reaction_direction' in 'field list'")
+
+        @_with_retry
+        def fn():
+            nonlocal call_count
+            call_count += 1
+            raise OperationalError("SELECT …", {}, _UnknownColumn())
+
+        with pytest.raises(OperationalError):
+            fn()
+        assert call_count == 1
+
+    def test_connection_lost_is_still_retryable(self):
+        assert _is_retryable_db_error(OperationalError("statement", {}, Exception("connection lost"))) is True
+        assert _is_retryable_db_error(ProgrammingError("statement", {}, Exception("syntax error"))) is False
+
+    def test_wrapped_programming_error_is_not_retryable(self):
+        inner = ProgrammingError("SELECT … WHERE key = %(key)s", {}, Exception("syntax error"))
+        outer = RuntimeError("alembic upgrade failed")
+        outer.__cause__ = inner
+        assert _is_retryable_db_error(outer) is False
+
+    def test_wrapped_connection_error_is_retryable(self):
+        inner = OperationalError("statement", {}, Exception("connection lost"))
+        outer = RuntimeError("alembic upgrade failed")
+        outer.__cause__ = inner
+        assert _is_retryable_db_error(outer) is True
 
 
 # -----------------------------------------------------------------------
@@ -307,3 +339,28 @@ class TestBackendParity:
             else:
                 os.environ.setdefault("DATABASE_BACKEND", "mysql")
             importlib.reload(c)
+
+
+class TestInitializeDatabaseRetry:
+    def test_syntax_error_is_not_retried(self):
+        import db as db_mod
+
+        calls = {"n": 0}
+
+        def boom():
+            calls["n"] += 1
+            raise ProgrammingError(
+                "SELECT value FROM instance_settings WHERE key = %(key)s",
+                {},
+                Exception("You have an error in your SQL syntax"),
+            )
+
+        with (
+            patch.object(db_mod, "_run_alembic_upgrade", boom),
+            patch.object(db_mod, "_is_network_sql_backend", return_value=False),
+            patch.object(db_mod.time, "sleep") as sleep,
+            pytest.raises(ProgrammingError),
+        ):
+            db_mod.initialize_database()
+        assert calls["n"] == 1
+        sleep.assert_not_called()

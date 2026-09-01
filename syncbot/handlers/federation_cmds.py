@@ -141,9 +141,10 @@ def handle_generate_federation_code(
     ]
 
     view = orm.BlockView(blocks=blocks)
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "callback_id": actions.CONFIG_FEDERATION_LABEL_SUBMIT,
             "title": {"type": "plain_text", "text": "New Connection"},
@@ -151,6 +152,7 @@ def handle_generate_federation_code(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": view.as_form_field(),
         },
+        body=body,
     )
 
 
@@ -235,9 +237,10 @@ def handle_enter_federation_code(
     ]
 
     view = orm.BlockView(blocks=blocks)
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "callback_id": actions.CONFIG_FEDERATION_CODE_SUBMIT,
             "title": {"type": "plain_text", "text": "Enter Connection Code"},
@@ -245,6 +248,7 @@ def handle_enter_federation_code(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": view.as_form_field(),
         },
+        body=body,
     )
 
 

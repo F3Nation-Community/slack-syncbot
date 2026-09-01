@@ -192,6 +192,7 @@ def handle_open_settings(
         title_text="SyncBot Settings",
         submit_button_text="Save",
         close_button_text="Cancel",
+        body=body,
     )
 
 

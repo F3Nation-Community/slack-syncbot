@@ -86,6 +86,7 @@ def handle_leave_group(
                 submit_button_text=None,
                 close_button_text="Close",
                 parent_metadata={"group_id": group_id, "blocked": True},
+                body=body,
             )
             return
 
@@ -122,6 +123,7 @@ def handle_leave_group(
         submit_button_text=None,
         close_button_text="Cancel",
         parent_metadata={"group_id": group_id},
+        body=body,
     )
 
 
@@ -544,6 +546,7 @@ def handle_disband_group(
             submit_button_text=None,
             close_button_text="Close",
             parent_metadata={"group_id": group_id, "blocked": True},
+            body=body,
         )
         return
 
@@ -594,6 +597,7 @@ def handle_disband_group(
         submit_button_text=None,
         close_button_text="Cancel",
         parent_metadata={"group_id": group_id},
+        body=body,
     )
 
 

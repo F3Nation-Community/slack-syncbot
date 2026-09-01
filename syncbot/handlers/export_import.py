@@ -134,9 +134,10 @@ def handle_backup_restore(
     modal_blocks = view.as_form_field()
     modal_blocks.append(restore_block)
 
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "callback_id": actions.CONFIG_BACKUP_RESTORE_SUBMIT,
             "title": {"type": "plain_text", "text": "Backup / Restore"},
@@ -144,6 +145,7 @@ def handle_backup_restore(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": modal_blocks,
         },
+        body=body,
     )
 
 
@@ -446,9 +448,10 @@ def handle_data_migration(
     modal_blocks = view.as_form_field()
     modal_blocks.append(import_block)
 
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "callback_id": actions.CONFIG_DATA_MIGRATION_SUBMIT,
             "title": {"type": "plain_text", "text": "Data Migration"},
@@ -456,6 +459,7 @@ def handle_data_migration(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": modal_blocks,
         },
+        body=body,
     )
 
 

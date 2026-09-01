@@ -332,6 +332,7 @@ def handle_publish_channel(
         submit_button_text="Next",
         parent_metadata={"group_id": group_id, "workspace_id": workspace_record.id},
         new_or_add="new",
+        body=body,
     )
 
 
@@ -820,6 +821,7 @@ def handle_stop_sync(
         submit_button_text=None,
         close_button_text="Cancel",
         parent_metadata={"sync_id": sync_id},
+        body=body,
     )
 
 
@@ -962,6 +964,7 @@ def handle_subscribe_channel(
         submit_button_text="Next",
         parent_metadata={"sync_id": int(sync_id)} if sync_id else None,
         new_or_add="new",
+        body=body,
     )
 
 
@@ -1254,6 +1257,7 @@ def handle_edit_reactions(
         submit_button_text="Save",
         parent_metadata={"sync_channel_id": sync_channel_id},
         new_or_add="new",
+        body=body,
     )
 
 

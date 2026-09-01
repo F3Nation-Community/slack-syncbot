@@ -10,7 +10,7 @@ import builders
 import constants
 import helpers
 from db import DbManager, schemas
-from slack import actions
+from slack import actions, orm
 
 _logger = logging.getLogger(__name__)
 
@@ -211,9 +211,10 @@ def handle_db_reset(
     if not trigger_id:
         return
 
-    client.views_open(
-        trigger_id=trigger_id,
-        view={
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        {
             "type": "modal",
             "title": {"type": "plain_text", "text": "Yikes! Reset Database?"},
             "close": {"type": "plain_text", "text": "Cancel"},
@@ -244,6 +245,7 @@ def handle_db_reset(
                 },
             ],
         },
+        body=body,
     )
 
 

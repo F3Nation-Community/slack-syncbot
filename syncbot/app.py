@@ -14,6 +14,7 @@ Federation API endpoints (``/api/federation/*``) handle cross-instance
 communication and are dispatched separately from Slack events.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -252,15 +253,25 @@ def view_ack(body: dict, logger, client, ack, context: dict) -> None:
     )
     _logger.debug("request_body", extra={"body": json.dumps(_redact_sensitive(body))})
 
-    ack_handler = VIEW_ACK_MAPPER.get(request_id)
-    if ack_handler:
-        result = ack_handler(body, client, context)
-        if isinstance(result, dict):
-            ack(**result)
+    try:
+        ack_handler = VIEW_ACK_MAPPER.get(request_id)
+        if ack_handler:
+            result = ack_handler(body, client, context)
+            if isinstance(result, dict):
+                ack(**result)
+            else:
+                ack()
         else:
             ack()
-    else:
-        ack()
+    except Exception:
+        # Slack shows "not responding" if the ack never arrives. Schema errors
+        # (missing migration columns) used to raise here and hang the modal.
+        _logger.exception(
+            "view_ack_failed",
+            extra={"request_type": request_type, "request_id": request_id},
+        )
+        with contextlib.suppress(Exception):
+            ack()
 
 
 def main_response(body: dict, logger, client, ack, context: dict) -> None:

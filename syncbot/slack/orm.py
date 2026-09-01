@@ -3,9 +3,60 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from helpers import safe_get
+from helpers import get_user_id_from_body, safe_get
 
 logger = logging.getLogger(__name__)
+
+_MODAL_EXPIRED_TRIGGER_DM = "SyncBot could not open that window in time. Please click the button again."
+
+
+def _slack_error_code(exc: BaseException) -> str:
+    """Return Slack's ``error`` string from a ``SlackApiError``, or ``""``."""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    try:
+        return str(resp.get("error") or "")
+    except Exception:
+        return ""
+
+
+def _notify_expired_trigger(client: Any, exc: BaseException, body: dict | None) -> None:
+    """DM the acting user when ``views.open`` lost the 3s trigger_id window."""
+    code = _slack_error_code(exc)
+    if code != "expired_trigger_id" and "expired_trigger_id" not in str(exc):
+        return
+    user_id = get_user_id_from_body(body) if body else None
+    if not user_id:
+        return
+    try:
+        client.chat_postMessage(channel=user_id, text=_MODAL_EXPIRED_TRIGGER_DM)
+    except Exception as dm_exc:
+        logger.warning("modal_open_timeout_dm_failed", extra={"error": str(dm_exc)})
+
+
+def open_or_push_view(
+    client: Any,
+    trigger_id: str,
+    view: dict,
+    *,
+    new_or_add: str = "new",
+    body: dict | None = None,
+) -> None:
+    """Open or push a Slack modal, logging and DMing on ``expired_trigger_id``."""
+    callback_id = view.get("callback_id") if isinstance(view, dict) else None
+    try:
+        if new_or_add == "add":
+            client.views_push(trigger_id=trigger_id, view=view)
+        else:
+            client.views_open(trigger_id=trigger_id, view=view)
+    except Exception as e:
+        logger.error(
+            "modal_open_or_push_failed",
+            extra={"callback_id": callback_id, "mode": new_or_add, "error": str(e)},
+        )
+        logger.debug("modal_view_payload", extra={"view": json.dumps(view, indent=2)})
+        _notify_expired_trigger(client, e, body)
 
 
 @dataclass
@@ -565,6 +616,7 @@ class BlockView:
         close_button_text: str = "Close",
         notify_on_close: bool = False,
         new_or_add: str = "new",
+        body: dict | None = None,
     ):
         blocks = self.as_form_field()
 
@@ -582,17 +634,7 @@ class BlockView:
         if submit_button_text:
             view["submit"] = {"type": "plain_text", "text": submit_button_text}
 
-        try:
-            if new_or_add == "new":
-                client.views_open(trigger_id=trigger_id, view=view)
-            elif new_or_add == "add":
-                client.views_push(trigger_id=trigger_id, view=view)
-        except Exception as e:
-            logger.error(
-                "modal_open_or_push_failed",
-                extra={"callback_id": callback_id, "mode": new_or_add, "error": str(e)},
-            )
-            logger.debug("modal_view_payload", extra={"view": json.dumps(view, indent=2)})
+        open_or_push_view(client, trigger_id, view, new_or_add=new_or_add, body=body)
 
     def publish_home_tab(self, client: Any, user_id: str):
         """Publish a Home tab view for the given user."""
