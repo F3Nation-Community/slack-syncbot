@@ -3,7 +3,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from helpers import get_user_id_from_body, safe_get
+from helpers import format_error_dm, get_user_id_from_body, safe_get
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,14 @@ def _slack_error_code(exc: BaseException) -> str:
         return ""
 
 
-def _notify_expired_trigger(client: Any, exc: BaseException, body: dict | None) -> None:
+def _notify_expired_trigger(
+    client: Any,
+    exc: BaseException,
+    body: dict | None,
+    *,
+    callback_id: str | None,
+    mode: str,
+) -> None:
     """DM the acting user when ``views.open`` lost the 3s trigger_id window."""
     code = _slack_error_code(exc)
     if code != "expired_trigger_id" and "expired_trigger_id" not in str(exc):
@@ -29,8 +36,18 @@ def _notify_expired_trigger(client: Any, exc: BaseException, body: dict | None) 
     user_id = get_user_id_from_body(body) if body else None
     if not user_id:
         return
+    action_id = safe_get(body, "actions", 0, "action_id") if body else None
+    text = format_error_dm(
+        _MODAL_EXPIRED_TRIGGER_DM,
+        {
+            "error": code or "expired_trigger_id",
+            "window": callback_id,
+            "open": "push" if mode == "add" else "open",
+            "button": action_id,
+        },
+    )
     try:
-        client.chat_postMessage(channel=user_id, text=_MODAL_EXPIRED_TRIGGER_DM)
+        client.chat_postMessage(channel=user_id, text=text)
     except Exception as dm_exc:
         logger.warning("modal_open_timeout_dm_failed", extra={"error": str(dm_exc)})
 
@@ -42,21 +59,24 @@ def open_or_push_view(
     *,
     new_or_add: str = "new",
     body: dict | None = None,
-) -> None:
-    """Open or push a Slack modal, logging and DMing on ``expired_trigger_id``."""
+) -> Any | None:
+    """Open or push a Slack modal, logging and DMing on ``expired_trigger_id``.
+
+    Returns the Slack API response on success, or ``None`` on failure.
+    """
     callback_id = view.get("callback_id") if isinstance(view, dict) else None
     try:
         if new_or_add == "add":
-            client.views_push(trigger_id=trigger_id, view=view)
-        else:
-            client.views_open(trigger_id=trigger_id, view=view)
+            return client.views_push(trigger_id=trigger_id, view=view)
+        return client.views_open(trigger_id=trigger_id, view=view)
     except Exception as e:
         logger.error(
             "modal_open_or_push_failed",
             extra={"callback_id": callback_id, "mode": new_or_add, "error": str(e)},
         )
         logger.debug("modal_view_payload", extra={"view": json.dumps(view, indent=2)})
-        _notify_expired_trigger(client, e, body)
+        _notify_expired_trigger(client, e, body, callback_id=callback_id, mode=new_or_add)
+        return None
 
 
 @dataclass
@@ -617,7 +637,8 @@ class BlockView:
         notify_on_close: bool = False,
         new_or_add: str = "new",
         body: dict | None = None,
-    ):
+    ) -> Any | None:
+        """Open or push this form as a modal. Returns the Slack API response or ``None``."""
         blocks = self.as_form_field()
 
         view = {
@@ -634,7 +655,7 @@ class BlockView:
         if submit_button_text:
             view["submit"] = {"type": "plain_text", "text": submit_button_text}
 
-        open_or_push_view(client, trigger_id, view, new_or_add=new_or_add, body=body)
+        return open_or_push_view(client, trigger_id, view, new_or_add=new_or_add, body=body)
 
     def publish_home_tab(self, client: Any, user_id: str):
         """Publish a Home tab view for the given user."""

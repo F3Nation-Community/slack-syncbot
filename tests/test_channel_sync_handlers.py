@@ -60,6 +60,10 @@ class TestUnpublishChannel:
 
         assert error_log.call_args.args[0] == "unpublish_failed"
         assert error_log.call_args.kwargs["extra"]["sync_id"] == self.SYNC_ID
+        dm_text = notify.call_args.args[1]
+        assert "```" in dm_text
+        assert "fk violation" in dm_text
+        assert "event: unpublish_failed" in dm_text
 
     def test_non_publisher_cannot_unpublish(self):
         workspace = SimpleNamespace(id=10, team_id="T1")

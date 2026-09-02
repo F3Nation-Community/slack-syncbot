@@ -21,11 +21,10 @@ from builders.home import (
     refresh_home_tab_for_workspace,
 )
 from builders.user_mapping import (
-    _USER_MAPPING_REFRESH_BUTTON_INDEX,
-    _user_mapping_content_hash,
     build_user_mapping_edit_modal,
-    build_user_mapping_screen,
     build_user_matching_entry,
+    seed_mappings_for_workspace,
+    update_user_mapping_modal,
 )
 
 __all__ = [
@@ -38,10 +37,9 @@ __all__ = [
     "_get_workspace_info",
     "_home_tab_content_hash",
     "build_home_tab",
-    "_USER_MAPPING_REFRESH_BUTTON_INDEX",
-    "_user_mapping_content_hash",
     "build_user_mapping_edit_modal",
-    "build_user_mapping_screen",
     "build_user_matching_entry",
     "refresh_home_tab_for_workspace",
+    "seed_mappings_for_workspace",
+    "update_user_mapping_modal",
 ]

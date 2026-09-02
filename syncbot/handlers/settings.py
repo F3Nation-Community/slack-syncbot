@@ -257,4 +257,4 @@ def handle_settings_submit(
 
     _logger.info("settings_updated", extra={"team_id": team_id})
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)

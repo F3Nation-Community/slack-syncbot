@@ -262,6 +262,7 @@ def _handle_new_post(
                         user_profile_url,
                         target_client,
                         workspace.id,
+                        source_client=client,
                     )
                 )
                 name_for_target = target_display_name or user_name or "Someone"
@@ -425,6 +426,7 @@ def _handle_thread_reply(
                         user_profile_url,
                         target_client,
                         workspace.id,
+                        source_client=client,
                     )
                 )
                 name_for_target = target_display_name or user_name or "Someone"
@@ -691,6 +693,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                     user_profile_url,
                     target_client,
                     workspace.id,
+                    source_client=client,
                 )
             )
             display_name = target_display_name or user_name or user_id or "Someone"

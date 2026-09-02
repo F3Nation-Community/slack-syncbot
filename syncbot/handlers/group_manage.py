@@ -283,7 +283,7 @@ def handle_leave_group_confirm(
             except Exception as e:
                 _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     _close_modal_done(client, body, f":wave: You have left *{group.name}*. You can close this now.")
 
 
@@ -331,7 +331,7 @@ def handle_promote_to_owner(
     auth_result = _get_authorized_workspace(body, client, context, "promote_to_owner")
     if not auth_result:
         return
-    _, workspace_record = auth_result
+    user_id, workspace_record = auth_result
 
     member_id = _member_id_from_action(body, actions.CONFIG_PROMOTE_TO_OWNER)
     if member_id is None:
@@ -385,7 +385,7 @@ def handle_promote_to_owner(
         logger,
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 def handle_demote_self(
@@ -405,7 +405,7 @@ def handle_demote_self(
     auth_result = _get_authorized_workspace(body, client, context, "demote_self")
     if not auth_result:
         return
-    _, workspace_record = auth_result
+    user_id, workspace_record = auth_result
 
     member_id = _member_id_from_action(body, actions.CONFIG_DEMOTE_SELF)
     if member_id is None:
@@ -456,7 +456,7 @@ def handle_demote_self(
         logger,
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 def _disband_denial_message(reason: str, group_name: str, group_id: int, workspace_id: int) -> str:
@@ -683,5 +683,5 @@ def handle_disband_group_confirm(
         extra={"group_id": group_id, "group_name": group.name, "workspace_id": workspace_record.id},
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     _close_modal_done(client, body, f":wastebasket: *{group.name}* has been disbanded. You can close this now.")

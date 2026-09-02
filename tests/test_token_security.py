@@ -114,7 +114,7 @@ class TestEncryptedInstallationStore:
 
 class TestHomeRefreshTokenWrites:
     @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "refresh-test-key-16"})
-    def test_refresh_home_for_many_users_updates_token_at_most_once(self):
+    def test_refresh_home_for_acting_user_does_not_rewrite_unchanged_token(self):
         from builders.home import refresh_home_tab_for_workspace
 
         token = "xoxb-same-token-value"
@@ -129,15 +129,15 @@ class TestHomeRefreshTokenWrites:
         context = {"bot_token": token}
 
         with (
-            patch("builders.home._home_refresh_user_ids", return_value=["U1", "U2", "U3"]),
+            patch("helpers.export_import.invalidate_home_tab_caches_for_team"),
             patch("builders.home.build_home_tab", return_value=[]) as build,
             patch("builders.home.helpers.decrypt_bot_token", return_value=token),
             patch("builders.home.WebClient"),
             patch("helpers.workspace.DbManager.update_records") as update,
         ):
-            refresh_home_tab_for_workspace(workspace, logger, context)
+            refresh_home_tab_for_workspace(workspace, logger, context, user_id="U1")
 
         update.assert_not_called()
-        assert build.call_count == 3
-        for call in build.call_args_list:
-            assert call.kwargs.get("workspace") is workspace
+        build.assert_called_once()
+        assert build.call_args.kwargs.get("workspace") is workspace
+        assert build.call_args.kwargs.get("user_id") == "U1"

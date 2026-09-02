@@ -59,8 +59,9 @@ def handle_refresh_home(
     Available to everyone so a non-admin can reload Home after revoking
     Authorize SyncBot. Uses content hash and cached blocks: full refresh only
     when data changed. When hash matches and within 60s cooldown, re-publishes
-    with a cooldown message. Sweeping workspace names via ``team_info`` stays
-    admin-only; members do not see those names.
+    with a cooldown message. Rebuilds this user's Home from the DB; workspace
+    names refresh at most daily when a workspace is loaded, not via an
+    instance-wide ``team_info`` sweep.
     """
     team_id = helpers.safe_get(body, "view", "team_id") or helpers.safe_get(body, "team", "id")
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
@@ -100,42 +101,8 @@ def handle_refresh_home(
         helpers._cache_set(refresh_at_key, time.monotonic(), ttl=cooldown_sec * 2)
         return
 
-    # Full refresh. Workspace-name sweeps are manager-only: members do not see
-    # group member names, and Refresh is now on Home for everyone.
-    if is_manager:
-        stale_keys = [k for k in helpers._CACHE if k.startswith("ws_name_refresh:")]
-        for k in stale_keys:
-            helpers._CACHE.pop(k, None)
-
-        all_workspaces = DbManager.find_records(
-            schemas.Workspace,
-            [schemas.Workspace.deleted_at.is_(None)],
-        )
-        for ws in all_workspaces:
-            try:
-                if ws.id == workspace_record.id:
-                    ws_client = client
-                elif ws.bot_token:
-                    ws_client = WebClient(token=helpers.decrypt_bot_token(ws.bot_token))
-                else:
-                    continue
-
-                info = ws_client.team_info()
-                current_name = info["team"]["name"]
-                if current_name and current_name != ws.workspace_name:
-                    DbManager.update_records(
-                        schemas.Workspace,
-                        [schemas.Workspace.id == ws.id],
-                        {schemas.Workspace.workspace_name: current_name},
-                    )
-                    _logger.info(
-                        "workspace_name_refreshed",
-                        extra={"workspace_id": ws.id, "new_name": current_name},
-                    )
-            except Exception as e:
-                ws_label = f"{ws.workspace_name} ({ws.team_id})"
-                _logger.warning(f"Failed to refresh name for {ws_label}: {e}")
-
+    # Names refresh at most daily in get_workspace_record / _maybe_refresh_workspace_name.
+    # Do not team_info() every installed workspace on Refresh.
     block_dicts = builders.build_home_tab(body, client, logger, context, user_id=user_id, return_blocks=True)
     if block_dicts is None:
         return

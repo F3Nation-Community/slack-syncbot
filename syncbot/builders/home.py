@@ -242,40 +242,44 @@ def _build_configuration_section(
     blocks.append(orm.ActionsBlock(elements=config_buttons))
 
 
-def _home_refresh_user_ids(workspace: Workspace, client: WebClient, context: dict) -> list[str]:
-    """Return Slack user IDs whose Home tab should refresh for *workspace*."""
-    try:
-        admin_ids = set(helpers.get_admin_ids(client, team_id=workspace.team_id, context=context))
-    except Exception as e:
-        _logger.warning(f"refresh_home_tab_for_workspace: failed to get admins: {e}")
-        admin_ids = set()
-    extra = set(helpers.extra_manager_user_ids(workspace.team_id))
-    return sorted(admin_ids | extra)
+def refresh_home_tab_for_workspace(
+    workspace: Workspace,
+    logger: Logger,
+    context: dict | None = None,
+    *,
+    user_id: str | None = None,
+) -> None:
+    """Invalidate Home caches for *workspace*, then publish for *user_id* when set.
 
-
-def refresh_home_tab_for_workspace(workspace: Workspace, logger: Logger, context: dict | None = None) -> None:
-    """Publish an updated Home tab for every admin and extra manager in *workspace*."""
-    if not workspace or not workspace.bot_token or workspace.deleted_at:
+    Never walks ``users.list`` to fan out. Other viewers rebuild on the next
+    ``app_home_opened`` or Refresh after hash invalidation.
+    """
+    if not workspace or workspace.deleted_at:
         return
+    team_id = getattr(workspace, "team_id", None)
+    if not team_id:
+        return
+
+    from helpers.export_import import invalidate_home_tab_caches_for_team
+
+    # Wipe first so a later publish rewrites this user's keys; do not reverse.
+    invalidate_home_tab_caches_for_team(team_id)
+
+    if not user_id or not workspace.bot_token:
+        return
+
     ctx = context if context is not None else {}
     try:
         ws_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
-        user_ids = _home_refresh_user_ids(workspace, ws_client, ctx)
+        synthetic_body = {"team": {"id": team_id}}
+        build_home_tab(synthetic_body, ws_client, logger, ctx, user_id=user_id, workspace=workspace)
     except Exception as e:
-        _logger.warning(f"refresh_home_tab_for_workspace: failed to get refresh targets: {e}")
-        return
-
-    synthetic_body = {"team": {"id": workspace.team_id}}
-    for uid in user_ids:
-        try:
-            build_home_tab(synthetic_body, ws_client, logger, ctx, user_id=uid, workspace=workspace)
-        except Exception as e:
-            _logger.warning(
-                "refresh_home_tab_for_workspace: failed for user %s in workspace %s: %s",
-                uid,
-                getattr(workspace, "team_id", workspace.id if workspace else None),
-                e,
-            )
+        _logger.warning(
+            "refresh_home_tab_for_workspace: failed for user %s in workspace %s: %s",
+            user_id,
+            team_id,
+            e,
+        )
 
 
 def build_home_tab(

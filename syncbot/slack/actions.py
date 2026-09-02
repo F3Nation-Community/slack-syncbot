@@ -12,20 +12,32 @@ place avoids typos and makes refactoring easier.
 CONFIG_MANAGE_USER_MATCHING = "manage_user_matching"
 """Action: user clicked "User Mapping" button on the Home tab."""
 
-CONFIG_USER_MAPPING_BACK = "user_mapping_back"
-"""Action: user clicked "Back" on the user mapping screen to return to main Home tab."""
+CONFIG_USER_MAPPING_MODAL = "user_mapping_modal"
+"""Callback: User Mapping list modal (Close only; no submit)."""
 
 CONFIG_USER_MAPPING_EDIT = "user_mapping_edit"
-"""Action: user clicked "Edit" on a user row in the mapping screen (prefix-matched with mapping ID)."""
+"""Action: user clicked "Edit" on a user row in the mapping modal (prefix-matched with mapping ID)."""
 
 CONFIG_USER_MAPPING_EDIT_SUBMIT = "user_mapping_edit_submit"
 """Callback: per-user edit mapping modal submitted."""
 
 CONFIG_USER_MAPPING_EDIT_SELECT = "user_mapping_edit_select"
-"""Input: user picker dropdown in the edit mapping modal."""
+"""Input: users_select picker in the edit mapping modal."""
+
+CONFIG_USER_MAPPING_EDIT_REMOVE = "user_mapping_edit_remove"
+"""Input: optional radio to remove an existing mapping."""
 
 CONFIG_USER_MAPPING_REFRESH = "user_mapping_refresh"
-"""Action: user clicked "Refresh" on the user mapping screen."""
+"""Action: user clicked "Refresh List" in the User Mapping modal (reload from DB)."""
+
+CONFIG_USER_MAPPING_AUTO_MATCH = "user_mapping_auto_match"
+"""Action: run directory auto-map for this workspace. Must not share the edit prefix."""
+
+CONFIG_USER_MAPPING_PAGE_PREV = "user_mapping_page_prev"
+"""Action: previous page in the User Mapping modal. Must not share the edit prefix."""
+
+CONFIG_USER_MAPPING_PAGE_NEXT = "user_mapping_page_next"
+"""Action: next page in the User Mapping modal. Must not share the edit prefix."""
 
 # ---------------------------------------------------------------------------
 # Workspace Group actions

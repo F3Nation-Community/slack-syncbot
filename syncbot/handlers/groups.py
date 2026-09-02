@@ -38,12 +38,11 @@ def _activate_group_membership(
     workspace_record: "schemas.Workspace",
     group: "schemas.WorkspaceGroup",
 ) -> None:
-    """Refresh user directories and seed mappings for all existing group members."""
-    try:
-        helpers._refresh_user_directory(client, workspace_record.id)
-    except Exception as e:
-        _logger.warning(f"Failed to refresh user directory for workspace {workspace_record.id}: {e}")
+    """Seed mapping stubs from existing directories (no crawl, no auto-match).
 
+    Auto Map Now runs from the User Mapping modal. Partners
+    keep whatever ``user_directory`` rows they already have.
+    """
     members = DbManager.find_records(
         schemas.WorkspaceGroupMember,
         [
@@ -54,38 +53,18 @@ def _activate_group_membership(
         ],
     )
 
-    member_clients: list[tuple[WebClient, int]] = []
-
     for member in members:
         if not member.workspace_id:
             continue
         member_ws = helpers.get_workspace_by_id(member.workspace_id)
-        if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+        if not member_ws or member_ws.deleted_at:
             continue
-
-        try:
-            member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
-            helpers._refresh_user_directory(member_client, member_ws.id)
-            member_clients.append((member_client, member_ws.id))
-        except Exception as e:
-            _logger.warning(f"Failed to refresh user directory for workspace {member_ws.id}: {e}")
 
         try:
             helpers.seed_user_mappings(workspace_record.id, member_ws.id, group_id=group.id)
             helpers.seed_user_mappings(member_ws.id, workspace_record.id, group_id=group.id)
         except Exception as e:
             _logger.warning(f"Failed to seed user mappings: {e}")
-
-    try:
-        helpers.run_auto_match_for_workspace(client, workspace_record.id)
-    except Exception as e:
-        _logger.warning(f"Auto-match failed for workspace {workspace_record.id}: {e}")
-
-    for member_client, member_ws_id in member_clients:
-        try:
-            helpers.run_auto_match_for_workspace(member_client, member_ws_id)
-        except Exception as e:
-            _logger.warning(f"Auto-match failed for member workspace {member_ws_id}: {e}")
 
 
 def handle_create_group(
@@ -200,7 +179,7 @@ def handle_create_group_submit(
         except Exception as e:
             _logger.warning(f"Failed to DM invite code: {e}")
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 def handle_join_group(
@@ -258,7 +237,7 @@ def handle_join_group_submit(
     attempts = helpers._cache_get(rate_key) or 0
     if attempts >= 5:
         _logger.warning("group_join_rate_limited", extra={"workspace_id": workspace_record.id})
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
     groups = DbManager.find_records(
@@ -279,7 +258,7 @@ def handle_join_group_submit(
                 "code_length": len(raw_code),
             },
         )
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
     group = groups[0]
@@ -350,7 +329,7 @@ def handle_join_group_submit(
         except Exception as e:
             _logger.warning(f"Failed to notify group member {other_member.workspace_id}: {e}")
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -526,7 +505,7 @@ def handle_invite_workspace_submit(
     )
     if existing:
         _logger.info(f"invite_workspace_submit: workspace {target_ws_id} already in group {group_id}")
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
     acting_user_id = helpers.safe_get(body, "user", "id") or user_id
@@ -592,7 +571,7 @@ def handle_invite_workspace_submit(
     )
 
     builders.refresh_home_tab_for_workspace(target_ws, logger, context=None)
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -623,7 +602,7 @@ def handle_accept_group_invite(
     auth_result = _get_authorized_workspace(body, client, context, "accept_group_invite")
     if not auth_result:
         return
-    _, acting_workspace = auth_result
+    user_id, acting_workspace = auth_result
 
     member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
     if not member or member.status != "pending":
@@ -703,7 +682,7 @@ def handle_accept_group_invite(
         },
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 def handle_decline_group_invite(

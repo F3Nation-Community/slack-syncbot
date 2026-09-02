@@ -1,5 +1,6 @@
 """Cross-workspace user matching and mention resolution."""
 
+import json
 import logging
 import re
 from datetime import UTC, datetime
@@ -87,20 +88,19 @@ def _users_list_page(client: WebClient, cursor: str = "") -> dict:
 def _refresh_user_directory(client: WebClient, workspace_id: int) -> None:
     """Crawl users.list for a workspace and upsert into user_directory.
 
-    Active users are upserted normally.  Deactivated users
-    (``member["deleted"] == True``) are soft-deleted via
-    ``_upsert_single_user_to_directory``.  Users that were previously
-    in the directory but no longer appear in ``users.list`` at all are
-    hard-deleted along with their mappings.
+    Active users are upserted in bulk. Deactivated users are soft-deleted.
+    Users that disappeared from ``users.list`` are hard-deleted with their mappings.
+    Cache ``dir_refresh:`` only after a complete crawl.
     """
     cache_key = f"dir_refresh:{workspace_id}"
     if _cache_get(cache_key):
+        _logger.debug("user_directory_refresh_cached", extra={"workspace_id": workspace_id})
         return
 
-    _logger.info("user_directory_refresh_start", extra={"workspace_id": workspace_id})
+    _logger.debug("user_directory_refresh_start", extra={"workspace_id": workspace_id})
     cursor = ""
-    count = 0
     seen_user_ids: set[str] = set()
+    members_by_id: dict[str, dict] = {}
 
     while True:
         res = _users_list_page(client, cursor=cursor)
@@ -109,20 +109,99 @@ def _refresh_user_directory(client: WebClient, workspace_id: int) -> None:
         for member in members:
             if member.get("is_bot") or member.get("id") == "USLACKBOT":
                 continue
-            seen_user_ids.add(member["id"])
-            _upsert_single_user_to_directory(member, workspace_id)
-            count += 1
+            uid = member["id"]
+            seen_user_ids.add(uid)
+            members_by_id[uid] = member
 
         cursor = safe_get(res, "response_metadata", "next_cursor") or ""
         if not cursor:
             break
 
+    existing_entries = DbManager.find_records(
+        schemas.UserDirectory,
+        [schemas.UserDirectory.workspace_id == workspace_id],
+    )
+    existing_by_uid = {e.slack_user_id: e for e in existing_entries}
+    now = datetime.now(UTC)
+    to_create: list[schemas.UserDirectory] = []
+
+    for uid, member in members_by_id.items():
+        profile = member.get("profile", {}) or {}
+        display_name = profile.get("display_name") or ""
+        real_name = profile.get("real_name") or ""
+        email = profile.get("email")
+        is_deleted = member.get("deleted", False)
+        normalized = _normalize_name(display_name) if display_name else _normalize_name(real_name)
+        current_name = display_name or real_name
+        existing = existing_by_uid.get(uid)
+
+        if is_deleted:
+            if existing and existing.deleted_at is None:
+                DbManager.update_records(
+                    schemas.UserDirectory,
+                    [schemas.UserDirectory.id == existing.id],
+                    {schemas.UserDirectory.deleted_at: now, schemas.UserDirectory.updated_at: now},
+                )
+            _purge_mappings_for_user(uid, workspace_id)
+            _CACHE.pop(f"user_info:{uid}", None)
+            continue
+
+        if existing:
+            changed = (
+                existing.email != email
+                or existing.real_name != real_name
+                or existing.display_name != display_name
+                or existing.normalized_name != normalized
+                or existing.deleted_at is not None
+            )
+            if changed:
+                DbManager.update_records(
+                    schemas.UserDirectory,
+                    [schemas.UserDirectory.id == existing.id],
+                    {
+                        schemas.UserDirectory.email: email,
+                        schemas.UserDirectory.real_name: real_name,
+                        schemas.UserDirectory.display_name: display_name,
+                        schemas.UserDirectory.normalized_name: normalized,
+                        schemas.UserDirectory.updated_at: now,
+                        schemas.UserDirectory.deleted_at: None,
+                    },
+                )
+            if current_name:
+                mappings = DbManager.find_records(
+                    schemas.UserMapping,
+                    [
+                        schemas.UserMapping.source_workspace_id == workspace_id,
+                        schemas.UserMapping.source_user_id == uid,
+                    ],
+                )
+                for m in mappings:
+                    if m.source_display_name != current_name:
+                        DbManager.update_records(
+                            schemas.UserMapping,
+                            [schemas.UserMapping.id == m.id],
+                            {schemas.UserMapping.source_display_name: current_name},
+                        )
+            _CACHE.pop(f"user_info:{uid}", None)
+        else:
+            to_create.append(
+                schemas.UserDirectory(
+                    workspace_id=workspace_id,
+                    slack_user_id=uid,
+                    email=email,
+                    real_name=real_name,
+                    display_name=display_name,
+                    normalized_name=normalized,
+                    updated_at=now,
+                )
+            )
+            _CACHE.pop(f"user_info:{uid}", None)
+
+    if to_create:
+        DbManager.create_records(to_create)
+
     if seen_user_ids:
-        all_entries = DbManager.find_records(
-            schemas.UserDirectory,
-            [schemas.UserDirectory.workspace_id == workspace_id],
-        )
-        for entry in all_entries:
+        for entry in existing_entries:
             if entry.slack_user_id not in seen_user_ids:
                 _purge_mappings_for_user(entry.slack_user_id, workspace_id)
                 DbManager.delete_records(
@@ -130,6 +209,7 @@ def _refresh_user_directory(client: WebClient, workspace_id: int) -> None:
                     [schemas.UserDirectory.id == entry.id],
                 )
 
+    count = len(seen_user_ids)
     _logger.info("user_directory_refresh_done", extra={"workspace_id": workspace_id, "count": count})
     _cache_set(cache_key, True, ttl=constants.USER_DIR_REFRESH_TTL)
 
@@ -240,43 +320,27 @@ def _lookup_user_by_email(client: WebClient, email: str) -> str | None:
     return safe_get(res, "user", "id")
 
 
-def _find_user_match(
-    source_user_id: str,
+def _match_from_directory(
     source_profile: dict[str, Any],
-    target_client: WebClient,
-    target_workspace_id: int,
+    target_candidates: list[schemas.UserDirectory],
+    target_by_email: dict[str, list[schemas.UserDirectory]],
 ) -> tuple[str | None, str]:
-    """Run the matching algorithm for one source user against one target workspace."""
-    email = source_profile.get("email")
-
+    """Match using existing user_directory rows only (no Slack API)."""
+    email = (source_profile.get("email") or "").strip()
     if email:
-        try:
-            target_uid = _lookup_user_by_email(target_client, email)
-            if target_uid:
-                return target_uid, "email"
-        except SlackApiError as exc:
-            _logger.debug(f"match_user: email lookup failed for {email}: {exc}")
+        hits = target_by_email.get(email.lower()) or []
+        if len(hits) == 1:
+            return hits[0].slack_user_id, "email"
 
-    _refresh_user_directory(target_client, target_workspace_id)
-
-    source_real = source_profile.get("real_name", "")
-    source_display = source_profile.get("display_name", "")
+    source_real = source_profile.get("real_name", "") or ""
+    source_display = source_profile.get("display_name", "") or ""
     source_normalized = _normalize_name(source_display) if source_display else _normalize_name(source_real)
-
     if not source_normalized:
         return None, "none"
 
-    candidates = DbManager.find_records(
-        schemas.UserDirectory,
-        [
-            schemas.UserDirectory.workspace_id == target_workspace_id,
-            schemas.UserDirectory.deleted_at.is_(None),
-        ],
-    )
-
     name_matches = [
         c
-        for c in candidates
+        for c in target_candidates
         if c.normalized_name
         and c.normalized_name.lower() == source_normalized.lower()
         and c.real_name
@@ -287,11 +351,109 @@ def _find_user_match(
         return name_matches[0].slack_user_id, "name"
 
     if source_real:
-        real_only = [c for c in candidates if c.real_name and c.real_name.lower() == source_real.lower()]
+        real_only = [c for c in target_candidates if c.real_name and c.real_name.lower() == source_real.lower()]
         if len(real_only) == 1:
             return real_only[0].slack_user_id, "name"
 
     return None, "none"
+
+
+def _find_user_match(
+    source_user_id: str,
+    source_profile: dict[str, Any],
+    target_client: WebClient | None,
+    target_workspace_id: int,
+    *,
+    target_candidates: list[schemas.UserDirectory] | None = None,
+    target_by_email: dict[str, list[schemas.UserDirectory]] | None = None,
+    allow_slack_email_lookup: bool = True,
+    email_lookup_denied: list[bool] | None = None,
+) -> tuple[str | None, str]:
+    """Match one source user against one target workspace.
+
+    Prefer ``user_directory`` email, then name uniqueness. Optional Slack
+    ``users.lookupByEmail`` is a fallback only when the directory has no row
+    for that email.
+    """
+    if target_candidates is None:
+        target_candidates = DbManager.find_records(
+            schemas.UserDirectory,
+            [
+                schemas.UserDirectory.workspace_id == target_workspace_id,
+                schemas.UserDirectory.deleted_at.is_(None),
+            ],
+        )
+    if target_by_email is None:
+        target_by_email = {}
+        for entry in target_candidates:
+            if not entry.email:
+                continue
+            key = entry.email.strip().lower()
+            if key:
+                target_by_email.setdefault(key, []).append(entry)
+
+    target_uid, method = _match_from_directory(source_profile, target_candidates, target_by_email)
+    if target_uid:
+        return target_uid, method
+
+    email = (source_profile.get("email") or "").strip()
+    denied = bool(email_lookup_denied and email_lookup_denied[0])
+    if (
+        allow_slack_email_lookup
+        and not denied
+        and email
+        and target_client is not None
+        and email.lower() not in target_by_email
+    ):
+        try:
+            looked_up = _lookup_user_by_email(target_client, email)
+            if looked_up:
+                return looked_up, "email"
+        except SlackApiError as exc:
+            err = ""
+            try:
+                err = str(exc.response.get("error") if exc.response is not None else exc)
+            except Exception:
+                err = str(exc)
+            if err in ("missing_scope", "invalid_auth", "not_allowed"):
+                _logger.warning(
+                    "match_user_email_lookup_denied",
+                    extra={"workspace_id": target_workspace_id, "error": err},
+                )
+                if email_lookup_denied is not None:
+                    email_lookup_denied[0] = True
+            elif err == "users_not_found":
+                _logger.debug(
+                    "match_user_email_lookup_users_not_found",
+                    extra={"workspace_id": target_workspace_id},
+                )
+            else:
+                _logger.debug(
+                    "match_user_email_lookup_failed",
+                    extra={"workspace_id": target_workspace_id, "error": err},
+                )
+
+    return None, "none"
+
+
+def _source_profile_from_directory(workspace_id: int, slack_user_id: str) -> dict[str, Any] | None:
+    """Build a match profile from user_directory when present."""
+    rows = DbManager.find_records(
+        schemas.UserDirectory,
+        [
+            schemas.UserDirectory.workspace_id == workspace_id,
+            schemas.UserDirectory.slack_user_id == slack_user_id,
+            schemas.UserDirectory.deleted_at.is_(None),
+        ],
+    )
+    if not rows:
+        return None
+    entry = rows[0]
+    return {
+        "display_name": entry.display_name or "",
+        "real_name": entry.real_name or "",
+        "email": entry.email,
+    }
 
 
 def _get_source_profile_full(client: WebClient, user_id: str) -> dict[str, Any] | None:
@@ -336,6 +498,138 @@ def get_mapped_target_user_id(
     return mappings[0].target_user_id if mappings else None
 
 
+def _persist_email_mapping(
+    *,
+    source_user_id: str,
+    source_workspace_id: int,
+    target_workspace_id: int,
+    target_user_id: str,
+    display_name: str,
+) -> None:
+    """Write or upgrade a mapping row to ``match_method=email``."""
+    now = datetime.now(UTC)
+    existing = DbManager.find_records(
+        schemas.UserMapping,
+        [
+            schemas.UserMapping.source_workspace_id == source_workspace_id,
+            schemas.UserMapping.source_user_id == source_user_id,
+            schemas.UserMapping.target_workspace_id == target_workspace_id,
+        ],
+    )
+    if existing:
+        DbManager.update_records(
+            schemas.UserMapping,
+            [schemas.UserMapping.id == existing[0].id],
+            {
+                schemas.UserMapping.target_user_id: target_user_id,
+                schemas.UserMapping.match_method: "email",
+                schemas.UserMapping.source_display_name: display_name,
+                schemas.UserMapping.matched_at: now,
+            },
+        )
+    else:
+        DbManager.create_record(
+            schemas.UserMapping(
+                source_workspace_id=source_workspace_id,
+                source_user_id=source_user_id,
+                target_workspace_id=target_workspace_id,
+                target_user_id=target_user_id,
+                match_method="email",
+                source_display_name=display_name,
+                matched_at=now,
+                group_id=None,
+            )
+        )
+    try:
+        target_ws = get_workspace_by_id(target_workspace_id)
+        if target_ws and target_ws.team_id:
+            from helpers.export_import import invalidate_home_tab_caches_for_team
+
+            invalidate_home_tab_caches_for_team(target_ws.team_id)
+    except Exception:
+        _logger.warning(
+            "user_mapping_home_hash_invalidate_failed",
+            extra={"target_workspace_id": target_workspace_id},
+        )
+
+
+def ensure_mapped_target_user_id(
+    source_user_id: str,
+    source_workspace_id: int,
+    target_workspace_id: int,
+    *,
+    source_client: WebClient | None = None,
+    target_client: WebClient | None = None,
+) -> str | None:
+    """Return a mapped dest user ID, creating an email mapping for this author if needed.
+
+    Email only: unique ``user_directory`` hit on dest, else one ``users.lookupByEmail``.
+    Never crawls ``users.list`` or matches by name. On failure returns ``None`` and
+    does not raise — callers keep the remote author display.
+    """
+    if not source_user_id or not source_workspace_id or not target_workspace_id:
+        return None
+
+    existing = get_mapped_target_user_id(source_user_id, source_workspace_id, target_workspace_id)
+    if existing:
+        return existing
+
+    try:
+        profile = _source_profile_from_directory(source_workspace_id, source_user_id)
+        if not (profile and (profile.get("email") or "").strip()) and source_client is not None:
+            profile = _get_source_profile_full(source_client, source_user_id)
+        email = (profile.get("email") if profile else None) or ""
+        email = email.strip()
+        if not email:
+            return None
+
+        # Empty names so ``_match_from_directory`` cannot fall through to name match.
+        email_only_profile = {"email": email, "display_name": "", "real_name": ""}
+        target_uid, method = _find_user_match(
+            source_user_id,
+            email_only_profile,
+            target_client,
+            target_workspace_id,
+            allow_slack_email_lookup=target_client is not None,
+        )
+        if not target_uid or method != "email":
+            return None
+
+        display = (
+            (profile.get("display_name") if profile else None)
+            or (profile.get("real_name") if profile else None)
+            or source_user_id
+        )
+        _persist_email_mapping(
+            source_user_id=source_user_id,
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=target_workspace_id,
+            target_user_id=target_uid,
+            display_name=display,
+        )
+        _logger.info(
+            "user_mapping_on_the_fly",
+            extra={
+                "source_workspace_id": source_workspace_id,
+                "target_workspace_id": target_workspace_id,
+                "source_user_id": source_user_id,
+                "target_user_id": target_uid,
+            },
+        )
+        return target_uid
+    except Exception as exc:
+        _logger.warning(
+            "user_mapping_on_the_fly_failed",
+            extra={
+                "source_workspace_id": source_workspace_id,
+                "target_workspace_id": target_workspace_id,
+                "source_user_id": source_user_id,
+                "error": str(exc),
+            },
+        )
+        return None
+
+
 def get_display_name_and_icon_for_synced_message(
     source_user_id: str,
     source_workspace_id: int,
@@ -343,6 +637,8 @@ def get_display_name_and_icon_for_synced_message(
     source_icon_url: str | None,
     target_client: WebClient,
     target_workspace_id: int,
+    *,
+    source_client: WebClient | None = None,
 ) -> tuple[str | None, str | None, bool]:
     """Return (display_name, icon_url, is_mapped) when syncing into the target workspace.
 
@@ -352,12 +648,27 @@ def get_display_name_and_icon_for_synced_message(
     normalized (text in parens or after a dash at the end is dropped). Callers
     omit the remote workspace suffix in the posted username when ``is_mapped``
     is true.
+
+    When unmapped, may create a one-author email mapping via
+    :func:`ensure_mapped_target_user_id` before falling back to the remote name.
     """
-    mapped_id = get_mapped_target_user_id(source_user_id, source_workspace_id, target_workspace_id)
+    mapped_id = ensure_mapped_target_user_id(
+        source_user_id,
+        source_workspace_id,
+        target_workspace_id,
+        source_client=source_client,
+        target_client=target_client,
+    )
     if mapped_id:
         local_name, local_icon = get_user_info(target_client, mapped_id)
+        if not local_name:
+            dest_profile = _source_profile_from_directory(target_workspace_id, mapped_id)
+            if dest_profile:
+                local_name = dest_profile.get("display_name") or dest_profile.get("real_name")
         if local_name:
             return normalize_display_name(local_name), local_icon or source_icon_url, True
+        # Mapped: never add the remote workspace suffix, even if dest profile lookup failed.
+        return normalize_display_name(source_display_name), source_icon_url, True
     return normalize_display_name(source_display_name), source_icon_url, False
 
 
@@ -644,7 +955,7 @@ def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group
     existing_by_uid = {m.source_user_id: m for m in existing}
 
     now = datetime.now(UTC)
-    created = 0
+    to_create: list[schemas.UserMapping] = []
     for entry in directory:
         current_name = entry.display_name or entry.real_name
         if entry.slack_user_id in existing_by_uid:
@@ -656,7 +967,7 @@ def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group
                     {schemas.UserMapping.source_display_name: current_name},
                 )
             continue
-        DbManager.create_record(
+        to_create.append(
             schemas.UserMapping(
                 source_workspace_id=source_workspace_id,
                 source_user_id=entry.slack_user_id,
@@ -668,13 +979,24 @@ def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group
                 group_id=group_id,
             )
         )
-        created += 1
 
-    return created
+    if to_create:
+        DbManager.create_records(to_create)
+    return len(to_create)
 
 
-def run_auto_match_for_workspace(target_client: WebClient, target_workspace_id: int) -> tuple[int, int]:
-    """Re-run auto-matching for all unmatched mappings targeting a workspace."""
+def run_auto_match_for_workspace(
+    target_client: WebClient | None,
+    target_workspace_id: int,
+    *,
+    allow_slack_email_lookup: bool = True,
+    seeded: int | None = None,
+) -> tuple[int, int]:
+    """Re-run auto-matching for unmatched mappings targeting a workspace.
+
+    Uses existing ``user_directory`` rows. Does **not** start a ``users.list``
+    crawl. Returns ``(newly_matched, still_unmatched)``.
+    """
     unmatched = DbManager.find_records(
         schemas.UserMapping,
         [
@@ -683,25 +1005,50 @@ def run_auto_match_for_workspace(target_client: WebClient, target_workspace_id: 
         ],
     )
 
-    _refresh_user_directory(target_client, target_workspace_id)
+    target_candidates = DbManager.find_records(
+        schemas.UserDirectory,
+        [
+            schemas.UserDirectory.workspace_id == target_workspace_id,
+            schemas.UserDirectory.deleted_at.is_(None),
+        ],
+    )
+    target_by_email: dict[str, list[schemas.UserDirectory]] = {}
+    for entry in target_candidates:
+        if not entry.email:
+            continue
+        key = entry.email.strip().lower()
+        if key:
+            target_by_email.setdefault(key, []).append(entry)
+    emails_present = len(target_by_email)
 
     newly_matched = 0
     still_unmatched = 0
+    by_email = 0
+    by_name = 0
+    email_lookup_denied = [False]
 
     for mapping in unmatched:
-        source_workspace = get_workspace_by_id(mapping.source_workspace_id)
-        if not source_workspace:
-            still_unmatched += 1
-            continue
-
-        source_client = WebClient(token=decrypt_bot_token(source_workspace.bot_token))
-        source_profile = _get_source_profile_full(source_client, mapping.source_user_id)
+        source_profile = _source_profile_from_directory(mapping.source_workspace_id, mapping.source_user_id)
+        if not source_profile and allow_slack_email_lookup:
+            # Slack users.info only when the caller allowed per-user lookups
+            # (not Auto Map Now, which must stay directory-only).
+            source_workspace = get_workspace_by_id(mapping.source_workspace_id)
+            if source_workspace and source_workspace.bot_token:
+                source_client = WebClient(token=decrypt_bot_token(source_workspace.bot_token))
+                source_profile = _get_source_profile_full(source_client, mapping.source_user_id)
         if not source_profile:
             still_unmatched += 1
             continue
 
         target_uid, method = _find_user_match(
-            mapping.source_user_id, source_profile, target_client, target_workspace_id
+            mapping.source_user_id,
+            source_profile,
+            target_client,
+            target_workspace_id,
+            target_candidates=target_candidates,
+            target_by_email=target_by_email,
+            allow_slack_email_lookup=allow_slack_email_lookup,
+            email_lookup_denied=email_lookup_denied,
         )
 
         if target_uid:
@@ -717,7 +1064,110 @@ def run_auto_match_for_workspace(target_client: WebClient, target_workspace_id: 
                 },
             )
             newly_matched += 1
+            if method == "email":
+                by_email += 1
+            elif method == "name":
+                by_name += 1
         else:
             still_unmatched += 1
 
+    extras: dict[str, Any] = {
+        "workspace_id": target_workspace_id,
+        "newly_matched": newly_matched,
+        "still_unmatched": still_unmatched,
+        "by_email": by_email,
+        "by_name": by_name,
+        "emails_present": emails_present,
+    }
+    if seeded is not None:
+        extras["seeded"] = seeded
+    _logger.info("user_auto_match_complete", extra=extras)
     return newly_matched, still_unmatched
+
+
+_LAST_AUTO_MATCH_KEY = "last_auto_match"
+_AUTO_MATCH_RUNNING_TTL = 45
+
+
+def auto_match_running_key(workspace_id: int) -> str:
+    return f"auto_match_running:{workspace_id}"
+
+
+def get_last_auto_match(workspace_id: int) -> dict[str, Any] | None:
+    """Return the last Auto Map Now summary for *workspace_id*, or None."""
+    from helpers.workspace_settings import get_raw_workspace_setting
+
+    raw = get_raw_workspace_setting(workspace_id, _LAST_AUTO_MATCH_KEY)
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw) if isinstance(raw, str) else raw
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def set_last_auto_match(
+    workspace_id: int,
+    *,
+    newly_matched: int,
+    still_unmatched: int,
+    at: datetime | None = None,
+) -> dict[str, Any]:
+    """Persist last Auto Map Now summary without Settings-modal logging."""
+    now = at or datetime.now(UTC)
+    payload = {
+        "at": now.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+        "newly_matched": int(newly_matched),
+        "still_unmatched": int(still_unmatched),
+    }
+    value = json.dumps(payload)
+    existing = DbManager.find_records(
+        schemas.WorkspaceSetting,
+        [
+            schemas.WorkspaceSetting.workspace_id == workspace_id,
+            schemas.WorkspaceSetting.key == _LAST_AUTO_MATCH_KEY,
+        ],
+    )
+    if existing:
+        DbManager.update_records(
+            schemas.WorkspaceSetting,
+            [
+                schemas.WorkspaceSetting.workspace_id == workspace_id,
+                schemas.WorkspaceSetting.key == _LAST_AUTO_MATCH_KEY,
+            ],
+            {
+                schemas.WorkspaceSetting.value: value,
+                schemas.WorkspaceSetting.updated_at: now,
+            },
+        )
+    else:
+        DbManager.create_record(
+            schemas.WorkspaceSetting(
+                workspace_id=workspace_id,
+                key=_LAST_AUTO_MATCH_KEY,
+                value=value,
+                updated_at=now,
+            )
+        )
+    from helpers._cache import _cache_delete
+
+    _cache_delete(f"workspace_setting:{workspace_id}:{_LAST_AUTO_MATCH_KEY}")
+    return payload
+
+
+def format_last_auto_match_line(last: dict[str, Any] | None) -> str:
+    """One-line status under Auto Map Now (UTC date)."""
+    if not last:
+        return "_No auto map yet. Incomplete lists usually mean the directory is still filling in._"
+    newly = int(last.get("newly_matched") or 0)
+    at_raw = last.get("at") or ""
+    date_label = "an earlier date"
+    try:
+        parsed = datetime.fromisoformat(str(at_raw).replace("Z", "+00:00")).astimezone(UTC)
+        date_label = f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+    except Exception:
+        pass
+    return f"Last run on {date_label} with {newly} new found."

@@ -58,12 +58,12 @@ def _reaction_style_block(
             initial_value=initial,
             options=[
                 orm.SelectorOption(
-                    name="Direct — native emoji on the synced message",
-                    value=constants.REACTION_STYLE_DIRECT_ONLY,
-                ),
-                orm.SelectorOption(
                     name="Hybrid — direct when possible, otherwise a thread notice",
                     value=constants.REACTION_STYLE_THREADED_AND_DIRECT,
+                ),
+                orm.SelectorOption(
+                    name="Direct — native emoji on the synced message",
+                    value=constants.REACTION_STYLE_DIRECT_ONLY,
                 ),
             ],
         ),
@@ -568,6 +568,30 @@ def handle_publish_channel_submit_work(
         )
         sync_record.title = refreshed_name
 
+    admin_name, _admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    try:
+        if sync_mode == "direct" and target_workspace_id:
+            target_ws = helpers.get_workspace_by_id(target_workspace_id)
+            target_label = helpers.resolve_workspace_name(target_ws) if target_ws else "another Workspace"
+            notice = (
+                f"*{admin_name}* published this Channel to *{target_label}*. "
+                "Messages will be shared automatically with subscribers to this Channel."
+            )
+        else:
+            group_rows = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
+            group_name = group_rows[0].name if group_rows else "Workspace Group"
+            suffix = "" if "SyncBot Group" in group_name else " SyncBot Group"
+            notice = (
+                f"*{admin_name}* published this Channel to the *{group_name}*{suffix}. "
+                "Messages will be shared automatically with subscribers to this Channel."
+            )
+        client.chat_postMessage(channel=channel_id, text=notice)
+    except Exception as exc:
+        _logger.warning(
+            "publish_channel_announce_failed",
+            extra={"channel_id": channel_id, "sync_id": sync_record.id, "error": str(exc)},
+        )
+
     _logger.info(
         "channel_published",
         extra={
@@ -579,7 +603,7 @@ def handle_publish_channel_submit_work(
         },
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
 
 
@@ -655,8 +679,11 @@ def handle_unpublish_channel(
         with contextlib.suppress(Exception):
             helpers.notify_admins_dm(
                 client,
-                ":warning: Unpublishing that Channel failed, so it is still published. "
-                "Please try again, and let your SyncBot operator know if it keeps failing.",
+                helpers.format_error_dm(
+                    ":warning: Unpublishing that Channel failed, so it is still published. "
+                    "Please try again, and let your SyncBot operator know if it keeps failing.",
+                    {"error": str(exc), "event": "unpublish_failed", "sync": sync_id},
+                ),
                 team_id=workspace_record.team_id if workspace_record else None,
             )
         return
@@ -666,7 +693,7 @@ def handle_unpublish_channel(
         extra={"sync_id": sync_id, "group_id": group_id},
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     if group_id:
         _refresh_group_member_homes(group_id, workspace_record.id if workspace_record else 0, logger, context=context)
 
@@ -769,7 +796,7 @@ def _toggle_sync_status(
 
     _logger.info(log_event, extra={"sync_id": sync_id, "sync_channel_id": my_sync_channel.id})
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
     if sync_record and sync_record.group_id:
         _refresh_group_member_homes(
@@ -951,7 +978,7 @@ def handle_stop_sync_confirm(
         },
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     if sync_record and sync_record.group_id:
         _refresh_group_member_homes(sync_record.group_id, workspace_record.id, logger, context=context)
     _close_modal_done(client, body, ":octagonal_sign: Channel sync stopped. You can close this now.")
@@ -1138,7 +1165,7 @@ def handle_subscribe_channel_submit(
                 "workspace_id": workspace_record.id,
             },
         )
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         if group_id:
             _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
         return
@@ -1232,7 +1259,7 @@ def handle_subscribe_channel_submit(
     except Exception as e:
         _logger.error(f"Failed to subscribe to channel sync {sync_id}: {e}")
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     if group_id:
         _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
 
@@ -1528,7 +1555,7 @@ def handle_edit_sync_submit(
     auth_result = _get_authorized_workspace(body, client, context, "edit_sync_submit")
     if not auth_result:
         return
-    _, workspace_record = auth_result
+    user_id, workspace_record = auth_result
 
     metadata = _parse_private_metadata(body)
     sync_id = metadata.get("sync_id")
@@ -1585,7 +1612,7 @@ def handle_edit_sync_submit(
             style = _reaction_style_for_edit(sync_channel, body, direction=direction)
             update_sync_channel_reactions(int(sync_channel_id), direction=direction, style=style)
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     if mode_changed and sync_record.group_id:
         _refresh_group_member_homes(sync_record.group_id, workspace_record.id, logger, context=context)
 
@@ -1596,10 +1623,9 @@ def _refresh_group_member_homes(
     logger: Logger,
     context: dict | None = None,
 ) -> None:
-    """Refresh the Home tab for all group members except the acting workspace.
+    """Invalidate Home caches for other group members (no users.list fan-out).
 
-    Uses context=None when refreshing other members so admin lookups are always
-    fresh for each workspace (avoids request-scoped cache from the acting ws).
+    Partner workspaces rebuild on the next ``app_home_opened`` or Refresh.
     """
     members = _get_group_members(group_id)
     refreshed: set[int] = set()
@@ -1608,5 +1634,5 @@ def _refresh_group_member_homes(
             continue
         member_ws = helpers.get_workspace_by_id(member.workspace_id, context=context)
         if member_ws:
-            builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
+            builders.refresh_home_tab_for_workspace(member_ws, logger, context=None, user_id=None)
             refreshed.add(member.workspace_id)
