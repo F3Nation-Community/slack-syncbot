@@ -90,6 +90,38 @@ class TestHandleEditSyncOpen:
         assert actions.CONFIG_PUBLISH_SYNC_MODE in actions_seen
         assert actions.CONFIG_PUBLISH_REACTION_DIRECTION in actions_seen
 
+    def test_open_keeps_hybrid_type_when_direction_is_off(self):
+        channel = SimpleNamespace(
+            id=10,
+            sync_id=42,
+            workspace_id=1,
+            deleted_at=None,
+            reaction_direction=constants.REACTION_DIRECTION_OFF,
+            reaction_style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
+        )
+        captured: dict = {}
+
+        def capture_post_modal(self, **kwargs):
+            captured["blocks"] = list(self.blocks)
+
+        body = _body_with_value("c:10", action_id=f"{actions.CONFIG_EDIT_SYNC}_c_10")
+        with (
+            patch(
+                "handlers.channel_sync._get_authorized_workspace",
+                return_value=("U1", self.WORKSPACE),
+            ),
+            patch("handlers.channel_sync._sync_channel_by_pk", return_value=channel),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=self.SYNC),
+            patch("handlers.channel_sync._get_group_members", return_value=[]),
+            patch("handlers.channel_sync.orm.BlockView.post_modal", capture_post_modal),
+        ):
+            handle_edit_sync(body, MagicMock(), MagicMock(), {})
+
+        style_block = next(
+            b for b in captured["blocks"] if getattr(b, "action", None) == actions.CONFIG_PUBLISH_REACTION_STYLE
+        )
+        assert style_block.element.initial_value == constants.REACTION_STYLE_THREADED_AND_DIRECT
+
     def test_extra_manager_subscriber_gets_reactions_only(self):
         workspace = SimpleNamespace(id=2, team_id="T2")
         channel = SimpleNamespace(
@@ -350,3 +382,91 @@ class TestEditSyncSubmit:
         update.assert_not_called()
         refresh_group.assert_not_called()
         upd_rxn.assert_called_once()
+
+    def test_submit_off_keeps_stored_hybrid_when_style_omitted(self):
+        channel = SimpleNamespace(
+            id=10,
+            sync_id=42,
+            workspace_id=1,
+            deleted_at=None,
+            reaction_direction=constants.REACTION_DIRECTION_BOTH,
+            reaction_style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
+        )
+        body = {
+            "user": {"id": "U1"},
+            "view": {
+                "private_metadata": '{"sync_id": 42, "sync_channel_id": 10}',
+                "state": {
+                    "values": {
+                        "b1": {
+                            actions.CONFIG_PUBLISH_REACTION_DIRECTION: {
+                                "type": "radio_buttons",
+                                "selected_option": {"value": constants.REACTION_DIRECTION_OFF},
+                            }
+                        },
+                    }
+                },
+            },
+        }
+        with (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", self.WORKSPACE)),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=self.SYNC),
+            patch("handlers.channel_sync._can_edit_sync_policy", return_value=False),
+            patch("handlers.channel_sync._sync_channel_by_pk", return_value=channel),
+            patch("helpers.reactions.update_sync_channel_reactions") as upd_rxn,
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_edit_sync_submit(body, MagicMock(), MagicMock(), {})
+
+        upd_rxn.assert_called_once_with(
+            10,
+            direction=constants.REACTION_DIRECTION_OFF,
+            style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
+        )
+
+    def test_submit_off_saves_style_from_form(self):
+        channel = SimpleNamespace(
+            id=10,
+            sync_id=42,
+            workspace_id=1,
+            deleted_at=None,
+            reaction_direction=constants.REACTION_DIRECTION_BOTH,
+            reaction_style=constants.REACTION_STYLE_DIRECT_ONLY,
+        )
+        body = {
+            "user": {"id": "U1"},
+            "view": {
+                "private_metadata": '{"sync_id": 42, "sync_channel_id": 10}',
+                "state": {
+                    "values": {
+                        "b1": {
+                            actions.CONFIG_PUBLISH_REACTION_DIRECTION: {
+                                "type": "radio_buttons",
+                                "selected_option": {"value": constants.REACTION_DIRECTION_OFF},
+                            }
+                        },
+                        "b2": {
+                            actions.CONFIG_PUBLISH_REACTION_STYLE: {
+                                "type": "radio_buttons",
+                                "selected_option": {"value": constants.REACTION_STYLE_THREADED_AND_DIRECT},
+                            }
+                        },
+                    }
+                },
+            },
+        }
+        with (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", self.WORKSPACE)),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=self.SYNC),
+            patch("handlers.channel_sync._can_edit_sync_policy", return_value=False),
+            patch("handlers.channel_sync._sync_channel_by_pk", return_value=channel),
+            patch("helpers.reactions.update_sync_channel_reactions") as upd_rxn,
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_edit_sync_submit(body, MagicMock(), MagicMock(), {})
+
+        upd_rxn.assert_called_once_with(
+            10,
+            direction=constants.REACTION_DIRECTION_OFF,
+            style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
+        )
