@@ -26,6 +26,7 @@ from helpers.user_matching import (  # noqa: E402
     _match_from_directory,
     ensure_mapped_target_user_id,
     format_last_auto_match_line,
+    get_display_name_and_icon_for_synced_message,
     run_auto_match_for_workspace,
     seed_user_mappings,
 )
@@ -527,3 +528,62 @@ class TestEnsureMappedTargetUserId:
         ):
             uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=MagicMock())
         assert uid is None
+
+    def test_home_invalidate_failure_still_returns_mapped_id(self):
+        dest = SimpleNamespace(
+            slack_user_id="U_DEST",
+            email="same@ex.com",
+            real_name="Ada",
+            display_name="Ada",
+            normalized_name="Ada",
+        )
+        with (
+            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch(
+                "helpers.user_matching._source_profile_from_directory",
+                return_value={"email": "same@ex.com", "display_name": "Ada", "real_name": "Ada"},
+            ),
+            patch("helpers.user_matching.DbManager.find_records", side_effect=[[dest], []]),
+            patch("helpers.user_matching.DbManager.create_record"),
+            patch("helpers.user_matching.get_workspace_by_id", side_effect=RuntimeError("db down")),
+        ):
+            uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=MagicMock())
+        assert uid == "U_DEST"
+
+
+class TestSyncedMessageDisplayName:
+    def test_mapped_author_uses_dest_display_name(self):
+        target_client = MagicMock()
+        with (
+            patch("helpers.user_matching.ensure_mapped_target_user_id", return_value="U_DEST"),
+            patch("helpers.user_matching.get_user_info", return_value=("Local Nacho", "https://dest/n.png")),
+        ):
+            name, icon, mapped = get_display_name_and_icon_for_synced_message(
+                "U_SRC",
+                1,
+                "Remote Alice",
+                "https://src/a.png",
+                target_client,
+                2,
+            )
+        assert mapped is True
+        assert name == "Local Nacho"
+        assert icon == "https://dest/n.png"
+
+    def test_mapped_author_stays_mapped_if_dest_profile_missing(self):
+        target_client = MagicMock()
+        with (
+            patch("helpers.user_matching.ensure_mapped_target_user_id", return_value="U_DEST"),
+            patch("helpers.user_matching.get_user_info", return_value=(None, None)),
+            patch("helpers.user_matching._source_profile_from_directory", return_value=None),
+        ):
+            name, _icon, mapped = get_display_name_and_icon_for_synced_message(
+                "U_SRC",
+                1,
+                "Remote Alice",
+                None,
+                target_client,
+                2,
+            )
+        assert mapped is True
+        assert name == "Remote Alice"

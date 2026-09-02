@@ -540,11 +540,17 @@ def _persist_email_mapping(
                 group_id=None,
             )
         )
-    target_ws = get_workspace_by_id(target_workspace_id)
-    if target_ws and target_ws.team_id:
-        from helpers.export_import import invalidate_home_tab_caches_for_team
+    try:
+        target_ws = get_workspace_by_id(target_workspace_id)
+        if target_ws and target_ws.team_id:
+            from helpers.export_import import invalidate_home_tab_caches_for_team
 
-        invalidate_home_tab_caches_for_team(target_ws.team_id)
+            invalidate_home_tab_caches_for_team(target_ws.team_id)
+    except Exception:
+        _logger.warning(
+            "user_mapping_home_hash_invalidate_failed",
+            extra={"target_workspace_id": target_workspace_id},
+        )
 
 
 def ensure_mapped_target_user_id(
@@ -612,7 +618,7 @@ def ensure_mapped_target_user_id(
         )
         return target_uid
     except Exception as exc:
-        _logger.debug(
+        _logger.warning(
             "user_mapping_on_the_fly_failed",
             extra={
                 "source_workspace_id": source_workspace_id,
@@ -655,8 +661,14 @@ def get_display_name_and_icon_for_synced_message(
     )
     if mapped_id:
         local_name, local_icon = get_user_info(target_client, mapped_id)
+        if not local_name:
+            dest_profile = _source_profile_from_directory(target_workspace_id, mapped_id)
+            if dest_profile:
+                local_name = dest_profile.get("display_name") or dest_profile.get("real_name")
         if local_name:
             return normalize_display_name(local_name), local_icon or source_icon_url, True
+        # Mapped: never add the remote workspace suffix, even if dest profile lookup failed.
+        return normalize_display_name(source_display_name), source_icon_url, True
     return normalize_display_name(source_display_name), source_icon_url, False
 
 
