@@ -18,7 +18,7 @@ from helpers.reactions import (
 from slack import actions
 
 
-def _sync_channel(direction: str, style: str | None = None, *, channel_id: str = "C_TARGET"):
+def _sync_channel(direction: str, style: str | None = None, *, channel_id: str = "C_SRC"):
     return SimpleNamespace(
         reaction_direction=direction,
         reaction_style=style,
@@ -33,6 +33,14 @@ def _apply(**kwargs):
         reaction="thumbsup",
         source_user_id="U_SRC",
         source_workspace_id=1,
+        source_sync_channel=_sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_SRC"),
+        target_sync_channel=_sync_channel(
+            constants.REACTION_DIRECTION_BOTH,
+            constants.REACTION_STYLE_THREADED_AND_DIRECT,
+            channel_id="C_DST",
+        ),
+        target_post_meta=SimpleNamespace(ts=100.0, post_id="post-parent"),
+        target_workspace=SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc"),
         display_name="Alice",
         icon_url=None,
         posted_from="(A)",
@@ -45,27 +53,27 @@ def _apply(**kwargs):
 class TestPairing:
     def test_both_sends_and_receives(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_DST")
         assert should_sync_reaction_between(source, target)
 
     def test_send_only_pairs_with_receive_only(self):
         source = _sync_channel(constants.REACTION_DIRECTION_SEND)
-        target = _sync_channel(constants.REACTION_DIRECTION_RECEIVE)
+        target = _sync_channel(constants.REACTION_DIRECTION_RECEIVE, channel_id="C_DST")
         assert should_sync_reaction_between(source, target)
 
     def test_send_only_does_not_pair_with_send_only(self):
         source = _sync_channel(constants.REACTION_DIRECTION_SEND)
-        target = _sync_channel(constants.REACTION_DIRECTION_SEND)
+        target = _sync_channel(constants.REACTION_DIRECTION_SEND, channel_id="C_DST")
         assert not should_sync_reaction_between(source, target)
 
     def test_receive_only_does_not_send(self):
         source = _sync_channel(constants.REACTION_DIRECTION_RECEIVE)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, channel_id="C_DST")
         assert not should_sync_reaction_between(source, target)
 
     def test_off_never_pairs(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_OFF)
+        target = _sync_channel(constants.REACTION_DIRECTION_OFF, channel_id="C_DST")
         assert not should_sync_reaction_between(source, target)
         assert not channel_sends_reactions(target)
         assert channel_receives_reactions(source)
@@ -134,7 +142,9 @@ class TestSkipOrigin:
 class TestApplyDirect:
     def test_uses_destination_team_for_user_token(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -155,7 +165,7 @@ class TestApplyDirect:
         get_token.assert_called_once_with("T_DEST", "U_MAPPED")
         decrypt.assert_not_called()
         user_client.reactions_add.assert_called_once_with(
-            channel="C_TARGET",
+            channel="C_DST",
             timestamp="100.000000",
             name="thumbsup",
         )
@@ -165,7 +175,9 @@ class TestApplyDirect:
 
     def test_direct_only_skips_invalid_name(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -193,7 +205,9 @@ class TestApplyDirect:
 
     def test_direct_only_no_token_skips_without_probe(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
 
@@ -215,9 +229,39 @@ class TestApplyDirect:
         decrypt.assert_not_called()
         web_client.assert_not_called()
 
+    def test_direct_remove_reactions_remove_only(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.WebClient", return_value=user_client),
+            patch("helpers.reactions.delete_notices_for_unreact") as delete_notices,
+        ):
+            result, notice = _apply(
+                action="remove",
+                source_sync_channel=source,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        assert result == "direct"
+        assert notice is None
+        user_client.reactions_remove.assert_called_once()
+        user_client.chat_delete.assert_not_called()
+        user_client.chat_postMessage.assert_not_called()
+        delete_notices.assert_called_once()
+
     def test_direct_only_auth_error_skips_without_probe(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -243,7 +287,9 @@ class TestApplyDirect:
 
     def test_hybrid_with_token_does_not_probe(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -269,7 +315,9 @@ class TestApplyDirect:
 
     def test_hybrid_invalid_name_skips(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -296,7 +344,9 @@ class TestApplyDirect:
 
     def test_hybrid_already_reacted_is_direct_no_thread(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -322,7 +372,9 @@ class TestApplyDirect:
 
     def test_hybrid_unknown_error_does_not_thread(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -348,7 +400,9 @@ class TestApplyDirect:
 
     def test_hybrid_no_token_threads(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         bot_client = MagicMock()
@@ -376,7 +430,9 @@ class TestApplyDirect:
 
     def test_hybrid_no_token_invalid_name_skips(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         bot_client = MagicMock()
@@ -402,7 +458,9 @@ class TestApplyDirect:
 
     def test_hybrid_probe_unsettled_does_not_thread(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         bot_client = MagicMock()
@@ -427,7 +485,9 @@ class TestApplyDirect:
 
     def test_hybrid_auth_error_threads(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -458,7 +518,9 @@ class TestApplyDirect:
 
     def test_hybrid_auth_error_invalid_name_skips(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -486,7 +548,9 @@ class TestApplyDirect:
 
     def test_successful_native_reaction_remembers_echo(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -510,12 +574,14 @@ class TestApplyDirect:
             "T_DEST",
             "U_MAPPED",
             "reaction_added",
-            "C_TARGET:100.000000:thumbsup",
+            "C_DST:100.000000:thumbsup",
         )
 
     def test_reaction_removed_never_threads(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         post_meta = SimpleNamespace(ts=100.0)
         user_client = MagicMock()
@@ -524,8 +590,9 @@ class TestApplyDirect:
         with (
             patch("helpers.reactions.get_user_token", return_value="xoxp-test"),
             patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
-            patch("helpers.reactions.WebClient", return_value=user_client) as web_client,
-            patch("helpers.reactions.decrypt_bot_token") as decrypt,
+            patch("helpers.reactions.WebClient", return_value=user_client),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.delete_notices_for_unreact") as delete_notices,
         ):
             result, notice = _apply(
                 action="remove",
@@ -537,12 +604,52 @@ class TestApplyDirect:
 
         assert result == "skipped"
         assert notice is None
-        decrypt.assert_not_called()
-        assert web_client.call_count == 1
+        user_client.reactions_remove.assert_called_once()
+        delete_notices.assert_called_once()
+        user_client.chat_postMessage.assert_not_called()
+
+    def test_hybrid_unreact_chat_deletes_notice_ts(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        notice = SimpleNamespace(
+            id=9,
+            post_id="rxn-a",
+            ts=200.000001,
+            source_workspace_id=1,
+            source_user_id="U_SRC",
+        )
+        bot_client = MagicMock()
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value=None),
+            patch("helpers.reactions._mapped_user_for_target", return_value="U_MAPPED"),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
+            patch("helpers.reaction_notices.equivalent_actor_pairs", return_value={(1, "U_SRC")}),
+            patch("helpers.reaction_notices.find_notices_for_unreact", return_value=[notice]),
+            patch("helpers.reaction_notices._child_notices_on_channel", return_value=[]),
+            patch("helpers.reaction_notices.DbManager.delete_records"),
+        ):
+            result, posted = _apply(
+                action="remove",
+                source_sync_channel=source,
+                target_sync_channel=target,
+                target_workspace=workspace,
+            )
+
+        assert result == "skipped"
+        assert posted is None
+        bot_client.chat_delete.assert_called()
+        bot_client.chat_postMessage.assert_not_called()
 
     def test_name_probe_runs_once_per_workspace_when_cached(self):
         source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
-        target = _sync_channel(constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_THREADED_AND_DIRECT, channel_id="C_DST"
+        )
         workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
         bot_client = MagicMock()
         bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}

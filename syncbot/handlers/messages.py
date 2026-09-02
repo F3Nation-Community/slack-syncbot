@@ -6,6 +6,7 @@ from logging import Logger
 
 from slack_sdk.web import WebClient
 
+import constants
 import federation
 import helpers
 from db import DbManager, schemas
@@ -708,6 +709,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                 posted_from=posted_from,
                 author_is_mapped=author_is_mapped,
                 name_probe_cache=name_probe_cache,
+                event_workspace_id=source_workspace_id,
             )
             if notice:
                 post_list.append(notice)
@@ -796,6 +798,51 @@ def _is_own_bot_message(body: dict, client: WebClient, context: dict) -> bool:
     return event_bot_id == own_bot_id
 
 
+def _try_handle_reaction_notice_delete(
+    body: dict,
+    client: WebClient,
+    context: dict,
+    ctx: EventContext,
+) -> bool:
+    """Tombstone a user-deleted Hybrid reaction notice on this channel only."""
+    if ctx.get("event_subtype") != "message_deleted":
+        return False
+
+    channel_id = ctx.get("channel_id")
+    ts = ctx.get("ts")
+    if not channel_id or not ts:
+        return False
+
+    team_id = helpers.safe_get(body, "team_id") or helpers.safe_get(body, "team", "id")
+    workspace = helpers.get_workspace_record(team_id, body, context, client) if team_id else None
+    if not workspace:
+        return False
+
+    sync_channels = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.workspace_id == workspace.id, schemas.SyncChannel.channel_id == channel_id],
+    )
+    if not sync_channels:
+        return False
+
+    from helpers.reaction_notices import find_post_meta_by_channel_ts, tombstone_reaction_notice_locally
+
+    notice = find_post_meta_by_channel_ts(sync_channels[0].id, ts)
+    if (
+        not notice
+        or getattr(notice, "kind", constants.POST_META_KIND_MESSAGE) != constants.POST_META_KIND_REACTION_NOTICE
+    ):
+        return False
+
+    bot_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
+    tombstone_reaction_notice_locally(
+        notice=notice,
+        sync_channel=sync_channels[0],
+        client=bot_client,
+    )
+    return True
+
+
 def respond_to_message_event(
     body: dict,
     client: WebClient,
@@ -808,6 +855,9 @@ def respond_to_message_event(
     event_subtype = ctx["event_subtype"]
 
     if event_type != "message":
+        return
+
+    if event_subtype == "message_deleted" and _try_handle_reaction_notice_delete(body, client, context, ctx):
         return
 
     # Skip messages from SyncBot itself to prevent infinite sync loops.

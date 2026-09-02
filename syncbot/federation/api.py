@@ -596,10 +596,11 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
     applied = 0
     synthetic_source = schemas.SyncChannel(reaction_direction=constants.REACTION_DIRECTION_SEND)
     name_probe_cache: dict[tuple[str, str], bool] = {}
+    notice_rows: list[schemas.PostMeta] = []
 
     for post_meta in post_records:
         try:
-            result, _notice = apply_reaction_to_target(
+            result, notice = apply_reaction_to_target(
                 action=action,
                 reaction=reaction,
                 source_user_id=source_user_id,
@@ -614,11 +615,18 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
                 author_is_mapped=bool(mapped_local),
                 mapped_user_id=mapped_local,
                 name_probe_cache=name_probe_cache,
+                federated_instance_id=fed_ws.instance_id,
+                event_workspace_id=workspace.id,
             )
+            if notice:
+                notice_rows.append(notice)
             if result in ("direct", "thread"):
                 applied += 1
         except Exception:
             _logger.warning("federation_react_failed", extra={"channel_id": channel_id, "ts": str(post_meta.ts)})
+
+    if notice_rows:
+        DbManager.create_records(notice_rows)
 
     return 200, {"ok": True, "applied": applied}
 
