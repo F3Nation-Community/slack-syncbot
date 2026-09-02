@@ -52,13 +52,13 @@ locals {
 
   existing_plain_env = merge(
     {
-      DATABASE_HOST    = local.resolved_database_host
-      DATABASE_USER    = local.db_user
-      DATABASE_SCHEMA  = local.db_schema
-      DATABASE_BACKEND = local.db_backend
+      DATABASE_HOST     = local.resolved_database_host
+      DATABASE_USER     = local.db_user
+      DATABASE_SCHEMA   = local.db_schema
+      DATABASE_BACKEND  = local.db_backend
       SLACK_USER_SCOPES = var.slack_user_scopes
-      LOG_LEVEL        = var.log_level
-      SLACK_BOT_TOKEN  = "123"
+      LOG_LEVEL         = var.log_level
+      SLACK_BOT_TOKEN   = "123"
     },
     var.syncbot_instance_id != "" ? { SYNCBOT_INSTANCE_ID = var.syncbot_instance_id } : {},
     trimspace(var.primary_workspace) != "" ? { PRIMARY_WORKSPACE = var.primary_workspace } : {},
