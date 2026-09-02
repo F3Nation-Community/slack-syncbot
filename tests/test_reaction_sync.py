@@ -80,11 +80,19 @@ class TestPairing:
 
 
 class TestDefaults:
-    def test_new_receive_defaults_to_direct_only(self):
+    def test_new_receive_defaults_to_hybrid(self):
+        from handlers.channel_sync import _reaction_style_block
+
         assert default_reaction_style_for_new_channel(constants.REACTION_DIRECTION_BOTH) == (
-            constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE
+            constants.REACTION_STYLE_THREADED_AND_DIRECT
         )
         assert default_reaction_style_for_new_channel(constants.REACTION_DIRECTION_SEND) is None
+        options = _reaction_style_block(actions.CONFIG_PUBLISH_REACTION_STYLE).element.options
+        assert [o.value for o in options] == [
+            constants.REACTION_STYLE_THREADED_AND_DIRECT,
+            constants.REACTION_STYLE_DIRECT_ONLY,
+        ]
+        assert options[0].name.startswith("Hybrid")
 
     def test_existing_null_style_is_hybrid_when_receiving(self):
         existing = _sync_channel(constants.REACTION_DIRECTION_BOTH, None)

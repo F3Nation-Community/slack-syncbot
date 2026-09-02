@@ -376,6 +376,8 @@ class TestPublishWritesRowsBeforeAddingTheBot:
             patch("handlers.channel_sync.helpers.get_user_token", return_value=None),
             patch("handlers.channel_sync.helpers.lookup_channel_meta", return_value=("C1", False)),
             patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[SimpleNamespace(name="Group")]),
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
             patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
             patch("handlers.channel_sync._refresh_group_member_homes"),
         ):

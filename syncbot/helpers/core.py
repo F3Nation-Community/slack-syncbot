@@ -12,6 +12,26 @@ from slack import actions
 _logger = logging.getLogger(__name__)
 
 
+_ERROR_DM_VALUE_MAX = 240
+
+
+def format_error_dm(summary: str, details: dict[str, Any] | None = None) -> str:
+    """Human summary plus a fenced details block the user can copy."""
+    if not details:
+        return summary
+    lines: list[str] = []
+    for key, value in details.items():
+        if value is None or value == "":
+            continue
+        text = str(value).replace("```", "`")
+        if len(text) > _ERROR_DM_VALUE_MAX:
+            text = text[: _ERROR_DM_VALUE_MAX - 1] + "…"
+        lines.append(f"{key}: {text}")
+    if not lines:
+        return summary
+    return f"{summary}\n```\n" + "\n".join(lines) + "\n```"
+
+
 def safe_get(data: Any, *keys: Any) -> Any:
     """Safely traverse nested dicts/lists. Returns None on missing keys."""
     if not data:

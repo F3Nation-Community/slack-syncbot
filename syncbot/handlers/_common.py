@@ -1,5 +1,6 @@
 """Shared handler utilities and types."""
 
+import contextlib
 import logging
 from typing import Any
 
@@ -112,16 +113,30 @@ def _ensure_membership_or_rollback(
     except helpers.ConversationAccessError as exc:
         message = str(exc)
         _logger.warning(log_event, extra={**(log_extra or {}), "error": message})
+        details: dict = {"event": log_event, "channel": channel_id}
+        cause = exc.__cause__
+        slack_code = ""
+        resp = getattr(cause, "response", None) if cause is not None else None
+        if resp is not None:
+            with contextlib.suppress(Exception):
+                slack_code = str(resp.get("error") or "")
+        if slack_code:
+            details["error"] = slack_code
     except Exception as exc:
         _logger.error(log_event, extra={**(log_extra or {}), "error": str(exc)})
         message = "SyncBot could not be added to that Channel. Please try again."
+        details = {"error": str(exc), "event": log_event, "channel": channel_id}
 
     try:
         rollback()
     except Exception as rollback_exc:
         _logger.error(f"{log_event}_rollback_failed", extra={"channel_id": channel_id, "error": str(rollback_exc)})
 
-    _dm_user(client, acting_user_id, f":warning: {message}")
+    _dm_user(
+        client,
+        acting_user_id,
+        helpers.format_error_dm(f":warning: {message}", details),
+    )
     return False
 
 

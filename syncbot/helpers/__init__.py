@@ -29,6 +29,7 @@ from helpers.conversations import (
 )
 from helpers.core import (
     format_admin_label,
+    format_error_dm,
     get_request_type,
     get_user_id_from_body,
     is_backup_visible_for_workspace,
@@ -112,8 +113,11 @@ from helpers.user_matching import (
     _refresh_user_directory,
     _upsert_single_user_to_directory,
     apply_mentioned_users,
+    auto_match_running_key,
     find_synced_channel_in_target,
+    format_last_auto_match_line,
     get_display_name_and_icon_for_synced_message,
+    get_last_auto_match,
     get_mapped_target_user_id,
     normalize_display_name,
     parse_mentioned_users,
@@ -121,6 +125,7 @@ from helpers.user_matching import (
     resolve_mention_for_workspace,
     run_auto_match_for_workspace,
     seed_user_mappings,
+    set_last_auto_match,
 )
 from helpers.workspace import (
     get_federated_workspace,
@@ -174,6 +179,7 @@ __all__ = [
     "download_slack_files",
     "encrypt_bot_token",
     "format_admin_label",
+    "format_error_dm",
     "get_admin_ids",
     "get_bot_info_from_event",
     "get_federated_workspace",
@@ -252,6 +258,10 @@ __all__ = [
     "safe_get",
     "save_dm_messages_to_group_member",
     "seed_user_mappings",
+    "auto_match_running_key",
+    "format_last_auto_match_line",
+    "get_last_auto_match",
+    "set_last_auto_match",
     "slack_retry",
     "update_modal",
     "upload_files_to_slack",

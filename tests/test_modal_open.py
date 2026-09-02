@@ -11,6 +11,7 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from slack_sdk.errors import SlackApiError  # noqa: E402
 
+from helpers.core import format_error_dm  # noqa: E402
 from slack import orm  # noqa: E402
 
 
@@ -32,8 +33,13 @@ class TestOpenOrPushView:
         )
 
         client.chat_postMessage.assert_called_once()
+        text = client.chat_postMessage.call_args.kwargs["text"]
         assert client.chat_postMessage.call_args.kwargs["channel"] == "U123"
-        assert "click the button again" in client.chat_postMessage.call_args.kwargs["text"]
+        assert "click the button again" in text
+        assert "```" in text
+        assert "error: expired_trigger_id" in text
+        assert "window: publish_mode_submit" in text
+        assert "open: open" in text
 
     def test_other_errors_do_not_dm(self):
         client = MagicMock()
@@ -62,3 +68,15 @@ class TestOpenOrPushView:
 
         client.views_open.assert_called_once()
         client.chat_postMessage.assert_not_called()
+
+
+class TestFormatErrorDm:
+    def test_summary_only_without_details(self):
+        assert format_error_dm("hello") == "hello"
+
+    def test_appends_fenced_details(self):
+        text = format_error_dm("hello", {"error": "boom", "event": "x"})
+        assert text.startswith("hello\n```\n")
+        assert "error: boom" in text
+        assert "event: x" in text
+        assert text.endswith("```")
