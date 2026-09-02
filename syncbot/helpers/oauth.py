@@ -11,11 +11,11 @@ import os
 from slack_bolt.oauth import OAuthFlow
 from slack_bolt.oauth.callback_options import CallbackOptions, FailureArgs, SuccessArgs
 from slack_bolt.oauth.oauth_settings import OAuthSettings
-from slack_sdk.oauth.installation_store.sqlalchemy import SQLAlchemyInstallationStore
 from slack_sdk.oauth.state_store.sqlalchemy import SQLAlchemyOAuthStateStore
 
 import constants
 from helpers._cache import _cache_get, _cache_set
+from helpers.encrypted_installation_store import EncryptedSQLAlchemyInstallationStore
 from slack_manifest_scopes import USER_SCOPES
 
 _logger = logging.getLogger(__name__)
@@ -44,7 +44,7 @@ def get_oauth_flow():
     from db import get_engine
 
     engine = get_engine()
-    installation_store = SQLAlchemyInstallationStore(
+    installation_store = EncryptedSQLAlchemyInstallationStore(
         client_id=client_id,
         engine=engine,
     )

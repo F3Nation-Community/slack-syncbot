@@ -19,6 +19,7 @@ _logger = logging.getLogger(__name__)
 
 _PBKDF2_ITERATIONS = 600_000
 _PBKDF2_SALT_PREFIX = b"syncbot-fernet-v1"
+_SLACK_TOKEN_PREFIXES = ("xoxb-", "xoxp-", "xoxe-", "xoxa-")
 
 
 @functools.lru_cache(maxsize=2)
@@ -45,34 +46,55 @@ def _resolve_encryption_key() -> str:
 
 def _encryption_enabled() -> bool:
     """Return *True* if data-at-rest encryption is active."""
-    key = _resolve_encryption_key()
-    return bool(key) and key != "123"
+    return constants._encryption_active()
 
 
-def encrypt_bot_token(token: str) -> str:
-    """Encrypt a bot token before storing it in the database."""
+def encryption_active_for_migration() -> bool:
+    """Whether Alembic should encrypt existing plaintext Slack tokens."""
+    return _encryption_enabled()
+
+
+def _looks_like_slack_token(value: str) -> bool:
+    return any(value.startswith(prefix) for prefix in _SLACK_TOKEN_PREFIXES)
+
+
+def _looks_like_fernet(value: str) -> bool:
+    return value.startswith("gAAAAA")
+
+
+def encrypt_bot_token(token: str | None) -> str | None:
+    """Encrypt a token before storing it in the database."""
+    if not token:
+        return token
     if not _encryption_enabled():
         return token
+    if _looks_like_fernet(token):
+        key = _resolve_encryption_key()
+        try:
+            _get_fernet(key).decrypt(token.encode())
+            return token
+        except InvalidToken:
+            pass
     key = _resolve_encryption_key()
     return _get_fernet(key).encrypt(token.encode()).decode()
 
 
-def decrypt_bot_token(encrypted: str) -> str:
-    """Decrypt a bot token read from the database.
+def decrypt_bot_token(encrypted: str | None) -> str | None:
+    """Decrypt a token read from the database.
 
-    Raises on failure when encryption is enabled.
+    Raises on failure when encryption is enabled and the value is not plaintext Slack.
     """
+    if not encrypted:
+        return encrypted
     if not _encryption_enabled():
+        return encrypted
+    if _looks_like_slack_token(encrypted):
         return encrypted
     key = _resolve_encryption_key()
     try:
         return _get_fernet(key).decrypt(encrypted.encode()).decode()
     except InvalidToken:
-        _logger.error(
-            "Bot token decryption failed — refusing to use the token. "
-            "If you recently enabled encryption, run "
-            "db/migrate_002_encrypt_tokens.py to encrypt existing tokens."
-        )
+        _logger.error("Token decryption failed — refusing to use the token.")
         raise ValueError(
-            "Bot token decryption failed. The token may be plaintext (not yet migrated) or tampered with."
+            "Token decryption failed. The token may be plaintext (not yet migrated) or tampered with."
         ) from None

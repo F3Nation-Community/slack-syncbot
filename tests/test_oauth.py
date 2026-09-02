@@ -32,7 +32,7 @@ class TestGetOAuthFlow:
     )
     @patch("db.get_engine")
     @patch("helpers.oauth.SQLAlchemyOAuthStateStore")
-    @patch("helpers.oauth.SQLAlchemyInstallationStore")
+    @patch("helpers.oauth.EncryptedSQLAlchemyInstallationStore")
     def test_local_dev_with_credentials_uses_sql_stores(
         self,
         mock_installation_store_cls,
@@ -62,7 +62,7 @@ class TestGetOAuthFlow:
     )
     @patch("db.get_engine")
     @patch("helpers.oauth.SQLAlchemyOAuthStateStore")
-    @patch("helpers.oauth.SQLAlchemyInstallationStore")
+    @patch("helpers.oauth.EncryptedSQLAlchemyInstallationStore")
     def test_production_uses_sql_stores_without_s3(
         self,
         mock_installation_store_cls,
@@ -95,7 +95,7 @@ class TestGetOAuthFlow:
     )
     @patch("db.get_engine")
     @patch("helpers.oauth.SQLAlchemyOAuthStateStore")
-    @patch("helpers.oauth.SQLAlchemyInstallationStore")
+    @patch("helpers.oauth.EncryptedSQLAlchemyInstallationStore")
     def test_slack_user_scopes_env_overrides_default(
         self,
         mock_installation_store_cls,
