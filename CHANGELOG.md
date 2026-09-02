@@ -12,14 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- User Mapping modal, Auto Map Now, and Hybrid default (#36)
-
-
-
-## [1.4.2] - 2026-09-02
-
-### Added
-
+- User Mapping modal with Auto Map Now
 - SyncBot posts in a Channel when it is published, even before anyone subscribes
 
 ### Changed
