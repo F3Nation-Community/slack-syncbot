@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.4.2] - 2026-09-02
+
+### Added
+
+- SyncBot posts in a Channel when it is published, even before anyone subscribes
+
+### Changed
+
+- User Mapping opens from saved mappings; Auto Map Now runs in the background of the modal
+- Failure DMs include a copyable details block
+- New Channel syncs default to Hybrid reactions, listed first on Publish, Subscribe, and Edit
+
+### Fixed
+
+- Users with the same email across Workspaces are mapped automatically
+- Saving Edit on a Channel sync no longer times out the Lambda while listing every member
+
+
 ## [1.4.1] - 2026-09-01
 
 ### Fixed

@@ -10,7 +10,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
    - **Authorize SyncBot** — at the top, when this person still needs to grant user permissions. See **Authorize SyncBot** below.
    - **SyncBot Configuration** — directly under that. **Refresh** is for everyone, so you can reload Home after revoking your authorization. **Settings** is for Slack admins on every installed workspace: extra managers and whether private Channels may be published here. Federation, retention, and the broadcast allow-list stay on the primary workspace (`PRIMARY_WORKSPACE` set and redeployed). **Backup/Restore** is also primary-only. If you do not see those instance options, ask the operator.
    - **Workspace Groups** — create or join groups of workspaces that can sync channels together (admins).
-   - **Per-group sections** — for each group you can **Publish Channel**, manage user mapping (a dedicated Home tab screen), and see or manage channel syncs inline. Other workspaces in the group see published channels as **Subscribe**.
+   - **Per-group sections** — for each group you can **Publish Channel**, open **User Mapping** (a modal), and see or manage channel syncs inline. Other workspaces in the group see published channels as **Subscribe**.
    - **Synced Channels** — each row shows the local channel and workspace list in brackets (for example _[Any: Your Workspace, Other Workspace]_), with pause/resume and stop controls, a synced-since date, and a tracked message count.
    - **External Connections** *(when federation is enabled)* — Generate or Enter a Connection Code, and **Data Migration** (export workspace data to another instance, or import a migration file).
 
@@ -84,7 +84,7 @@ Uninstalling SyncBot does not hand your ownership to anyone else. Your membershi
 
 An owner can **Disband Group** to remove a group entirely, along with its syncs and user mappings. Because this cannot be undone and affects other workspaces, SyncBot only offers it when your workspace is the sole owner *and* the sole publisher of every channel in the group. If another workspace owns the group or has published a channel into it, disbanding is declined with an explanation of who else is involved — ask them to unpublish or leave first, or just leave the group yourself instead.
 
-Disbanding always asks for confirmation before anything is removed, and tells you how many workspaces, syncs, and channels it will affect. Note that the user mappings scoped to the group go with it, and those took auto-matching and manual edits to build, so re-creating the group later means establishing those matches again.
+Disbanding always asks for confirmation before anything is removed, and tells you how many workspaces, syncs, and channels it will affect. Note that the user mappings scoped to the group go with it, and those took Auto Map Now and manual edits to build, so re-creating the group later means mapping people again.
 
 ## Sync Modes
 
@@ -92,10 +92,10 @@ When publishing a channel inside a group, use **Publish Channel**. The first ste
 
 ## Reactions
 
-Each synced channel chooses a **direction** (send and receive, send only, receive only, or no reactions) and a **type**. Type is used only when that workspace receives reactions; Edit keeps the saved type if you switch to send only or no reactions so it is still there when you turn receiving back on. Reactions only show in a workspace that chose to receive them. Types do not have to match: a send-only channel can still feed a receive-only channel.
+Each synced channel chooses a **direction** (send and receive, send only, receive only, or no reactions) and a **type**. New Publish and Subscribe default to **Hybrid**. Type is used only when that workspace receives reactions; Edit keeps the saved type if you switch to send only or no reactions so it is still there when you turn receiving back on. Reactions only show in a workspace that chose to receive them. Types do not have to match: a send-only channel can still feed a receive-only channel.
 
-- **Direct** — native emoji on the synced message, as the mapped person in that workspace. That person must have clicked **Authorize SyncBot** there. Custom emoji the other workspace does not have are skipped.
 - **Hybrid** — try a native reaction first; if that person has not authorized (or their permission there is no longer valid), SyncBot posts a short thread notice instead. Custom emoji the other workspace does not have are skipped, even if SyncBot would otherwise post a thread notice.
+- **Direct** — native emoji on the synced message, as the mapped person in that workspace. That person must have clicked **Authorize SyncBot** there. Custom emoji the other workspace does not have are skipped.
 
 Removing a reaction removes that person's native emoji on destination channels when they have authorized SyncBot there, and deletes their Hybrid thread notices (including notices that were reactions to those notices). Deleting a Hybrid notice in one workspace only removes it there — other workspaces and the original native reaction stay. Each person's notices are independent; human replies under a notice are not deleted. Reactions are never written back into the channel where they started.
 
@@ -112,11 +112,13 @@ If a workspace uninstalls SyncBot, group memberships and syncs are paused (not d
 
 ## User Mapping
 
-Users are automatically mapped across workspaces by email or display name. Admins can manually edit mappings via the User Mapping screen (scoped per group). On that screen, remote users are listed as "Display Name (Workspace Name)" and sorted by normalized name. In synced messages, a mapped author appears with their **local** display name and profile photo (no workspace suffix in the author line); an unmapped author uses the remote display name and photo, with the source workspace in parentheses. The same applies to messages delivered over **External Connections** (cross-instance federation). In message text, a mapped user is mentioned with a normal `@` tag in the receiving workspace; unmapped users appear as a code-style `[@Name (Workspace)]` label. Channel names that point at another synced channel in the same sync group are shown as native `#channel` links in each workspace.
+Admins open **User Mapping** from a group on the Home tab; it opens as a modal with the mappings already saved in SyncBot. Unmapped people appear first; use **Edit** and Slack’s native user picker to map someone by hand. **Auto Map Now** compares emails (and unique display names) in the member directory and writes new mappings — it does not crawl Slack’s full member list. While it runs, the button is replaced with **Mapping users...**; when it finishes, the list and a last-run line update in the same modal (for example, “Last run on September 2, 2026 with 20 new found”). **0 new found** means this run found nothing new in the current directory data, not that every person is mapped. **Refresh List** reloads the list from the database and brings **Auto Map Now** back if the modal stuck on Mapping users... after a timeout. Incomplete lists usually mean the directory is still filling in (for example after a join). In synced messages, a mapped author appears with their **local** display name and profile photo (no workspace suffix in the author line); an unmapped author uses the remote display name and photo, with the source workspace in parentheses. The same applies to messages delivered over **External Connections** (cross-instance federation). In message text, a mapped user is mentioned with a normal `@` tag in the receiving workspace; unmapped users appear as a code-style `[@Name (Workspace)]` label. Channel names that point at another synced channel in the same sync group are shown as native `#channel` links in each workspace.
+
+When you **Publish** a Channel, SyncBot posts a short notice in that Channel right away, even if nobody has subscribed yet.
 
 ## Refresh Behavior
 
-The Home tab and User Mapping screens have Refresh buttons. On Home, Refresh sits in **SyncBot Configuration** for everyone, not only admins. To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again."
+The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again." User Mapping’s **Refresh List** only reloads that modal from saved mappings.
 
 ## Media Sync
 

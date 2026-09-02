@@ -68,6 +68,8 @@ View submissions: ack-phase handlers in `VIEW_ACK_MAPPER` may return field error
 
 Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Authorize SyncBot is the example) or the click shows up as `no_handler`.
 
+**User Mapping** opens with `views.open` of the current DB list only — never seed/match before open, never Home `views.publish`. **Auto Map Now** uses the button’s `view_id` to `views.update` Mapping users..., then directory map, then the results and last-run line. **Home push** publishes only the acting user after invalidating `home_tab_hash` / `home_tab_blocks` for that team; do not `users.list` admins to fan out.
+
 **User-token echo:** Slack does not mark an `xoxp` write as a bot action. After a successful user-token side effect, `remember_user_action` in [`syncbot/helpers/user_action_echo.py`](../syncbot/helpers/user_action_echo.py); matching handlers call `take_user_action_echo` inside `run_claimed` before fan-out. Do not store echo rows in `processed_events`. Import the helper submodule directly (`from helpers.user_action_echo import …`), not via `helpers/__init__.py`.
 
 **Hybrid emoji probe:** `_dest_reaction_name_is_invalid` in [`syncbot/helpers/reactions.py`](../syncbot/helpers/reactions.py) runs only when Hybrid is about to post a thread notice (no dest user token, or that token hit an auth error). Skip the probe only when source and dest are the **same Slack workspace**. Same-instance cross-workspace and **federation inbound** still probe: dest custom emoji are per workspace, and origin having the name does not mean dest does. Direct-only and a successful native `reactions_add` must not probe. Do not use `emoji.list`; the dest bot `reactions_add` / `reactions_remove` probe is the current method.
