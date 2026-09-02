@@ -134,18 +134,24 @@ def _maybe_refresh_bot_token(workspace_record: schemas.Workspace, context: dict)
     if not new_token:
         return
 
+    try:
+        stored_plain = decrypt_bot_token(workspace_record.bot_token)
+    except ValueError:
+        stored_plain = None
+    if stored_plain == new_token:
+        return
+
     encrypted_new = encrypt_bot_token(new_token)
-    if encrypted_new != workspace_record.bot_token:
-        DbManager.update_records(
-            schemas.Workspace,
-            [schemas.Workspace.id == workspace_record.id],
-            {schemas.Workspace.bot_token: encrypted_new},
-        )
-        workspace_record.bot_token = encrypted_new
-        _logger.info(
-            "bot_token_refreshed",
-            extra={"workspace_id": workspace_record.id, "team_id": workspace_record.team_id},
-        )
+    DbManager.update_records(
+        schemas.Workspace,
+        [schemas.Workspace.id == workspace_record.id],
+        {schemas.Workspace.bot_token: encrypted_new},
+    )
+    workspace_record.bot_token = encrypted_new
+    _logger.info(
+        "bot_token_refreshed",
+        extra={"workspace_id": workspace_record.id, "team_id": workspace_record.team_id},
+    )
 
 
 def _maybe_refresh_workspace_name(workspace_record: schemas.Workspace, client: WebClient) -> None:

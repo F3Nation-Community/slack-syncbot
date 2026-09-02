@@ -71,16 +71,53 @@ def _reaction_style_block(
     )
 
 
+def _valid_reaction_style(value: str | None) -> str | None:
+    raw = (value or "").strip()
+    if raw in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
+        return raw
+    return None
+
+
 def _parse_reaction_fields(body: dict, metadata: dict, *, style_action: str) -> tuple[str, str | None]:
     from helpers.reactions import default_reaction_style_for_new_channel, direction_receives
 
     direction = metadata.get("reaction_direction") or constants.REACTION_DIRECTION_BOTH
     if not direction_receives(direction):
         return direction, None
-    style = _get_selected_option_value(body, style_action)
-    if style not in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
+    style = _valid_reaction_style(_get_selected_option_value(body, style_action))
+    if style is None:
         style = default_reaction_style_for_new_channel(direction)
     return direction, style
+
+
+def _reaction_style_for_edit(
+    sync_channel: schemas.SyncChannel,
+    body: dict | None = None,
+    *,
+    direction: str | None = None,
+) -> str | None:
+    """Keep a saved type even when direction is send-only or off.
+
+    New publish/subscribe still stores null when the channel does not receive.
+    Edit always shows the type radios, and turning reactions off should not
+    reset Hybrid (or Direct) to the new-channel default.
+    """
+    from helpers.reactions import default_reaction_style_for_new_channel, direction_receives, reaction_style
+
+    submitted = None
+    if body is not None:
+        submitted = _valid_reaction_style(_get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_STYLE))
+    if submitted:
+        return submitted
+    stored = _valid_reaction_style(getattr(sync_channel, "reaction_style", None))
+    if stored:
+        return stored
+    resolved = _valid_reaction_style(reaction_style(sync_channel))
+    if resolved:
+        return resolved
+    if direction and direction_receives(direction):
+        return default_reaction_style_for_new_channel(direction)
+    return None
 
 
 def _channel_picker_block(label: str, action_id: str, *, team_id: str | None) -> orm.InputBlock:
@@ -1381,7 +1418,7 @@ def handle_edit_sync(
         _logger.warning("edit_sync: available-row edit denied")
         return
 
-    from helpers.reactions import reaction_direction, reaction_style
+    from helpers.reactions import reaction_direction
 
     blocks: list[orm.BaseBlock] = []
     metadata: dict = {"sync_id": sync_record.id}
@@ -1393,11 +1430,12 @@ def handle_edit_sync(
 
     if sync_channel:
         direction = reaction_direction(sync_channel)
+        style_initial = _reaction_style_for_edit(sync_channel) or constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE
         blocks.append(_reaction_direction_block(actions.CONFIG_PUBLISH_REACTION_DIRECTION, initial=direction))
         blocks.append(
             _reaction_style_block(
                 actions.CONFIG_PUBLISH_REACTION_STYLE,
-                initial=reaction_style(sync_channel) or constants.DEFAULT_REACTION_STYLE_NEW_RECEIVE,
+                initial=style_initial,
             )
         )
         blocks.append(block_context("Reaction type is used only when this Workspace receives reactions."))
@@ -1542,17 +1580,9 @@ def handle_edit_sync_submit(
                 _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_DIRECTION)
                 or constants.REACTION_DIRECTION_BOTH
             )
-            from helpers.reactions import (
-                default_reaction_style_for_new_channel,
-                direction_receives,
-                update_sync_channel_reactions,
-            )
+            from helpers.reactions import update_sync_channel_reactions
 
-            style = None
-            if direction_receives(direction):
-                style = _get_selected_option_value(body, actions.CONFIG_PUBLISH_REACTION_STYLE)
-                if style not in (constants.REACTION_STYLE_DIRECT_ONLY, constants.REACTION_STYLE_THREADED_AND_DIRECT):
-                    style = default_reaction_style_for_new_channel(direction)
+            style = _reaction_style_for_edit(sync_channel, body, direction=direction)
             update_sync_channel_reactions(int(sync_channel_id), direction=direction, style=style)
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)

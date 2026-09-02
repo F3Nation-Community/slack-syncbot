@@ -62,7 +62,7 @@ class TestSafeGet:
 
 
 class TestEncryption:
-    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key"})
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key-16chars"})
     def test_encrypt_decrypt_roundtrip(self):
         # Use a non-secret placeholder; encryption accepts any string
         token = "xoxb-0-0"
@@ -71,7 +71,16 @@ class TestEncryption:
         decrypted = helpers.decrypt_bot_token(encrypted)
         assert decrypted == token
 
-    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key"})
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key-16chars"})
+    def test_encrypt_not_stable_ciphertext(self):
+        token = "xoxb-0-0"
+        a = helpers.encrypt_bot_token(token)
+        b = helpers.encrypt_bot_token(token)
+        assert a != b
+        assert helpers.decrypt_bot_token(a) == token
+        assert helpers.decrypt_bot_token(b) == token
+
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key-16chars"})
     def test_decrypt_invalid_token_raises(self):
         with pytest.raises(ValueError, match="decryption failed"):
             helpers.decrypt_bot_token("not-a-valid-encrypted-token")
@@ -90,13 +99,13 @@ class TestEncryption:
         assert helpers.encrypt_bot_token(token) == token
         assert helpers.decrypt_bot_token(token) == token
 
-    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "key-A"})
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "key-A-16-characters"})
     def test_wrong_key_raises(self):
         token = "xoxb-0-0"
         encrypted = helpers.encrypt_bot_token(token)
 
         with (
-            patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "key-B"}),
+            patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "key-B-16-characters"}),
             pytest.raises(ValueError, match="decryption failed"),
         ):
             helpers.decrypt_bot_token(encrypted)

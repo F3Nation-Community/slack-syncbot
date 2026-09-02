@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [1.4.1] - 2026-09-01
 
-## [1.4.0] - Unreleased
+### Fixed
+
+- Hybrid reaction notices delete on unreact, including child notices under them
+- Deleting a Hybrid notice in one destination stays local to that channel
+- Bot token refresh no longer rewrites the database on every Home publish
+- User OAuth tokens encrypt at rest; they were stored in plaintext
+- Leftover `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, and `SYNCBOT_PUBLIC_URL` removed from deploy; enable federation in Settings if it was never saved there
+- Edit Channel sync keeps the saved reaction type when direction is send only or off
+
+
+## [1.4.0] - 2026-09-01
 
 ### Added
 

@@ -268,7 +268,7 @@ def refresh_home_tab_for_workspace(workspace: Workspace, logger: Logger, context
     synthetic_body = {"team": {"id": workspace.team_id}}
     for uid in user_ids:
         try:
-            build_home_tab(synthetic_body, ws_client, logger, ctx, user_id=uid)
+            build_home_tab(synthetic_body, ws_client, logger, ctx, user_id=uid, workspace=workspace)
         except Exception as e:
             _logger.warning(
                 "refresh_home_tab_for_workspace: failed for user %s in workspace %s: %s",
@@ -286,6 +286,7 @@ def build_home_tab(
     *,
     user_id: str | None = None,
     return_blocks: bool = False,
+    workspace: Workspace | None = None,
 ) -> list[dict] | None:
     """Build and publish the App Home tab. If return_blocks is True, return block dicts and do not publish."""
     team_id = _get_team_id(body)
@@ -294,7 +295,10 @@ def build_home_tab(
         _logger.warning("build_home_tab: missing team_id or user_id")
         return None
 
-    workspace_record: Workspace = helpers.get_workspace_record(team_id, body, context, client)
+    if workspace is not None:
+        workspace_record = workspace
+    else:
+        workspace_record: Workspace = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return None
 

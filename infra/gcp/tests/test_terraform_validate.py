@@ -57,7 +57,7 @@ def test_gcp_module_has_no_cloud_sql() -> None:
     assert "google_sql_" not in main_tf
     assert "sqladmin" not in main_tf
     assert "random_password" not in main_tf
-    assert 'DATABASE_URL               = "sqlite:////data/syncbot.db"' in main_tf
+    assert 'DATABASE_URL          = "sqlite:////data/syncbot.db"' in main_tf
 
 
 def test_wif_trusts_repository_claim_not_subject_claim() -> None:

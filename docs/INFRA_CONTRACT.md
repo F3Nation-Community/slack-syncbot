@@ -58,10 +58,7 @@ The application reads configuration from environment variables. Providers must i
 | `SlackOauthBotScopes` / `slack_bot_scopes` | `SLACK_BOT_SCOPES` | Defaults match `BOT_SCOPES` |
 | `SlackOauthUserScopes` / `slack_user_scopes` | `SLACK_USER_SCOPES` | Defaults match `USER_SCOPES` |
 | `LogLevel` / `log_level` | `LOG_LEVEL` | |
-| `RequireAdmin` / `require_admin` | `REQUIRE_ADMIN` | **Leftover.** Slack admins and extra managers in Settings decide who can configure. The SAM/Terraform input can stay for stack compatibility; the app ignores it and logs a warning if it is set. |
-| `SyncbotFederationEnabled` / `syncbot_federation_enabled` | `SYNCBOT_FEDERATION_ENABLED` | **Leftover.** Federation is enabled in Settings on the primary workspace. If still set, the app logs a warning; on first read with no DB row, `true` is seeded once. |
 | `SyncbotInstanceId` / `syncbot_instance_id` | `SYNCBOT_INSTANCE_ID` | |
-| `SyncbotPublicUrl` / `syncbot_public_url_override` | `SYNCBOT_PUBLIC_URL` | **Leftover.** The app ignores this and logs a warning if it is set. Authorize SyncBot and federation use the Host of incoming Slack requests. The SAM/Terraform input can stay empty for stack compatibility. |
 | `PrimaryWorkspace` / `primary_workspace` | `PRIMARY_WORKSPACE` | Hidden Backup/Restore until set **and redeployed**. AWS `--setup-github` copies it when it is set in the env file. |
 | `EnableDbReset` / `enable_db_reset` | `ENABLE_DB_RESET` | Boolean; also gated by `PRIMARY_WORKSPACE` |
 | `DatabaseTlsEnabled` / `DatabaseSslCaPath` (and TF equivalents) | `DATABASE_TLS_*` | Omit when empty so app defaults apply |
@@ -76,15 +73,14 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | Variable | Description |
 |----------|-------------|
 | `SLACK_BOT_TOKEN` | Set by OAuth flow; placeholder until first install. |
-| `REQUIRE_ADMIN` | **Leftover, ignored.** Slack admins and owners open Settings; extra managers configure groups and syncs. If this env is still set, the app logs a warning. `false` no longer opens configuration to every member. |
 | `PRIMARY_WORKSPACE` | Slack Team ID of the primary workspace. Required for backup/restore to be visible. DB reset (if enabled) is also scoped to this workspace. |
 | `ENABLE_DB_RESET` | When `true` / `1` / `yes` and `PRIMARY_WORKSPACE` matches the current workspace, shows the Reset Database button. Not prompted during deploy; set it in the env file (AWS `--setup-github` copies it when present), or in SAM / Terraform. |
 | `LOCAL_DEVELOPMENT` | `true` only for local dev; disables token verification and enables dev shortcuts. |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). |
 | `PORT` | HTTP listen port for container entrypoint (`python app.py` / Cloud Run). Cloud Run injects this (typically `8080`); default `3000` when unset. |
-| `SYNCBOT_FEDERATION_ENABLED` | **Leftover, ignored** after a one-time upgrade seed. Enable federation in **Settings** on the primary workspace (default off on a new install). |
 | `SYNCBOT_INSTANCE_ID` | UUID for this instance (optional; can be auto-generated, should be pinned for federation). |
-| `SYNCBOT_PUBLIC_URL` | **Leftover, ignored.** If it is still set in an old deploy, SyncBot logs a warning and uses the Host of incoming Slack requests instead (Authorize `/slack/install` and federation webhooks). |
+
+**Leftover env (not deploy inputs):** `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, and `SYNCBOT_PUBLIC_URL` are ignored if still set on an old process; the app logs a warning. Federation and admin policy belong in **Settings**, not env.
 
 ### Settings modal
 

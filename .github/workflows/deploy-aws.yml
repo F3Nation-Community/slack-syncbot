@@ -113,10 +113,7 @@ jobs:
           DATABASE_TLS_ENABLED: ${{ vars.DATABASE_TLS_ENABLED }}
           DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
-          REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
-          SYNCBOT_FEDERATION_ENABLED: ${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }}
           SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
-          SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
           PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
           ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
           AWS_ENABLE_XRAY: ${{ vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false' }}
@@ -204,10 +201,7 @@ jobs:
           DATABASE_TLS_ENABLED: ${{ vars.DATABASE_TLS_ENABLED }}
           DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
-          REQUIRE_ADMIN: ${{ vars.REQUIRE_ADMIN || 'true' }}
-          SYNCBOT_FEDERATION_ENABLED: ${{ vars.SYNCBOT_FEDERATION_ENABLED || 'false' }}
           SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
-          SYNCBOT_PUBLIC_URL: ${{ vars.SYNCBOT_PUBLIC_URL }}
           PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
           ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
           AWS_ENABLE_XRAY: ${{ vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false' }}

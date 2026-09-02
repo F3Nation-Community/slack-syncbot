@@ -225,33 +225,10 @@ variable "database_port" {
   description = "DATABASE_PORT. Empty uses the engine default (3306 MySQL, 5432 PostgreSQL). Set for a non-standard port (e.g. TiDB Cloud 4000). Unused for sqlite."
 }
 
-variable "require_admin" {
-  type        = string
-  default     = "true"
-  description = "Leftover stack compat — REQUIRE_ADMIN (app ignores; Slack admins and extra managers are chosen in Settings)."
-
-  validation {
-    condition     = contains(["true", "false"], var.require_admin)
-    error_message = "require_admin must be true or false."
-  }
-}
-
-variable "syncbot_federation_enabled" {
-  type        = bool
-  default     = false
-  description = "Leftover stack compat — SYNCBOT_FEDERATION_ENABLED (app ignores; enable in Settings)."
-}
-
 variable "syncbot_instance_id" {
   type        = string
   default     = ""
   description = "SYNCBOT_INSTANCE_ID; leave empty for app auto-generation."
-}
-
-variable "syncbot_public_url_override" {
-  type        = string
-  default     = ""
-  description = "Leftover SYNCBOT_PUBLIC_URL; the app ignores it. Leave empty."
 }
 
 variable "primary_workspace" {

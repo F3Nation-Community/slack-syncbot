@@ -90,6 +90,10 @@ DEFAULT_REACTION_DIRECTION = REACTION_DIRECTION_BOTH
 DEFAULT_REACTION_STYLE_EXISTING = REACTION_STYLE_THREADED_AND_DIRECT
 DEFAULT_REACTION_STYLE_NEW_RECEIVE = REACTION_STYLE_DIRECT_ONLY
 
+POST_META_KIND_MESSAGE = "message"
+POST_META_KIND_REACTION_NOTICE = "reaction_notice"
+NOTICE_TREE_MAX_DEPTH = 10
+
 # ---------------------------------------------------------------------------
 # Derived runtime flags / computed values
 # ---------------------------------------------------------------------------

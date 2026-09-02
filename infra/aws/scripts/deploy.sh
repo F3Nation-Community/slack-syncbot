@@ -194,10 +194,7 @@ push_github_aws_ci_config() {
   _gh_push_from_env_file DATABASE_TLS_ENABLED env DATABASE_TLS_ENABLED
   _gh_push_from_env_file DATABASE_SSL_CA_PATH env DATABASE_SSL_CA_PATH
   _gh_push_from_env_file LOG_LEVEL env LOG_LEVEL
-  _gh_push_from_env_file REQUIRE_ADMIN env REQUIRE_ADMIN
-  _gh_push_from_env_file SYNCBOT_FEDERATION_ENABLED env SYNCBOT_FEDERATION_ENABLED
   _gh_push_from_env_file SYNCBOT_INSTANCE_ID env SYNCBOT_INSTANCE_ID
-  _gh_push_from_env_file SYNCBOT_PUBLIC_URL env SYNCBOT_PUBLIC_URL
   _gh_push_from_env_file PRIMARY_WORKSPACE env PRIMARY_WORKSPACE
   _gh_push_from_env_file ENABLE_DB_RESET env ENABLE_DB_RESET
   _gh_push_from_env_file AWS_ENABLE_XRAY env AWS_ENABLE_XRAY ENABLE_XRAY
@@ -807,10 +804,7 @@ write_deploy_receipt() {
 - DATABASE_USER=${DATABASE_USER:-}
 - DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
 - LOG_LEVEL=${LOG_LEVEL:-INFO}
-- REQUIRE_ADMIN=${REQUIRE_ADMIN:-true}
-- SYNCBOT_FEDERATION_ENABLED=${SYNCBOT_FEDERATION_ENABLED:-false}
 - SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
-- SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
 - PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
 - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
 - AWS_ENABLE_XRAY=${AWS_ENABLE_XRAY:-false}
@@ -1138,10 +1132,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "DatabasePassword=${DATABASE_PASSWORD:-}"
     "DatabaseUser=${DATABASE_USER:-}"
     "LogLevel=${LOG_LEVEL:-INFO}"
-    "RequireAdmin=${REQUIRE_ADMIN:-true}"
-    "SyncbotFederationEnabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
     "SyncbotInstanceId=${SYNCBOT_INSTANCE_ID:-}"
-    "SyncbotPublicUrl=${SYNCBOT_PUBLIC_URL:-}"
     "PrimaryWorkspace=${PRIMARY_WORKSPACE:-}"
     "EnableDbReset=${ENABLE_DB_RESET:-}"
     "DatabaseTlsEnabled=${DATABASE_TLS_ENABLED:-}"
@@ -1265,10 +1256,7 @@ PREV_DATABASE_SCHEMA=""
 PREV_DATABASE_MODE=""
 PREV_ENABLE_KEEP_WARM=""
 PREV_LOG_LEVEL=""
-PREV_REQUIRE_ADMIN=""
-PREV_FEDERATION=""
 PREV_INSTANCE_ID=""
-PREV_PUBLIC_URL=""
 PREV_PRIMARY_WORKSPACE=""
 PREV_ENABLE_DB_RESET=""
 PREV_DB_TLS=""
@@ -1296,10 +1284,7 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   PREV_ENABLE_KEEP_WARM="$(stack_param_value "$EXISTING_STACK_PARAMS" "EnableKeepWarm")"
   PREV_DATABASE_SCHEMA="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseSchema")"
   PREV_LOG_LEVEL="$(stack_param_value "$EXISTING_STACK_PARAMS" "LogLevel")"
-  PREV_REQUIRE_ADMIN="$(stack_param_value "$EXISTING_STACK_PARAMS" "RequireAdmin")"
-  PREV_FEDERATION="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotFederationEnabled")"
   PREV_INSTANCE_ID="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotInstanceId")"
-  PREV_PUBLIC_URL="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotPublicUrl")"
   PREV_PRIMARY_WORKSPACE="$(stack_param_value "$EXISTING_STACK_PARAMS" "PrimaryWorkspace")"
   PREV_ENABLE_DB_RESET="$(stack_param_value "$EXISTING_STACK_PARAMS" "EnableDbReset")"
   PREV_DB_TLS="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseTlsEnabled")"
@@ -1478,10 +1463,7 @@ if [[ "$IS_STACK_UPDATE" == "true" && -n "$PREV_LOG_LEVEL" ]]; then
   LOG_LEVEL_DEFAULT="$PREV_LOG_LEVEL"
 fi
 
-REQUIRE_ADMIN="${PREV_REQUIRE_ADMIN:-true}"
-SYNCBOT_FEDERATION_ENABLED="${PREV_FEDERATION:-false}"
 SYNCBOT_INSTANCE_ID="${PREV_INSTANCE_ID:-}"
-SYNCBOT_PUBLIC_URL="${PREV_PUBLIC_URL:-}"
 PRIMARY_WORKSPACE="${PREV_PRIMARY_WORKSPACE:-}"
 ENABLE_DB_RESET="${PREV_ENABLE_DB_RESET:-}"
 DATABASE_TLS_ENABLED="${PREV_DB_TLS:-}"
@@ -1493,13 +1475,8 @@ LOG_LEVEL="$(prompt_log_level "$LOG_LEVEL_DEFAULT")"
 
 echo
 echo "=== App Settings ==="
-REQUIRE_ADMIN="$(prompt_require_admin "$REQUIRE_ADMIN")"
 PRIMARY_WORKSPACE="$(prompt_primary_workspace "$PRIMARY_WORKSPACE")"
-SYNCBOT_FEDERATION_ENABLED="$(prompt_federation_enabled "$SYNCBOT_FEDERATION_ENABLED")"
-if [[ "$SYNCBOT_FEDERATION_ENABLED" == "true" ]]; then
-  SYNCBOT_INSTANCE_ID="$(prompt_instance_id "$SYNCBOT_INSTANCE_ID")"
-  SYNCBOT_PUBLIC_URL="$(prompt_public_url "$SYNCBOT_PUBLIC_URL")"
-fi
+SYNCBOT_INSTANCE_ID="$(prompt_instance_id "$SYNCBOT_INSTANCE_ID")"
 
 echo
 echo "=== Deploy Summary ==="
@@ -1507,7 +1484,6 @@ echo "Region:           $REGION"
 echo "Stack:            $STACK_NAME"
 echo "Stage:            $STAGE"
 echo "Log level:        $LOG_LEVEL"
-echo "Require admin:    $REQUIRE_ADMIN"
 echo "Keep-warm:        $ENABLE_KEEP_WARM"
 if [[ -n "$PRIMARY_WORKSPACE" ]]; then
   echo "Primary workspace: $PRIMARY_WORKSPACE"
@@ -1519,11 +1495,7 @@ if [[ "$ENABLE_DB_RESET" == "true" ]]; then
 else
   echo "DB reset:          (disabled)"
 fi
-if [[ "$SYNCBOT_FEDERATION_ENABLED" == "true" ]]; then
-  echo "Federation:       enabled"
-  [[ -n "$SYNCBOT_INSTANCE_ID" ]] && echo "Instance ID:      $SYNCBOT_INSTANCE_ID"
-  [[ -n "$SYNCBOT_PUBLIC_URL" ]] && echo "Public URL:       $SYNCBOT_PUBLIC_URL"
-fi
+[[ -n "$SYNCBOT_INSTANCE_ID" ]] && echo "Instance ID:      $SYNCBOT_INSTANCE_ID"
 echo "Deploy bucket:    $S3_BUCKET"
 if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
   echo "DB backend:       $DATABASE_BACKEND"
@@ -1559,12 +1531,9 @@ PARAMS=(
   "DataEncryptionKey=$DATA_ENCRYPTION_KEY"
   "DatabasePassword=${DATABASE_PASSWORD:-}"
   "LogLevel=$LOG_LEVEL"
-  "RequireAdmin=$REQUIRE_ADMIN"
-  "SyncbotFederationEnabled=$SYNCBOT_FEDERATION_ENABLED"
 )
 [[ -n "${DATABASE_USER:-}" ]] && PARAMS+=("DatabaseUser=$DATABASE_USER")
 [[ -n "$SYNCBOT_INSTANCE_ID" ]] && PARAMS+=("SyncbotInstanceId=$SYNCBOT_INSTANCE_ID")
-[[ -n "$SYNCBOT_PUBLIC_URL" ]] && PARAMS+=("SyncbotPublicUrl=$SYNCBOT_PUBLIC_URL")
 [[ -n "$PRIMARY_WORKSPACE" ]] && PARAMS+=("PrimaryWorkspace=$PRIMARY_WORKSPACE")
 [[ -n "$ENABLE_DB_RESET" ]] && PARAMS+=("EnableDbReset=$ENABLE_DB_RESET")
 [[ -n "$DATABASE_TLS_ENABLED" ]] && PARAMS+=("DatabaseTlsEnabled=$DATABASE_TLS_ENABLED")

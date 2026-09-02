@@ -61,7 +61,7 @@ class Workspace(BaseClass, GetDBClass):
     id = Column(Integer, primary_key=True)
     team_id = Column(String(100), unique=True)
     workspace_name = Column(String(100))
-    bot_token = Column(String(256))
+    bot_token = Column(Text)
     deleted_at = Column(DateTime, nullable=True, default=None)
 
     def get_id():
@@ -159,6 +159,11 @@ class PostMeta(BaseClass, GetDBClass):
     post_id = Column(String(100))
     sync_channel_id = Column(Integer, ForeignKey("sync_channels.id"))
     ts = Column(DECIMAL(16, 6))
+    kind = Column(String(32), nullable=False, default="message")
+    parent_post_id = Column(String(100), nullable=True)
+    reaction = Column(String(100), nullable=True)
+    source_user_id = Column(String(100), nullable=True)
+    source_workspace_id = Column(Integer, nullable=True)
 
     def get_id():
         """Slack ``post_id``, not the integer primary key."""

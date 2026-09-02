@@ -92,12 +92,12 @@ When publishing a channel inside a group, use **Publish Channel**. The first ste
 
 ## Reactions
 
-Each synced channel chooses a **direction** (send and receive, send only, receive only, or no reactions) and, when it receives, a **type**. Reactions only show in a workspace that chose to receive them. Types do not have to match: a send-only channel can still feed a receive-only channel.
+Each synced channel chooses a **direction** (send and receive, send only, receive only, or no reactions) and a **type**. Type is used only when that workspace receives reactions; Edit keeps the saved type if you switch to send only or no reactions so it is still there when you turn receiving back on. Reactions only show in a workspace that chose to receive them. Types do not have to match: a send-only channel can still feed a receive-only channel.
 
 - **Direct** — native emoji on the synced message, as the mapped person in that workspace. That person must have clicked **Authorize SyncBot** there. Custom emoji the other workspace does not have are skipped.
 - **Hybrid** — try a native reaction first; if that person has not authorized (or their permission there is no longer valid), SyncBot posts a short thread notice instead. Custom emoji the other workspace does not have are skipped, even if SyncBot would otherwise post a thread notice.
 
-Removing a reaction only removes a native one. Thread notices stay. Reactions are never written back into the channel where they started.
+Removing a reaction removes that person's native emoji on destination channels when they have authorized SyncBot there, and deletes their Hybrid thread notices (including notices that were reactions to those notices). Deleting a Hybrid notice in one workspace only removes it there — other workspaces and the original native reaction stay. Each person's notices are independent; human replies under a notice are not deleted. Reactions are never written back into the channel where they started.
 
 ## Pause / Resume / Stop
 

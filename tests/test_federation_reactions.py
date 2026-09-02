@@ -107,6 +107,7 @@ class TestFederationReactionFallback:
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
             patch("helpers.reactions.apply_reaction_to_target", return_value=apply_result) as apply_mock,
+            patch.object(federation_api.DbManager, "create_records"),
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
         return status, resp, apply_mock
@@ -255,6 +256,7 @@ class TestFederationInboundTokenLookup:
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "add",
+            "user_id": "U_REMOTE",
             "user_name": "Remote Alice",
         }
         fed_ws = SimpleNamespace(instance_id="remote-instance")
@@ -265,7 +267,7 @@ class TestFederationInboundTokenLookup:
             reaction_style="threaded_and_direct",
         )
         workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
-        post_meta = SimpleNamespace(ts=123.456)
+        post_meta = SimpleNamespace(ts=123.456, post_id="post-1")
         bot_client = MagicMock()
         bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
         bot_client.chat_postMessage.return_value = {"ts": "200.000001"}
@@ -273,9 +275,11 @@ class TestFederationInboundTokenLookup:
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=None),
             patch("helpers.reactions.get_user_token", return_value=None),
             patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
             patch("helpers.reactions.WebClient", return_value=bot_client),
+            patch.object(federation_api.DbManager, "create_records"),
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
 
@@ -284,3 +288,64 @@ class TestFederationInboundTokenLookup:
         bot_client.reactions_add.assert_called_once()
         bot_client.reactions_remove.assert_called_once()
         bot_client.chat_postMessage.assert_called_once()
+        assert all("xoxp" not in str(v) for v in body.values())
+
+    def test_hybrid_inbound_unreact_deletes_local_notice(self):
+        body = {
+            "post_id": "post-1",
+            "channel_id": "C123",
+            "reaction": "thumbsup",
+            "action": "remove",
+            "user_id": "U_REMOTE",
+            "user_name": "Remote Alice",
+        }
+        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        sync_channel = SimpleNamespace(
+            id=101,
+            channel_id="C123",
+            reaction_direction="both",
+            reaction_style="threaded_and_direct",
+        )
+        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        post_meta = SimpleNamespace(ts=123.456, post_id="post-1")
+        notice = SimpleNamespace(
+            id=9,
+            post_id="rxn-fed",
+            ts=200.0,
+            source_workspace_id=None,
+            source_user_id="U_REMOTE",
+            kind="reaction_notice",
+            parent_post_id="post-1",
+            reaction="thumbsup",
+        )
+        bot_client = MagicMock()
+        post_meta_lookups = {"n": 0}
+
+        def _find_records(model, filters):
+            name = getattr(model, "__name__", str(model))
+            if name == "PostMeta":
+                post_meta_lookups["n"] += 1
+                if post_meta_lookups["n"] == 1:
+                    return [notice]
+                return []
+            return []
+
+        with (
+            patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
+            patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=None),
+            patch("helpers.reactions.get_user_token", return_value=None),
+            patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reactions.WebClient", return_value=bot_client),
+            patch("helpers.reaction_notices.equivalent_actor_pairs", return_value={(55, "U_REMOTE")}),
+            patch("helpers.reaction_notices.DbManager.find_records", side_effect=_find_records),
+            patch("helpers.reaction_notices.DbManager.delete_records") as delete_records,
+        ):
+            status, resp = federation_api.handle_message_react(body, fed_ws)
+
+        assert status == 200
+        bot_client.chat_delete.assert_called()
+        delete_records.assert_called()
+        bot_client.chat_postMessage.assert_not_called()
+        assert "user_token" not in body
+        assert all(not str(v).startswith("xoxp") for v in body.values() if v is not None)

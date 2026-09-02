@@ -36,39 +36,31 @@ locals {
   ) : ""
   db_backend = local.resolved_database_backend
 
-  syncbot_public_url_effective = trimspace(var.syncbot_public_url_override) != "" ? trimspace(var.syncbot_public_url_override) : ""
-
   sqlite_plain_env = merge(
     {
-      DATABASE_BACKEND           = "sqlite"
-      DATABASE_URL               = "sqlite:////data/syncbot.db"
-      LITESTREAM_GCS_BUCKET      = try(google_storage_bucket.litestream[0].name, "")
-      SLACK_USER_SCOPES          = var.slack_user_scopes
-      LOG_LEVEL                  = var.log_level
-      REQUIRE_ADMIN              = var.require_admin
-      SLACK_BOT_TOKEN            = "123"
-      SYNCBOT_FEDERATION_ENABLED = var.syncbot_federation_enabled ? "true" : "false"
+      DATABASE_BACKEND      = "sqlite"
+      DATABASE_URL          = "sqlite:////data/syncbot.db"
+      LITESTREAM_GCS_BUCKET = try(google_storage_bucket.litestream[0].name, "")
+      SLACK_USER_SCOPES     = var.slack_user_scopes
+      LOG_LEVEL             = var.log_level
+      SLACK_BOT_TOKEN       = "123"
     },
     var.syncbot_instance_id != "" ? { SYNCBOT_INSTANCE_ID = var.syncbot_instance_id } : {},
-    local.syncbot_public_url_effective != "" ? { SYNCBOT_PUBLIC_URL = trimsuffix(local.syncbot_public_url_effective, "/") } : {},
     trimspace(var.primary_workspace) != "" ? { PRIMARY_WORKSPACE = var.primary_workspace } : {},
     trimspace(var.enable_db_reset) != "" ? { ENABLE_DB_RESET = var.enable_db_reset } : {},
   )
 
   existing_plain_env = merge(
     {
-      DATABASE_HOST              = local.resolved_database_host
-      DATABASE_USER              = local.db_user
-      DATABASE_SCHEMA            = local.db_schema
-      DATABASE_BACKEND           = local.db_backend
-      SLACK_USER_SCOPES          = var.slack_user_scopes
-      LOG_LEVEL                  = var.log_level
-      REQUIRE_ADMIN              = var.require_admin
-      SLACK_BOT_TOKEN            = "123"
-      SYNCBOT_FEDERATION_ENABLED = var.syncbot_federation_enabled ? "true" : "false"
+      DATABASE_HOST     = local.resolved_database_host
+      DATABASE_USER     = local.db_user
+      DATABASE_SCHEMA   = local.db_schema
+      DATABASE_BACKEND  = local.db_backend
+      SLACK_USER_SCOPES = var.slack_user_scopes
+      LOG_LEVEL         = var.log_level
+      SLACK_BOT_TOKEN   = "123"
     },
     var.syncbot_instance_id != "" ? { SYNCBOT_INSTANCE_ID = var.syncbot_instance_id } : {},
-    local.syncbot_public_url_effective != "" ? { SYNCBOT_PUBLIC_URL = trimsuffix(local.syncbot_public_url_effective, "/") } : {},
     trimspace(var.primary_workspace) != "" ? { PRIMARY_WORKSPACE = var.primary_workspace } : {},
     trimspace(var.enable_db_reset) != "" ? { ENABLE_DB_RESET = var.enable_db_reset } : {},
     var.database_tls_enabled != "" ? { DATABASE_TLS_ENABLED = var.database_tls_enabled } : {},

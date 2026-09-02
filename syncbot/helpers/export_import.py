@@ -365,7 +365,17 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
                 [schemas.PostMeta.sync_channel_id == sync_channel.id],
             )
             post_meta_by_key[key] = [
-                {"post_id": post_meta.post_id, "ts": float(post_meta.ts)} for post_meta in post_metas
+                {
+                    "post_id": post_meta.post_id,
+                    "ts": float(post_meta.ts),
+                    "kind": getattr(post_meta, "kind", constants.POST_META_KIND_MESSAGE)
+                    or constants.POST_META_KIND_MESSAGE,
+                    "parent_post_id": getattr(post_meta, "parent_post_id", None),
+                    "reaction": getattr(post_meta, "reaction", None),
+                    "source_user_id": getattr(post_meta, "source_user_id", None),
+                    "source_workspace_id": getattr(post_meta, "source_workspace_id", None),
+                }
+                for post_meta in post_metas
             ]
 
     # user_directory for W
@@ -571,6 +581,11 @@ def import_migration_data(
                     post_id=post_meta["post_id"],
                     sync_channel_id=new_sync_channel.id,
                     ts=Decimal(str(post_meta["ts"])),
+                    kind=post_meta.get("kind") or constants.POST_META_KIND_MESSAGE,
+                    parent_post_id=post_meta.get("parent_post_id"),
+                    reaction=post_meta.get("reaction"),
+                    source_user_id=post_meta.get("source_user_id"),
+                    source_workspace_id=post_meta.get("source_workspace_id"),
                 )
             )
 
