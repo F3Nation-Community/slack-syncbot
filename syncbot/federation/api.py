@@ -104,35 +104,43 @@ def _pick_user_mapping_for_federated_target(
 def _ensure_federated_author_mapped(
     source_user_id: str,
     target_workspace_id: int,
-    target_client: WebClient,
+    target_client: WebClient | None,
 ) -> str | None:
     """On-the-fly email map for a federated author using local directory email only."""
     mapping = _pick_user_mapping_for_federated_target(source_user_id, target_workspace_id)
-    if mapping and mapping.target_user_id and mapping.match_method != "none":
+    method = getattr(mapping, "match_method", None) if mapping else None
+    if mapping and mapping.target_user_id and method != "none":
         return mapping.target_user_id
 
-    dir_rows = DbManager.find_records(
-        schemas.UserDirectory,
-        [
-            schemas.UserDirectory.slack_user_id == source_user_id,
-            schemas.UserDirectory.deleted_at.is_(None),
-        ],
-    )
-    source_workspace_id = None
-    for row in dir_rows:
-        if row.email and str(row.email).strip():
-            source_workspace_id = row.workspace_id
-            break
-    if not source_workspace_id:
-        return None
+    try:
+        dir_rows = DbManager.find_records(
+            schemas.UserDirectory,
+            [
+                schemas.UserDirectory.slack_user_id == source_user_id,
+                schemas.UserDirectory.deleted_at.is_(None),
+            ],
+        )
+        source_workspace_id = None
+        for row in dir_rows:
+            if row.email and str(row.email).strip():
+                source_workspace_id = row.workspace_id
+                break
+        if not source_workspace_id or target_client is None:
+            return None
 
-    return helpers.ensure_mapped_target_user_id(
-        source_user_id,
-        source_workspace_id,
-        target_workspace_id,
-        source_client=None,
-        target_client=target_client,
-    )
+        return helpers.ensure_mapped_target_user_id(
+            source_user_id,
+            source_workspace_id,
+            target_workspace_id,
+            source_client=None,
+            target_client=target_client,
+        )
+    except Exception:
+        _logger.debug(
+            "federation_author_map_failed",
+            extra={"source_user_id": source_user_id, "target_workspace_id": target_workspace_id},
+        )
+        return None
 
 
 def _resolve_mentions_for_federated(msg_text: str, target_workspace_id: int, remote_workspace_label: str) -> str:
@@ -615,9 +623,16 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
     source_user_id = body.get("user_id")
     mapped_local = None
     if source_user_id:
-        dest_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
+        dest_client = None
+        try:
+            dest_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
+        except Exception:
+            _logger.debug(
+                "federation_react_dest_client_failed",
+                extra={"workspace_id": workspace.id},
+            )
         mapped_local = _ensure_federated_author_mapped(source_user_id, workspace.id, dest_client)
-        if mapped_local:
+        if mapped_local and dest_client is not None:
             local_name, local_icon = helpers.get_user_info(dest_client, mapped_local)
             if local_name:
                 user_name = helpers.normalize_display_name(local_name)
