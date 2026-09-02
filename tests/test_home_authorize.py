@@ -276,16 +276,39 @@ class TestHomeTabAdminGate:
 
 
 class TestHomeRefreshTargets:
-    def test_refresh_includes_extra_managers(self):
-        from builders.home import _home_refresh_user_ids
+    def test_refresh_publishes_acting_user_only_without_users_list(self):
+        from builders.home import refresh_home_tab_for_workspace
 
-        workspace = SimpleNamespace(team_id="T1")
-        client = MagicMock()
+        workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc", deleted_at=None)
+        logger = MagicMock()
         with (
-            patch("builders.home.helpers.get_admin_ids", return_value=["U_ADMIN"]),
-            patch("builders.home.helpers.extra_manager_user_ids", return_value=["U_EXTRA"]),
+            patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
+            patch("builders.home.build_home_tab") as build,
+            patch("builders.home.helpers.decrypt_bot_token", return_value="xoxb"),
+            patch("builders.home.WebClient"),
+            patch("builders.home.helpers.get_admin_ids") as get_admins,
         ):
-            assert _home_refresh_user_ids(workspace, client, {}) == ["U_ADMIN", "U_EXTRA"]
+            refresh_home_tab_for_workspace(workspace, logger, context={}, user_id="U1")
+
+        invalidate.assert_called_once_with("T1")
+        build.assert_called_once()
+        assert build.call_args.kwargs.get("user_id") == "U1"
+        get_admins.assert_not_called()
+
+    def test_refresh_without_user_id_invalidates_only(self):
+        from builders.home import refresh_home_tab_for_workspace
+
+        workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc", deleted_at=None)
+        with (
+            patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
+            patch("builders.home.build_home_tab") as build,
+            patch("builders.home.helpers.get_admin_ids") as get_admins,
+        ):
+            refresh_home_tab_for_workspace(workspace, MagicMock(), context={}, user_id=None)
+
+        invalidate.assert_called_once_with("T1")
+        build.assert_not_called()
+        get_admins.assert_not_called()
 
 
 class TestContentHashIsPerUser:
@@ -371,7 +394,6 @@ class TestRefreshIsAllowedForEveryone:
 
         client = MagicMock()
         body = {"team": {"id": "T1"}, "user": {"id": "U9"}}
-        other_ws = SimpleNamespace(id=99, team_id="T2", workspace_name="Other", bot_token="enc", deleted_at=None)
 
         with (
             patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
@@ -380,7 +402,7 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("rebuild", None, None)),
-            patch("handlers.sync.DbManager.find_records", return_value=[other_ws]) as find,
+            patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]) as build,
             patch("handlers.sync.helpers.refresh_after_full"),
         ):
@@ -390,3 +412,25 @@ class TestRefreshIsAllowedForEveryone:
         client.team_info.assert_not_called()
         build.assert_called_once()
         client.views_publish.assert_called_once()
+
+    def test_manager_refresh_does_not_team_info_every_workspace(self):
+        from handlers.sync import handle_refresh_home
+
+        client = MagicMock()
+        body = {"team": {"id": "T1"}, "user": {"id": "U1"}}
+
+        with (
+            patch("handlers.sync.helpers.get_workspace_record", return_value=WORKSPACE),
+            patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
+            patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
+            patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
+            patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("rebuild", None, None)),
+            patch("handlers.sync.DbManager.find_records") as find,
+            patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]),
+            patch("handlers.sync.helpers.refresh_after_full"),
+        ):
+            handle_refresh_home(body, client, MagicMock(), {})
+
+        find.assert_not_called()
+        client.team_info.assert_not_called()

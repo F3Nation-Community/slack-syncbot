@@ -206,7 +206,7 @@ def handle_federation_label_submit(
         extra={"workspace_id": workspace_record.id, "code": raw_code, "label": label},
     )
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 
 def handle_enter_federation_code(
@@ -347,7 +347,8 @@ def handle_federation_code_submit(
 
     _exchange_user_directory(fed_ws, workspace_record)
 
-    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+    acting_user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=acting_user_id)
 
 
 def handle_remove_federation_connection(
@@ -392,4 +393,5 @@ def handle_remove_federation_connection(
     team_id = helpers.safe_get(body, "team", "id") or helpers.safe_get(body, "view", "team_id")
     workspace_record = helpers.get_workspace_record(team_id, body, context, client) if team_id else None
     if workspace_record:
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context)
+        acting_user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=acting_user_id)
