@@ -24,6 +24,7 @@ from handlers.users import (  # noqa: E402
 from helpers.user_matching import (  # noqa: E402
     _find_user_match,
     _match_from_directory,
+    ensure_mapped_target_user_id,
     format_last_auto_match_line,
     run_auto_match_for_workspace,
     seed_user_mappings,
@@ -399,3 +400,130 @@ class TestPublishAnnouncement:
         assert "published this Channel" in text
         assert "*Region* SyncBot Group" in text
         assert "Ada" in text
+
+
+class TestEnsureMappedTargetUserId:
+    def test_unique_dest_directory_email_persists_without_lookup(self):
+        dest = SimpleNamespace(
+            slack_user_id="U_DEST",
+            email="same@ex.com",
+            real_name="Ada",
+            display_name="Ada",
+            normalized_name="Ada",
+        )
+        target_client = MagicMock()
+        with (
+            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch(
+                "helpers.user_matching._source_profile_from_directory",
+                return_value={"email": "same@ex.com", "display_name": "Ada", "real_name": "Ada"},
+            ),
+            patch("helpers.user_matching._get_source_profile_full") as source_slack,
+            patch(
+                "helpers.user_matching.DbManager.find_records",
+                side_effect=[
+                    [dest],  # target directory in _find_user_match
+                    [],  # existing mapping in _persist
+                ],
+            ),
+            patch("helpers.user_matching.DbManager.create_record") as create,
+            patch("helpers.user_matching.get_workspace_by_id", return_value=SimpleNamespace(team_id="TDEST")),
+            patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
+        ):
+            uid = ensure_mapped_target_user_id(
+                "U_SRC",
+                1,
+                2,
+                source_client=MagicMock(),
+                target_client=target_client,
+            )
+
+        assert uid == "U_DEST"
+        source_slack.assert_not_called()
+        target_client.users_lookupByEmail.assert_not_called()
+        create.assert_called_once()
+        row = create.call_args.args[0]
+        assert row.target_user_id == "U_DEST"
+        assert row.match_method == "email"
+        invalidate.assert_called_once_with("TDEST")
+
+    def test_directory_miss_uses_one_lookup_by_email(self):
+        target_client = MagicMock()
+        target_client.users_lookupByEmail.return_value = {"user": {"id": "U_LOOKED"}}
+        with (
+            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch(
+                "helpers.user_matching._source_profile_from_directory",
+                return_value={"email": "a@ex.com", "display_name": "A", "real_name": "A"},
+            ),
+            patch("helpers.user_matching.DbManager.find_records", side_effect=[[], []]),
+            patch("helpers.user_matching.DbManager.create_record") as create,
+            patch("helpers.user_matching.get_workspace_by_id", return_value=SimpleNamespace(team_id="T2")),
+            patch("helpers.export_import.invalidate_home_tab_caches_for_team"),
+        ):
+            uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=target_client)
+
+        assert uid == "U_LOOKED"
+        target_client.users_lookupByEmail.assert_called_once_with(email="a@ex.com")
+        create.assert_called_once()
+
+    def test_ambiguous_dest_email_does_not_write(self):
+        a = SimpleNamespace(
+            slack_user_id="U1", email="dup@ex.com", real_name="A", display_name="A", normalized_name="A"
+        )
+        b = SimpleNamespace(
+            slack_user_id="U2", email="dup@ex.com", real_name="B", display_name="B", normalized_name="B"
+        )
+        target_client = MagicMock()
+        with (
+            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch(
+                "helpers.user_matching._source_profile_from_directory",
+                return_value={"email": "dup@ex.com", "display_name": "X", "real_name": "X"},
+            ),
+            patch("helpers.user_matching.DbManager.find_records", return_value=[a, b]),
+            patch("helpers.user_matching.DbManager.create_record") as create,
+            patch("helpers.user_matching.DbManager.update_records") as update,
+        ):
+            uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=target_client)
+
+        assert uid is None
+        create.assert_not_called()
+        update.assert_not_called()
+        # Ambiguous email is present in directory, so lookup is skipped.
+        target_client.users_lookupByEmail.assert_not_called()
+
+    def test_already_mapped_skips_slack_and_write(self):
+        source_client = MagicMock()
+        target_client = MagicMock()
+        with (
+            patch("helpers.user_matching.get_mapped_target_user_id", return_value="U_EXISTING"),
+            patch("helpers.user_matching._source_profile_from_directory") as profile,
+            patch("helpers.user_matching.DbManager.create_record") as create,
+            patch("helpers.user_matching.DbManager.update_records") as update,
+        ):
+            uid = ensure_mapped_target_user_id(
+                "U_SRC",
+                1,
+                2,
+                source_client=source_client,
+                target_client=target_client,
+            )
+
+        assert uid == "U_EXISTING"
+        profile.assert_not_called()
+        create.assert_not_called()
+        update.assert_not_called()
+        source_client.users_info.assert_not_called()
+        target_client.users_lookupByEmail.assert_not_called()
+
+    def test_failure_returns_none_without_raising(self):
+        with (
+            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch(
+                "helpers.user_matching._source_profile_from_directory",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=MagicMock())
+        assert uid is None

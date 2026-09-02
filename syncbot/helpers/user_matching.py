@@ -498,6 +498,132 @@ def get_mapped_target_user_id(
     return mappings[0].target_user_id if mappings else None
 
 
+def _persist_email_mapping(
+    *,
+    source_user_id: str,
+    source_workspace_id: int,
+    target_workspace_id: int,
+    target_user_id: str,
+    display_name: str,
+) -> None:
+    """Write or upgrade a mapping row to ``match_method=email``."""
+    now = datetime.now(UTC)
+    existing = DbManager.find_records(
+        schemas.UserMapping,
+        [
+            schemas.UserMapping.source_workspace_id == source_workspace_id,
+            schemas.UserMapping.source_user_id == source_user_id,
+            schemas.UserMapping.target_workspace_id == target_workspace_id,
+        ],
+    )
+    if existing:
+        DbManager.update_records(
+            schemas.UserMapping,
+            [schemas.UserMapping.id == existing[0].id],
+            {
+                schemas.UserMapping.target_user_id: target_user_id,
+                schemas.UserMapping.match_method: "email",
+                schemas.UserMapping.source_display_name: display_name,
+                schemas.UserMapping.matched_at: now,
+            },
+        )
+    else:
+        DbManager.create_record(
+            schemas.UserMapping(
+                source_workspace_id=source_workspace_id,
+                source_user_id=source_user_id,
+                target_workspace_id=target_workspace_id,
+                target_user_id=target_user_id,
+                match_method="email",
+                source_display_name=display_name,
+                matched_at=now,
+                group_id=None,
+            )
+        )
+    target_ws = get_workspace_by_id(target_workspace_id)
+    if target_ws and target_ws.team_id:
+        from helpers.export_import import invalidate_home_tab_caches_for_team
+
+        invalidate_home_tab_caches_for_team(target_ws.team_id)
+
+
+def ensure_mapped_target_user_id(
+    source_user_id: str,
+    source_workspace_id: int,
+    target_workspace_id: int,
+    *,
+    source_client: WebClient | None = None,
+    target_client: WebClient | None = None,
+) -> str | None:
+    """Return a mapped dest user ID, creating an email mapping for this author if needed.
+
+    Email only: unique ``user_directory`` hit on dest, else one ``users.lookupByEmail``.
+    Never crawls ``users.list`` or matches by name. On failure returns ``None`` and
+    does not raise — callers keep the remote author display.
+    """
+    if not source_user_id or not source_workspace_id or not target_workspace_id:
+        return None
+
+    existing = get_mapped_target_user_id(source_user_id, source_workspace_id, target_workspace_id)
+    if existing:
+        return existing
+
+    try:
+        profile = _source_profile_from_directory(source_workspace_id, source_user_id)
+        if not (profile and (profile.get("email") or "").strip()) and source_client is not None:
+            profile = _get_source_profile_full(source_client, source_user_id)
+        email = (profile.get("email") if profile else None) or ""
+        email = email.strip()
+        if not email:
+            return None
+
+        # Empty names so ``_match_from_directory`` cannot fall through to name match.
+        email_only_profile = {"email": email, "display_name": "", "real_name": ""}
+        target_uid, method = _find_user_match(
+            source_user_id,
+            email_only_profile,
+            target_client,
+            target_workspace_id,
+            allow_slack_email_lookup=target_client is not None,
+        )
+        if not target_uid or method != "email":
+            return None
+
+        display = (
+            (profile.get("display_name") if profile else None)
+            or (profile.get("real_name") if profile else None)
+            or source_user_id
+        )
+        _persist_email_mapping(
+            source_user_id=source_user_id,
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=target_workspace_id,
+            target_user_id=target_uid,
+            display_name=display,
+        )
+        _logger.info(
+            "user_mapping_on_the_fly",
+            extra={
+                "source_workspace_id": source_workspace_id,
+                "target_workspace_id": target_workspace_id,
+                "source_user_id": source_user_id,
+                "target_user_id": target_uid,
+            },
+        )
+        return target_uid
+    except Exception as exc:
+        _logger.debug(
+            "user_mapping_on_the_fly_failed",
+            extra={
+                "source_workspace_id": source_workspace_id,
+                "target_workspace_id": target_workspace_id,
+                "source_user_id": source_user_id,
+                "error": str(exc),
+            },
+        )
+        return None
+
+
 def get_display_name_and_icon_for_synced_message(
     source_user_id: str,
     source_workspace_id: int,
@@ -505,6 +631,8 @@ def get_display_name_and_icon_for_synced_message(
     source_icon_url: str | None,
     target_client: WebClient,
     target_workspace_id: int,
+    *,
+    source_client: WebClient | None = None,
 ) -> tuple[str | None, str | None, bool]:
     """Return (display_name, icon_url, is_mapped) when syncing into the target workspace.
 
@@ -514,8 +642,17 @@ def get_display_name_and_icon_for_synced_message(
     normalized (text in parens or after a dash at the end is dropped). Callers
     omit the remote workspace suffix in the posted username when ``is_mapped``
     is true.
+
+    When unmapped, may create a one-author email mapping via
+    :func:`ensure_mapped_target_user_id` before falling back to the remote name.
     """
-    mapped_id = get_mapped_target_user_id(source_user_id, source_workspace_id, target_workspace_id)
+    mapped_id = ensure_mapped_target_user_id(
+        source_user_id,
+        source_workspace_id,
+        target_workspace_id,
+        source_client=source_client,
+        target_client=target_client,
+    )
     if mapped_id:
         local_name, local_icon = get_user_info(target_client, mapped_id)
         if local_name:

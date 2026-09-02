@@ -74,12 +74,43 @@ def _mapped_user_for_target(
     source_user_id: str | None,
     source_workspace_id: int | None,
     target_workspace_id: int,
+    *,
+    source_client: WebClient | None = None,
+    target_client: WebClient | None = None,
+    target_workspace: schemas.Workspace | None = None,
 ) -> str | None:
-    from helpers.user_matching import get_mapped_target_user_id
+    from helpers.user_matching import ensure_mapped_target_user_id, get_mapped_target_user_id
 
     if not source_user_id or not source_workspace_id:
         return None
-    return get_mapped_target_user_id(source_user_id, source_workspace_id, target_workspace_id)
+
+    existing = get_mapped_target_user_id(source_user_id, source_workspace_id, target_workspace_id)
+    if existing:
+        return existing
+
+    # Build Slack clients only when we may need an on-the-fly email map.
+    if target_client is None and target_workspace is not None and getattr(target_workspace, "bot_token", None):
+        try:
+            target_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+        except Exception:
+            target_client = None
+    if source_client is None:
+        try:
+            from helpers.workspace import get_workspace_by_id
+
+            source_ws = get_workspace_by_id(source_workspace_id)
+            if source_ws and source_ws.bot_token:
+                source_client = WebClient(token=decrypt_bot_token(source_ws.bot_token))
+        except Exception:
+            source_client = None
+
+    return ensure_mapped_target_user_id(
+        source_user_id,
+        source_workspace_id,
+        target_workspace_id,
+        source_client=source_client,
+        target_client=target_client,
+    )
 
 
 def _post_threaded_reaction_notice(
@@ -282,6 +313,7 @@ def apply_reaction_to_target(
         source_user_id,
         source_workspace_id,
         target_workspace.id,
+        target_workspace=target_workspace,
     )
     user_token = get_user_token(target_workspace.team_id, resolved_user)
 
