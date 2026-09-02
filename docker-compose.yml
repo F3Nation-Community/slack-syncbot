@@ -36,8 +36,6 @@ services:
       SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-xoxb-your-bot-token}
       # Optional
       DATA_ENCRYPTION_KEY: ${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-123}}
-      # Leftover REQUIRE_ADMIN — the app ignores it (Settings chooses admins/managers).
-      REQUIRE_ADMIN: ${REQUIRE_ADMIN:-true}
     volumes:
       - ./syncbot:/app/syncbot
 

@@ -201,14 +201,13 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 | Variable | Notes |
 |----------|-------|
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
-| `REQUIRE_ADMIN` | **Leftover.** Slack admins open Settings; extra managers configure groups and syncs. If still set, the app warns and ignores it. |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
-| `SYNCBOT_FEDERATION_ENABLED` | **Leftover.** Enable federation in Settings on the primary workspace. If still set, the app warns; `true` is seeded once when there is no DB row yet. |
 | `SYNCBOT_INSTANCE_ID` | This instance's UUID. Pin it when federation is on — Lambda mints a new one per cold start if it is empty. |
-| `SYNCBOT_PUBLIC_URL` | Leftover. Ignored if set (a warning is logged). OAuth and federation use the Host of incoming Slack requests. |
 
 How long uninstalled workspace data is kept, whether federation is on, and which workspaces may publish a Broadcast are set in **Settings** on the primary workspace. Extra managers and whether private Channels may be published are per-workspace Settings on every installed workspace. Those are not environment variables.
+
+Leftover deploy env such as `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, and `SYNCBOT_PUBLIC_URL` is no longer set by SAM or Terraform. If an old process still has them, the app logs a warning and ignores them — federation belongs in **Settings**.
 
 ---
 

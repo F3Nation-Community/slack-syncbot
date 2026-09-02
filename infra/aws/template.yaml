@@ -123,16 +123,6 @@ Parameters:
 
   # --- App settings ---
 
-  RequireAdmin:
-    Description: >
-      Leftover stack compat — REQUIRE_ADMIN (app ignores; Slack admins and
-      extra managers are chosen in Settings). Leave the default.
-    Type: String
-    Default: "true"
-    AllowedValues:
-      - "true"
-      - "false"
-
   LogLevel:
     Description: >
       Python logging level for the app (LOG_LEVEL). DEBUG, INFO, WARNING, ERROR, or CRITICAL.
@@ -145,24 +135,9 @@ Parameters:
       - ERROR
       - CRITICAL
 
-  SyncbotFederationEnabled:
-    Description: Leftover stack compat — SYNCBOT_FEDERATION_ENABLED (app ignores; enable federation in Settings).
-    Type: String
-    Default: "false"
-    AllowedValues:
-      - "true"
-      - "false"
-
   SyncbotInstanceId:
     Description: >
       Optional stable UUID for this instance (SYNCBOT_INSTANCE_ID). Leave empty to auto-generate at runtime.
-    Type: String
-    Default: ""
-
-  SyncbotPublicUrl:
-    Description: >
-      Leftover SYNCBOT_PUBLIC_URL. The app ignores this and uses the Host of
-      incoming Slack requests for OAuth install and federation. Leave empty.
     Type: String
     Default: ""
 
@@ -219,7 +194,6 @@ Conditions:
     - !Condition UseRemoteDatabase
     - !Not [!Equals [!Ref DatabasePort, ""]]
   KeepWarmEnabled: !Equals [!Ref EnableKeepWarm, "true"]
-  HasSyncbotPublicUrlOverride: !Not [!Equals [!Ref SyncbotPublicUrl, ""]]
   HasPrimaryWorkspace: !Not [!Equals [!Ref PrimaryWorkspace, ""]]
   HasEnableDbReset: !Equals [!Ref EnableDbReset, "true"]
   HasDatabaseTlsExplicit: !And
@@ -339,11 +313,8 @@ Resources:
           DATABASE_PASSWORD: !If [UseRemoteDatabase, !Ref DatabasePassword, !Ref AWS::NoValue]
           DATABASE_SCHEMA: !If [UseRemoteDatabase, !Ref DatabaseSchema, !Ref AWS::NoValue]
           DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
-          REQUIRE_ADMIN: !Ref RequireAdmin
           LOG_LEVEL: !Ref LogLevel
-          SYNCBOT_FEDERATION_ENABLED: !Ref SyncbotFederationEnabled
           SYNCBOT_INSTANCE_ID: !Ref SyncbotInstanceId
-          SYNCBOT_PUBLIC_URL: !Ref SyncbotPublicUrl
           PRIMARY_WORKSPACE: !If
             - HasPrimaryWorkspace
             - !Ref PrimaryWorkspace
@@ -472,11 +443,8 @@ Resources:
 
 Outputs:
   SyncBotPublicBaseUrl:
-    Description: Public HTTPS base URL (Function URL, or leftover SyncbotPublicUrl if set)
-    Value: !If
-      - HasSyncbotPublicUrlOverride
-      - !Ref SyncbotPublicUrl
-      - !GetAtt SyncBotFunctionUrl.FunctionUrl
+    Description: Public HTTPS base URL (Lambda Function URL)
+    Value: !GetAtt SyncBotFunctionUrl.FunctionUrl
 
   SyncBotApiUrl:
     Description: Lambda Function URL endpoint for Slack events

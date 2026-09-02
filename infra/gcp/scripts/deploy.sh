@@ -388,10 +388,7 @@ write_deploy_receipt() {
 - DATABASE_USER=${DATABASE_USER:-}
 - DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
 - LOG_LEVEL=${LOG_LEVEL:-INFO}
-- REQUIRE_ADMIN=${REQUIRE_ADMIN:-true}
-- SYNCBOT_FEDERATION_ENABLED=${SYNCBOT_FEDERATION_ENABLED:-false}
 - SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
-- SYNCBOT_PUBLIC_URL=${SYNCBOT_PUBLIC_URL:-}
 - PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
 - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
 - ENABLE_DB_RESET=${ENABLE_DB_RESET:-false}
@@ -557,8 +554,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "-var=region=$REGION"
     "-var=stage=$STAGE"
     "-var=log_level=${LOG_LEVEL:-INFO}"
-    "-var=require_admin=${REQUIRE_ADMIN:-true}"
-    "-var=syncbot_federation_enabled=${SYNCBOT_FEDERATION_ENABLED:-false}"
     "-var=slack_signing_secret=${SLACK_SIGNING_SECRET:?SLACK_SIGNING_SECRET required}"
     "-var=slack_client_id=${SLACK_CLIENT_ID:?SLACK_CLIENT_ID required}"
     "-var=slack_client_secret=${SLACK_CLIENT_SECRET:?SLACK_CLIENT_SECRET required}"
@@ -572,7 +567,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   [[ -n "$CLOUD_IMAGE" ]] && VARS+=("-var=cloud_run_image=$CLOUD_IMAGE")
   [[ -n "${DATABASE_USER:-}" ]] && VARS+=("-var=database_user=$DATABASE_USER")
   [[ -n "${SYNCBOT_INSTANCE_ID:-}" ]] && VARS+=("-var=syncbot_instance_id=$SYNCBOT_INSTANCE_ID")
-  [[ -n "${SYNCBOT_PUBLIC_URL:-}" ]] && VARS+=("-var=syncbot_public_url_override=$SYNCBOT_PUBLIC_URL")
   [[ -n "${PRIMARY_WORKSPACE:-}" ]] && VARS+=("-var=primary_workspace=$PRIMARY_WORKSPACE")
   [[ -n "${ENABLE_DB_RESET:-}" ]] && VARS+=("-var=enable_db_reset=$ENABLE_DB_RESET")
   [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && VARS+=("-var=database_tls_enabled=$DATABASE_TLS_ENABLED")
@@ -806,9 +800,6 @@ echo "=== Log Level ==="
 LOG_LEVEL="$(prompt_log_level "$LOG_LEVEL_DEFAULT")"
 
 # Preserve optional runtime env on redeploy (Terraform defaults otherwise).
-REQUIRE_ADMIN_DEFAULT="true"
-SYNCBOT_PUBLIC_DEFAULT=""
-SYNCBOT_FEDERATION_DEFAULT="false"
 INSTANCE_ID_VAR=""
 PRIMARY_WORKSPACE_VAR=""
 ENABLE_DB_RESET_VAR=""
@@ -816,15 +807,6 @@ DB_TLS_VAR=""
 DB_SSL_CA_VAR=""
 DB_BACKEND="${DATABASE_BACKEND:-sqlite}"
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
-  DETECTED_RA="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "REQUIRE_ADMIN")"
-  [[ -n "$DETECTED_RA" ]] && REQUIRE_ADMIN_DEFAULT="$DETECTED_RA"
-  SYNCBOT_PUBLIC_DEFAULT="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SYNCBOT_PUBLIC_URL")"
-  DETECTED_FED="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SYNCBOT_FEDERATION_ENABLED")"
-  if [[ "$DETECTED_FED" == "true" ]]; then
-    SYNCBOT_FEDERATION_DEFAULT="true"
-  elif [[ "$DETECTED_FED" == "false" ]]; then
-    SYNCBOT_FEDERATION_DEFAULT="false"
-  fi
   DETECTED_INSTANCE_ID="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SYNCBOT_INSTANCE_ID")"
   INSTANCE_ID_VAR="${DETECTED_INSTANCE_ID:-}"
   DETECTED_PW="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "PRIMARY_WORKSPACE")"
@@ -841,13 +823,8 @@ fi
 
 echo
 echo "=== App Settings ==="
-REQUIRE_ADMIN_DEFAULT="$(prompt_require_admin "$REQUIRE_ADMIN_DEFAULT")"
 PRIMARY_WORKSPACE_VAR="$(prompt_primary_workspace "$PRIMARY_WORKSPACE_VAR")"
-SYNCBOT_FEDERATION_DEFAULT="$(prompt_federation_enabled "$SYNCBOT_FEDERATION_DEFAULT")"
-if [[ "$SYNCBOT_FEDERATION_DEFAULT" == "true" ]]; then
-  INSTANCE_ID_VAR="$(prompt_instance_id "$INSTANCE_ID_VAR")"
-  SYNCBOT_PUBLIC_DEFAULT="$(prompt_public_url "$SYNCBOT_PUBLIC_DEFAULT")"
-fi
+INSTANCE_ID_VAR="$(prompt_instance_id "$INSTANCE_ID_VAR")"
 
 echo
 echo "=== App Secrets ==="
@@ -879,16 +856,11 @@ echo "Running: terraform init"
 cd "$GCP_DIR"
 terraform init
 
-# TF_VAR_* avoids shell parsing issues when the URL contains & or other metacharacters.
-export TF_VAR_syncbot_public_url_override="$SYNCBOT_PUBLIC_DEFAULT"
-
 VARS=(
   "-var=project_id=$PROJECT_ID"
   "-var=region=$REGION"
   "-var=stage=$STAGE"
   "-var=log_level=$LOG_LEVEL"
-  "-var=require_admin=$REQUIRE_ADMIN_DEFAULT"
-  "-var=syncbot_federation_enabled=$SYNCBOT_FEDERATION_DEFAULT"
   "-var=syncbot_instance_id=${INSTANCE_ID_VAR:-}"
   "-var=primary_workspace=${PRIMARY_WORKSPACE_VAR:-}"
   "-var=enable_db_reset=${ENABLE_DB_RESET_VAR:-}"
@@ -914,7 +886,6 @@ if [[ "$USE_EXISTING" == "true" ]]; then
 fi
 
 echo
-echo "Require admin:    $REQUIRE_ADMIN_DEFAULT"
 echo "Log level:        $LOG_LEVEL"
 if [[ -n "$PRIMARY_WORKSPACE_VAR" ]]; then
   echo "Primary workspace: $PRIMARY_WORKSPACE_VAR"
@@ -926,11 +897,7 @@ if [[ "$ENABLE_DB_RESET_VAR" == "true" ]]; then
 else
   echo "DB reset:          (disabled)"
 fi
-if [[ "$SYNCBOT_FEDERATION_DEFAULT" == "true" ]]; then
-  echo "Federation:       enabled"
-  [[ -n "$INSTANCE_ID_VAR" ]] && echo "Instance ID:      $INSTANCE_ID_VAR"
-  [[ -n "$SYNCBOT_PUBLIC_DEFAULT" ]] && echo "Public URL:       $SYNCBOT_PUBLIC_DEFAULT"
-fi
+[[ -n "$INSTANCE_ID_VAR" ]] && echo "Instance ID:      $INSTANCE_ID_VAR"
 echo
 echo "=== Terraform Plan ==="
 terraform plan "${VARS[@]}"

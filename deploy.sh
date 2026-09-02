@@ -230,26 +230,6 @@ prompt_log_level() {
 
 # App settings (used by infra/aws and infra/gcp deploy scripts). Hints on stderr; value on stdout.
 
-prompt_require_admin() {
-  local default="$1"
-  echo "Restrict sync configuration to workspace admins and owners only." >&2
-  local hint="Y/n"
-  [[ "$default" == "false" ]] && hint="y/N"
-  while true; do
-    local answer
-    read -r -p "REQUIRE_ADMIN [$hint]: " answer
-    if [[ -z "$answer" ]]; then
-      echo "$default"
-      return 0
-    fi
-    case "$answer" in
-      [Yy] | yes | YES | true | TRUE) echo "true"; return 0 ;;
-      [Nn] | no | NO | false | FALSE) echo "false"; return 0 ;;
-    esac
-    echo "Enter y or n (current: $default)." >&2
-  done
-}
-
 prompt_primary_workspace() {
   local default="$1"
   echo "Slack Team ID for PRIMARY_WORKSPACE (required for backup/restore to appear; also scopes DB reset)." >&2
@@ -269,26 +249,6 @@ prompt_primary_workspace() {
   esac
 }
 
-prompt_federation_enabled() {
-  local default="$1"
-  echo "Allow external connections between SyncBot instances (federation)." >&2
-  local hint="y/N"
-  [[ "$default" == "true" ]] && hint="Y/n"
-  while true; do
-    local answer
-    read -r -p "SYNCBOT_FEDERATION_ENABLED [$hint]: " answer
-    if [[ -z "$answer" ]]; then
-      echo "$default"
-      return 0
-    fi
-    case "$answer" in
-      [Yy] | yes | YES | true | TRUE) echo "true"; return 0 ;;
-      [Nn] | no | NO | false | FALSE) echo "false"; return 0 ;;
-    esac
-    echo "Enter y or n (current: $default)." >&2
-  done
-}
-
 prompt_instance_id() {
   local default="$1"
   echo "Unique UUID for this SyncBot instance (leave empty to auto-generate at runtime)." >&2
@@ -296,11 +256,6 @@ prompt_instance_id() {
   local v
   read -r -p "SYNCBOT_INSTANCE_ID [$disp]: " v
   echo "${v:-$default}"
-}
-
-prompt_public_url() {
-  # Leftover: the app derives the public origin from incoming Slack request Host.
-  echo ""
 }
 
 # Parse owner/repo from a github.com git remote URL (ssh, https, ssh://). Empty if not GitHub.
