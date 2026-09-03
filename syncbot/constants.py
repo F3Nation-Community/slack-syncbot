@@ -64,6 +64,8 @@ SETTING_EXTRA_MANAGER_USER_IDS = "extra_manager_user_ids"
 SETTING_BROADCAST_ALLOWED_WORKSPACES = "broadcast_allowed_workspaces"
 SETTING_SOFT_DELETE_RETENTION_DAYS = "soft_delete_retention_days"
 SETTING_FEDERATION_ENABLED = "federation_enabled"
+# Internal: last public origin from an incoming request Host. Not a Settings field.
+SETTING_PUBLIC_BASE_URL = "public_base_url"
 
 # Names that used to be env vars. Kept so leftover deploy config can be warned
 # about, not so they are read.
@@ -114,17 +116,21 @@ HAS_REAL_BOT_TOKEN: bool = _has_real_bot_token()
 WARNING_BLOCK = "WARNING_BLOCK"
 
 # ---------------------------------------------------------------------------
-# User-matching TTLs (seconds)
+# User-mapping TTLs (seconds)
 #
-# How long a cached match result is considered "fresh" before re-checking.
-# Manual matches never expire and can only be removed via the admin UI.
+# How long a cached mapping is considered "fresh" before re-checking.
+# Manual mappings never expire and can only be removed via the admin UI.
 # ---------------------------------------------------------------------------
 
-MATCH_TTL_EMAIL = 30 * 24 * 3600  # 30 days for email-confirmed matches
-MATCH_TTL_NAME = 14 * 24 * 3600  # 14 days for name-based matches
-MATCH_TTL_NONE = 90 * 24 * 3600  # 90 days for no-match (team_join handles re-checks)
+USER_MAP_TTL_EMAIL = 30 * 24 * 3600  # 30 days for email-confirmed mappings
+USER_MAP_TTL_NAME = 14 * 24 * 3600  # 14 days for name-based mappings
+USER_MAP_TTL_NONE = 90 * 24 * 3600  # 90 days for no-map (team_join handles re-checks)
+MATCH_TTL_EMAIL = USER_MAP_TTL_EMAIL  # leftover alias
+MATCH_TTL_NAME = USER_MAP_TTL_NAME  # leftover alias
+MATCH_TTL_NONE = USER_MAP_TTL_NONE  # leftover alias
 USER_DIR_REFRESH_TTL = 24 * 3600  # 24 hours per workspace directory refresh
-USER_MATCHING_PAGE_SIZE = 40  # max unmatched users shown in the modal
+USER_MAPPING_PAGE_SIZE = 20  # max mapping rows per modal page (Slack 100-block cap)
+USER_MATCHING_PAGE_SIZE = USER_MAPPING_PAGE_SIZE  # leftover alias
 
 # Refresh button cooldown (seconds) when content hash unchanged
 REFRESH_COOLDOWN_SECONDS = 60
@@ -133,9 +139,17 @@ REFRESH_COOLDOWN_SECONDS = 60
 # Federation
 # ---------------------------------------------------------------------------
 
+# Leftover: ignored. Instance id is SHA-256 of the raw Ed25519 public key.
 SYNCBOT_INSTANCE_ID = "SYNCBOT_INSTANCE_ID"
 # Leftover: ignored. Public origin comes from incoming Slack request Host.
 SYNCBOT_PUBLIC_URL = "SYNCBOT_PUBLIC_URL"
+
+# This instance's federation HTTP mount point. The connection code advertises
+# <public origin> + this path as the peer's webhook_url; peers append resource
+# subpaths (for example /message, /pair) to whatever URL the code carried. Only
+# this instance's own routing and code generation reference the mount path — the
+# outbound client never assumes it, so a future instance can serve elsewhere.
+FEDERATION_API_BASE_PATH = "/api/federation"
 
 
 # ---------------------------------------------------------------------------

@@ -137,7 +137,7 @@ class TestSkipOrigin:
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch(
                 "handlers.messages.helpers.get_display_name_and_icon_for_synced_message",
-                return_value=("Alice", None, True),
+                return_value=("Alice", None, True, "U_MAP"),
             ),
             patch("helpers.reactions.apply_reaction_to_target", return_value=("direct", None)) as apply_mock,
         ):
@@ -145,6 +145,7 @@ class TestSkipOrigin:
 
         applied_channels = [c.kwargs["target_sync_channel"].channel_id for c in apply_mock.call_args_list]
         assert applied_channels == ["C_DST"]
+        assert apply_mock.call_args.kwargs.get("mapped_user_id") == "U_MAP"
 
 
 class TestApplyDirect:
@@ -178,6 +179,35 @@ class TestApplyDirect:
             name="thumbsup",
         )
         user_client.reactions_remove.assert_not_called()
+        assert result == "direct"
+        assert notice is None
+
+    def test_mapped_user_id_skips_dest_lookup(self):
+        source = _sync_channel(constants.REACTION_DIRECTION_BOTH)
+        target = _sync_channel(
+            constants.REACTION_DIRECTION_BOTH, constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_DST"
+        )
+        workspace = SimpleNamespace(id=2, team_id="T_DEST", bot_token="enc")
+        post_meta = SimpleNamespace(ts=100.0)
+        user_client = MagicMock()
+
+        with (
+            patch("helpers.reactions.get_user_token", return_value="xoxp-test") as get_token,
+            patch("helpers.reactions._mapped_user_for_target") as mapped_lookup,
+            patch("helpers.reactions.decrypt_bot_token") as decrypt,
+            patch("helpers.reactions.WebClient", return_value=user_client),
+        ):
+            result, notice = _apply(
+                source_sync_channel=source,
+                target_post_meta=post_meta,
+                target_sync_channel=target,
+                target_workspace=workspace,
+                mapped_user_id="U_PASSED",
+            )
+
+        mapped_lookup.assert_not_called()
+        get_token.assert_called_once_with("T_DEST", "U_PASSED")
+        decrypt.assert_not_called()
         assert result == "direct"
         assert notice is None
 

@@ -94,13 +94,23 @@ def _find_user_installation(team_id: str | None, user_id: str | None):
 
 
 def get_user_token(team_id: str | None, user_id: str | None) -> str | None:
-    """Return *user_id*'s own Slack user token, or ``None``.
+    """Return *user_id*'s own Slack user token, or *None*.
 
     Only users who completed the OAuth install have one. Never log the return
     value.
     """
+    from helpers._cache import request_scope_get, request_scope_set
+
+    if not team_id or not user_id:
+        return None
+    cache_key = f"user_token:{team_id}:{user_id}"
+    cached = request_scope_get(cache_key)
+    if cached is not None:
+        return cached or None
     installation = _find_user_installation(team_id, user_id)
-    return _clean_token(getattr(installation, "user_token", None) if installation else None)
+    token = _clean_token(getattr(installation, "user_token", None) if installation else None)
+    request_scope_set(cache_key, token or "")
+    return token
 
 
 def clear_user_authorization(team_id: str | None, user_id: str | None) -> bool:

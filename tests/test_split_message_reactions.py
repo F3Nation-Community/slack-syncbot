@@ -52,14 +52,14 @@ class TestSplitMessagePostMeta:
             patch("handlers.messages.helpers.get_workspace_by_id", return_value=None),
             patch(
                 "handlers.messages.helpers.get_display_name_and_icon_for_synced_message",
-                return_value=("N", None, False),
+                return_value=("N", None, False, None),
             ),
             patch("handlers.messages.helpers.post_message", return_value={"ts": "200.000000"}),
             patch("handlers.messages.helpers.upload_files_to_slack", return_value=(None, "300.000000")),
             patch("handlers.messages.helpers.cleanup_temp_files"),
             patch("handlers.messages.DbManager.create_records", side_effect=capture_post_meta),
         ):
-            _handle_new_post(body, client, logger, ctx, [], [], direct_files)
+            _handle_new_post(body, client, logger, ctx, [], direct_files)
 
         assert len(created) == 3
         assert {m.sync_channel_id for m in created} == {1, 2}
@@ -104,7 +104,7 @@ class TestSplitMessagePostMeta:
             patch("handlers.messages.helpers.get_workspace_by_id", return_value=None),
             patch(
                 "handlers.messages.helpers.get_display_name_and_icon_for_synced_message",
-                return_value=("N", None, False),
+                return_value=("N", None, False, None),
             ),
             patch("handlers.messages.helpers.post_message", return_value={"ts": "250.000000"}),
             patch("handlers.messages.helpers.upload_files_to_slack", return_value=(None, "350.000000")),
@@ -118,3 +118,60 @@ class TestSplitMessagePostMeta:
         assert len(target_rows) == 2
         assert target_rows[0].post_id == target_rows[1].post_id
         assert {target_rows[0].ts, target_rows[1].ts} == {250.0, 350.0}
+
+
+class TestFileOnlyThreadPostMeta:
+    def test_file_only_thread_reply_stores_single_file_ts_at_thread_level(self):
+        logger = MagicMock()
+        client = MagicMock(spec=WebClient)
+
+        pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0)
+        pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0)
+        sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7)
+        ws_source = SimpleNamespace(id=10, workspace_name="A", bot_token="enc")
+        sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7)
+        ws_target = SimpleNamespace(id=20, workspace_name="B", bot_token="enc")
+
+        post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
+
+        body = {"event": {"channel": "C_SRC", "ts": "150.000000"}}
+        ctx = {
+            "channel_id": "C_SRC",
+            "msg_text": " ",
+            "mentioned_users": [],
+            "user_id": "U1",
+            "thread_ts": "10.000000",
+        }
+        direct_files = [{"path": "/tmp/a.pdf", "name": "a.pdf", "mimetype": "application/pdf"}]
+
+        created: list = []
+
+        with (
+            patch("handlers.messages.helpers.get_post_records", return_value=post_records),
+            patch("handlers.messages.helpers.get_user_info", return_value=("N", "http://i")),
+            patch("handlers.messages.helpers.get_federated_workspace_for_sync", return_value=None),
+            patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb-test"),
+            patch("handlers.messages.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
+            patch("handlers.messages.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
+            patch("handlers.messages.helpers.get_workspace_by_id", return_value=None),
+            patch(
+                "handlers.messages.helpers.get_display_name_and_icon_for_synced_message",
+                return_value=("N", None, False, None),
+            ),
+            patch("handlers.messages.helpers.post_message") as post_msg,
+            patch(
+                "handlers.messages.helpers.upload_files_to_slack",
+                return_value=(None, "350.000000"),
+            ) as upload,
+            patch("handlers.messages.helpers.cleanup_temp_files"),
+            patch("handlers.messages.DbManager.create_records", side_effect=lambda rows: created.extend(rows)),
+        ):
+            _handle_thread_reply(body, client, logger, ctx, [], direct_files)
+
+        post_msg.assert_not_called()
+        assert upload.call_args.kwargs["thread_ts"] == "20.000000"
+        assert upload.call_args.kwargs["initial_comment"] == "`N (A)` shared a file"
+        assert len(created) == 2
+        target_rows = [m for m in created if m.sync_channel_id == 22]
+        assert len(target_rows) == 1
+        assert target_rows[0].ts == 350.0

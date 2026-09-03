@@ -55,30 +55,18 @@ def get_sync_list(team_id: str, channel_id: str) -> list[tuple[schemas.SyncChann
     return sync_channels
 
 
-def get_federated_workspace(group_id: int, workspace_id: int) -> schemas.FederatedWorkspace | None:
-    """Return the federated workspace for a group membership, if one exists."""
-    members = DbManager.find_records(
-        schemas.WorkspaceGroupMember,
-        [
-            schemas.WorkspaceGroupMember.group_id == group_id,
-            schemas.WorkspaceGroupMember.workspace_id == workspace_id,
-            schemas.WorkspaceGroupMember.deleted_at.is_(None),
-        ],
-    )
-    if not members or not members[0].federated_workspace_id:
-        return None
-
-    fed_ws = DbManager.get_record(schemas.FederatedWorkspace, id=members[0].federated_workspace_id)
-    if not fed_ws or fed_ws.status != "active":
-        return None
-
-    return fed_ws
-
-
 def get_federated_workspace_for_sync(sync_id: int) -> schemas.FederatedWorkspace | None:
     """Return the federated workspace for a sync, checking group membership."""
+    from helpers._cache import _cache_get, _cache_set
+
+    cache_key = f"fed_ws_for_sync:{sync_id}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return cached or None
+
     sync = DbManager.get_record(schemas.Sync, id=sync_id)
     if not sync or not sync.group_id:
+        _cache_set(cache_key, False)
         return None
 
     fed_members = DbManager.find_records(
@@ -91,12 +79,15 @@ def get_federated_workspace_for_sync(sync_id: int) -> schemas.FederatedWorkspace
         ],
     )
     if not fed_members:
+        _cache_set(cache_key, False)
         return None
 
     fed_ws = DbManager.get_record(schemas.FederatedWorkspace, id=fed_members[0].federated_workspace_id)
     if not fed_ws or fed_ws.status != "active":
+        _cache_set(cache_key, False)
         return None
 
+    _cache_set(cache_key, fed_ws)
     return fed_ws
 
 
@@ -421,9 +412,17 @@ def lookup_channel_meta(
     if not channel_id:
         return channel_id, False
 
+    from helpers._cache import request_scope_get, request_scope_set
+
+    req_key = f"chan_meta:{channel_id}"
+    cached_req = request_scope_get(req_key)
+    if isinstance(cached_req, tuple) and len(cached_req) == 2:
+        return str(cached_req[0]), bool(cached_req[1])
+
     cache_key = f"chan_meta:{channel_id}"
     cached = _cache_get(cache_key)
     if isinstance(cached, tuple) and len(cached) == 2:
+        request_scope_set(req_key, cached)
         return str(cached[0]), bool(cached[1])
 
     clients: list[WebClient] = []
@@ -452,4 +451,5 @@ def lookup_channel_meta(
 
     if name != channel_id:
         _cache_set(cache_key, (name, is_private), ttl=3600)
+        request_scope_set(req_key, (name, is_private))
     return name, is_private

@@ -83,35 +83,12 @@ def _validate_fields(body: dict, required: list[str], extras: list[str] | None =
     return None
 
 
-def _pick_user_mapping_for_federated_target(
-    source_user_id: str, target_workspace_id: int
-) -> schemas.UserMapping | None:
-    maps = DbManager.find_records(
-        schemas.UserMapping,
-        [
-            schemas.UserMapping.target_workspace_id == target_workspace_id,
-            schemas.UserMapping.source_user_id == source_user_id,
-        ],
-    )
-    if not maps:
-        return None
-    for m in maps:
-        if m.target_user_id:
-            return m
-    return maps[0]
-
-
 def _ensure_federated_author_mapped(
     source_user_id: str,
     target_workspace_id: int,
     target_client: WebClient | None,
 ) -> str | None:
     """On-the-fly email map for a federated author using local directory email only."""
-    mapping = _pick_user_mapping_for_federated_target(source_user_id, target_workspace_id)
-    method = getattr(mapping, "match_method", None) if mapping else None
-    if mapping and mapping.target_user_id and method != "none":
-        return mapping.target_user_id
-
     try:
         dir_rows = DbManager.find_records(
             schemas.UserDirectory,
@@ -148,29 +125,49 @@ def _resolve_mentions_for_federated(msg_text: str, target_workspace_id: int, rem
     if not msg_text:
         return msg_text
 
-    user_ids = re.findall(r"<@(\w+)>", msg_text)
+    user_ids = list(dict.fromkeys(re.findall(r"<@(\w+)>", msg_text)))
     if not user_ids:
         return msg_text
 
-    for uid in dict.fromkeys(user_ids):
-        mapping = _pick_user_mapping_for_federated_target(uid, target_workspace_id)
+    maps = DbManager.find_records(
+        schemas.UserMapping,
+        [
+            schemas.UserMapping.target_workspace_id == target_workspace_id,
+            schemas.UserMapping.source_user_id.in_(user_ids),
+        ],
+    )
+    maps_by_uid: dict[str, schemas.UserMapping] = {}
+    for mapping in maps:
+        current = maps_by_uid.get(mapping.source_user_id)
+        if current is None or (mapping.target_user_id and not current.target_user_id):
+            maps_by_uid[mapping.source_user_id] = mapping
+
+    missing = [uid for uid in user_ids if uid not in maps_by_uid]
+    dir_by_uid: dict[str, schemas.UserDirectory] = {}
+    if missing:
+        for entry in DbManager.find_records(
+            schemas.UserDirectory,
+            [
+                schemas.UserDirectory.slack_user_id.in_(missing),
+                schemas.UserDirectory.deleted_at.is_(None),
+            ],
+        ):
+            if entry.slack_user_id not in dir_by_uid:
+                dir_by_uid[entry.slack_user_id] = entry
+
+    for uid in user_ids:
+        mapping = maps_by_uid.get(uid)
         if mapping and mapping.target_user_id:
             rep = f"<@{mapping.target_user_id}>"
         elif mapping and mapping.source_display_name:
-            rep = f"`[@{mapping.source_display_name} ({remote_workspace_label})]`"
+            rep = helpers.code_ticked_display_name(mapping.source_display_name, remote_workspace_label)
         else:
-            display: str | None = None
-            for entry in DbManager.find_records(
-                schemas.UserDirectory,
-                [schemas.UserDirectory.slack_user_id == uid, schemas.UserDirectory.deleted_at.is_(None)],
-            ):
-                display = entry.display_name or entry.real_name
-                if display:
-                    break
+            entry = dir_by_uid.get(uid)
+            display = (entry.display_name or entry.real_name) if entry else None
             if display:
-                rep = f"`[@{display} ({remote_workspace_label})]`"
+                rep = helpers.code_ticked_display_name(display, remote_workspace_label)
             else:
-                rep = f"`[@{uid} ({remote_workspace_label})]`"
+                rep = helpers.code_ticked_display_name(uid, remote_workspace_label)
         msg_text = re.sub(rf"<@{re.escape(uid)}>", rep, msg_text)
 
     return msg_text
@@ -181,9 +178,17 @@ def _resolve_mentions_for_federated(msg_text: str, target_workspace_id: int, rem
 # ---------------------------------------------------------------------------
 
 
+def _header(headers: dict, name: str) -> str:
+    """Return a header value case-insensitively (Function URL lowercases names)."""
+    lowered = {str(key).lower(): value for key, value in headers.items()}
+    raw = lowered.get(name.lower())
+    if isinstance(raw, list | tuple):
+        raw = raw[0] if raw else ""
+    return str(raw or "")
+
+
 def _has_federation_user_agent(headers: dict) -> bool:
-    ua = headers.get("User-Agent", "") or headers.get("user-agent", "")
-    return "SyncBot-Federation" in ua
+    return "SyncBot-Federation" in _header(headers, "User-Agent")
 
 
 def _verify_federated_request(body_str: str, headers: dict) -> schemas.FederatedWorkspace | None:
@@ -191,9 +196,9 @@ def _verify_federated_request(body_str: str, headers: dict) -> schemas.Federated
 
     Returns the :class:`FederatedWorkspace` record if valid, or *None*.
     """
-    sig = headers.get("X-Federation-Signature", "")
-    ts = headers.get("X-Federation-Timestamp", "")
-    instance_id = headers.get("X-Federation-Instance", "")
+    sig = _header(headers, "X-Federation-Signature")
+    ts = _header(headers, "X-Federation-Timestamp")
+    instance_id = _header(headers, "X-Federation-Instance")
 
     if not sig or not ts or not instance_id:
         return None
@@ -203,17 +208,34 @@ def _verify_federated_request(body_str: str, headers: dict) -> schemas.Federated
         [schemas.FederatedWorkspace.instance_id == instance_id],
     )
     fed_ws = matches[0] if matches else None
-    if not fed_ws or fed_ws.status != "active":
-        return None
-
-    if not federation.federation_verify(body_str, sig, ts, fed_ws.public_key):
+    if fed_ws and fed_ws.status == "active":
+        if federation.federation_verify(body_str, sig, ts, fed_ws.public_key):
+            return fed_ws
         _logger.warning(
             "federation_auth_failed — remote workspace may have regenerated its keypair; reconnection required",
             extra={"instance_id": instance_id},
         )
         return None
 
-    return fed_ws
+    # Peer upgraded from a UUID to a public-key fingerprint; find them by key.
+    candidates = DbManager.find_records(
+        schemas.FederatedWorkspace,
+        [schemas.FederatedWorkspace.status == "active"],
+    )
+    for candidate in candidates:
+        if not federation.federation_verify(body_str, sig, ts, candidate.public_key):
+            continue
+        if candidate.instance_id != instance_id:
+            DbManager.update_records(
+                schemas.FederatedWorkspace,
+                [schemas.FederatedWorkspace.id == candidate.id],
+                {
+                    schemas.FederatedWorkspace.instance_id: instance_id,
+                    schemas.FederatedWorkspace.updated_at: datetime.now(UTC),
+                },
+            )
+        return DbManager.get_record(schemas.FederatedWorkspace, candidate.id) or candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -328,13 +350,16 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
     if not federation.validate_webhook_url(remote_url):
         return 400, {"error": "invalid_webhook_url"}
 
-    sig = headers.get("X-Federation-Signature", "")
-    ts = headers.get("X-Federation-Timestamp", "")
+    sig = _header(headers, "X-Federation-Signature")
+    ts = _header(headers, "X-Federation-Timestamp")
     if not sig or not ts:
         return 401, {"error": "missing_signature"}
 
     if not federation.federation_verify(body_str, sig, ts, remote_public_key):
         return 401, {"error": "invalid_signature"}
+
+    if not federation.instance_id_matches_public_key(remote_instance_id, remote_public_key):
+        return 400, {"error": "invalid_instance_id"}
 
     groups = DbManager.find_records(
         schemas.WorkspaceGroup,
@@ -455,7 +480,7 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
         if mapped_local:
             local_name, local_icon = helpers.get_user_info(ws_client, mapped_local)
             if local_name:
-                user_name = helpers.normalize_display_name(local_name)
+                user_name = local_name
                 user_avatar = local_icon or user_avatar
                 workspace_name = None
 
@@ -495,6 +520,7 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
             workspace_name=workspace_name,
             blocks=photo_blocks if photo_blocks else None,
             thread_ts=thread_ts,
+            reply_broadcast=bool(body.get("reply_broadcast")),
         )
 
         ts = helpers.safe_get(res, "ts")
@@ -533,6 +559,7 @@ def handle_message_edit(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple
     post_id = body["post_id"]
     text = body.get("text", "")
     channel_id = body["channel_id"]
+    images = body.get("images", [])[:10]
 
     resolved = _resolve_channel_for_federated(channel_id, fed_ws)
     if not resolved:
@@ -546,10 +573,28 @@ def handle_message_edit(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple
 
     post_records = _find_post_records(post_id, sync_channel.id)
 
+    photo_blocks = []
+    if images:
+        for img in images:
+            photo_blocks.append(
+                {
+                    "type": "image",
+                    "image_url": img.get("url", ""),
+                    "alt_text": img.get("alt_text", "Shared image"),
+                }
+            )
+
     updated = 0
+    bot_token = helpers.decrypt_bot_token(workspace.bot_token)
     for post_meta in post_records:
         try:
-            ws_client.chat_update(channel=channel_id, ts=str(post_meta.ts), text=text)
+            helpers.post_message(
+                bot_token=bot_token,
+                channel_id=channel_id,
+                msg_text=text,
+                update_ts=str(post_meta.ts),
+                blocks=photo_blocks if photo_blocks else None,
+            )
             updated += 1
         except Exception:
             _logger.warning("federation_edit_failed", extra={"channel_id": channel_id, "ts": str(post_meta.ts)})
@@ -635,7 +680,7 @@ def handle_message_react(body: dict, fed_ws: schemas.FederatedWorkspace) -> tupl
         if mapped_local and dest_client is not None:
             local_name, local_icon = helpers.get_user_info(dest_client, mapped_local)
             if local_name:
-                user_name = helpers.normalize_display_name(local_name)
+                user_name = local_name
                 user_avatar_url = local_icon or user_avatar_url
                 workspace_name = None
 
@@ -692,35 +737,48 @@ def handle_users(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int, d
 
     if remote_users and workspace_id:
         now = datetime.now(UTC)
+        existing_rows = DbManager.find_records(
+            schemas.UserDirectory,
+            [schemas.UserDirectory.workspace_id == workspace_id],
+        )
+        existing_by_uid = {row.slack_user_id: row for row in existing_rows}
+        to_create: list[schemas.UserDirectory] = []
         for u in remote_users:
-            existing = DbManager.find_records(
-                schemas.UserDirectory,
-                [
-                    schemas.UserDirectory.workspace_id == workspace_id,
-                    schemas.UserDirectory.slack_user_id == u.get("user_id", ""),
-                ],
-            )
+            uid = u.get("user_id", "") or ""
+            existing = existing_by_uid.get(uid)
             if existing:
+                new_email = u.get("email")
+                new_real = u.get("real_name")
+                new_display = u.get("display_name")
+                if (
+                    existing.email == new_email
+                    and existing.real_name == new_real
+                    and existing.display_name == new_display
+                ):
+                    continue
                 DbManager.update_records(
                     schemas.UserDirectory,
-                    [schemas.UserDirectory.id == existing[0].id],
+                    [schemas.UserDirectory.id == existing.id],
                     {
-                        schemas.UserDirectory.email: u.get("email"),
-                        schemas.UserDirectory.real_name: u.get("real_name"),
-                        schemas.UserDirectory.display_name: u.get("display_name"),
+                        schemas.UserDirectory.email: new_email,
+                        schemas.UserDirectory.real_name: new_real,
+                        schemas.UserDirectory.display_name: new_display,
                         schemas.UserDirectory.updated_at: now,
                     },
                 )
             else:
-                record = schemas.UserDirectory(
-                    workspace_id=workspace_id,
-                    slack_user_id=u.get("user_id", ""),
-                    email=u.get("email"),
-                    real_name=u.get("real_name"),
-                    display_name=u.get("display_name"),
-                    updated_at=now,
+                to_create.append(
+                    schemas.UserDirectory(
+                        workspace_id=workspace_id,
+                        slack_user_id=uid,
+                        email=u.get("email"),
+                        real_name=u.get("real_name"),
+                        display_name=u.get("display_name"),
+                        updated_at=now,
+                    )
                 )
-                DbManager.create_record(record)
+        if to_create:
+            DbManager.create_records(to_create)
 
         _logger.info(
             "federation_users_received",
@@ -779,14 +837,22 @@ def dispatch_federation_request(method: str, path: str, body_str: str, headers: 
     Requests without the ``SyncBot-Federation`` User-Agent receive a plain
     404 identical to Lambda Function URL's response for non-existent paths.
     """
+    from helpers._cache import begin_request_scope
+
+    begin_request_scope()
     if not _has_federation_user_agent(headers):
         return _NOT_FOUND
 
-    if path == "/api/federation/ping" and method == "GET":
-        return handle_ping()
-
     if not helpers.federation_enabled():
         return _NOT_FOUND
+
+    base = constants.FEDERATION_API_BASE_PATH
+    if not path.startswith(base):
+        return _NOT_FOUND
+    subpath = path[len(base) :] or "/"
+
+    if subpath == "/ping" and method == "GET":
+        return handle_ping()
 
     if method != "POST":
         return _NOT_FOUND
@@ -796,22 +862,22 @@ def dispatch_federation_request(method: str, path: str, body_str: str, headers: 
     except json.JSONDecodeError:
         return 400, {"error": "invalid_json"}
 
-    if path == "/api/federation/pair":
+    if subpath == "/pair":
         return handle_pair(body, body_str, headers)
 
     fed_ws = _verify_federated_request(body_str, headers)
     if not fed_ws:
         return _NOT_FOUND
 
-    if path == "/api/federation/message":
+    if subpath == "/message":
         return handle_message(body, fed_ws)
-    elif path == "/api/federation/message/edit":
+    elif subpath == "/message/edit":
         return handle_message_edit(body, fed_ws)
-    elif path == "/api/federation/message/delete":
+    elif subpath == "/message/delete":
         return handle_message_delete(body, fed_ws)
-    elif path == "/api/federation/message/react":
+    elif subpath == "/message/react":
         return handle_message_react(body, fed_ws)
-    elif path == "/api/federation/users":
+    elif subpath == "/users":
         return handle_users(body, fed_ws)
 
     return _NOT_FOUND

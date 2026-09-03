@@ -23,14 +23,23 @@ def get_admin_ids(
     """Return a list of admin/owner user IDs for the workspace behind *client*.
 
     If *context* and *team_id* are provided, uses request-scoped cache to avoid
-    repeated users.list for the same workspace within one request.
+    repeated users.list for the same workspace within one request. A 60s process
+    cache keyed by *team_id* covers subsequent requests on a warm container.
     """
     if context is not None and team_id:
         cache = context.setdefault("_admin_ids", {})
         if team_id in cache:
             return cache[team_id]
 
-    from helpers.user_matching import _users_list_page
+    cache_key = f"admin_ids:{team_id}" if team_id else None
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            if context is not None and team_id:
+                context.setdefault("_admin_ids", {})[team_id] = cached
+            return cached
+
+    from helpers.user_map import _users_list_page
 
     cursor = ""
     admin_ids: list[str] = []
@@ -58,6 +67,8 @@ def get_admin_ids(
 
     if context is not None and team_id:
         context.setdefault("_admin_ids", {})[team_id] = admin_ids
+    if cache_key:
+        _cache_set(cache_key, admin_ids)
     return admin_ids
 
 

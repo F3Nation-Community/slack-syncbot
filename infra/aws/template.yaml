@@ -135,12 +135,6 @@ Parameters:
       - ERROR
       - CRITICAL
 
-  SyncbotInstanceId:
-    Description: >
-      Optional stable UUID for this instance (SYNCBOT_INSTANCE_ID). Leave empty to auto-generate at runtime.
-    Type: String
-    Default: ""
-
   PrimaryWorkspace:
     Description: >
       Slack Team ID for PRIMARY_WORKSPACE. Required for backup/restore to appear; also scopes DB reset. Leave empty to hide backup/restore.
@@ -274,7 +268,7 @@ Resources:
       Runtime: python3.12
       Architectures:
         - x86_64
-      Timeout: 30
+      Timeout: 120
       MemorySize: 256
       ReservedConcurrentExecutions: !If [IsSqlite, 1, !Ref AWS::NoValue]
       Events:
@@ -314,7 +308,6 @@ Resources:
           DATABASE_SCHEMA: !If [UseRemoteDatabase, !Ref DatabaseSchema, !Ref AWS::NoValue]
           DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
           LOG_LEVEL: !Ref LogLevel
-          SYNCBOT_INSTANCE_ID: !Ref SyncbotInstanceId
           PRIMARY_WORKSPACE: !If
             - HasPrimaryWorkspace
             - !Ref PrimaryWorkspace

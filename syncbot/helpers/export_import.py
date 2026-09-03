@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import os
+import secrets
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
@@ -417,7 +418,8 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
                 "target_team_id": tgt_ws.team_id if tgt_ws else None,
                 "source_user_id": um.source_user_id,
                 "target_user_id": um.target_user_id,
-                "match_method": um.match_method,
+                "map_method": um.map_method,
+                "match_method": um.map_method,
             }
         )
 
@@ -437,18 +439,19 @@ def build_migration_export(workspace_id: int, include_source_instance: bool = Tr
         from federation import core as federation
 
         try:
-            url = federation.get_public_url()
+            endpoint = federation.federation_endpoint_url()
             instance_id = federation.get_instance_id()
             _, public_key_pem = federation.get_or_create_instance_keypair()
-            code = federation.generate_federation_code(
-                webhook_url=url, instance_id=instance_id, public_key=public_key_pem
-            )
-            payload["source_instance"] = {
-                "webhook_url": url,
-                "instance_id": instance_id,
-                "public_key": public_key_pem,
-                "connection_code": code,
-            }
+            if endpoint:
+                code = federation.encode_federation_connection_blob(
+                    endpoint, instance_id, public_key_pem, "FED-" + secrets.token_hex(4).upper()
+                )
+                payload["source_instance"] = {
+                    "webhook_url": endpoint,
+                    "instance_id": instance_id,
+                    "public_key": public_key_pem,
+                    "connection_code": code,
+                }
         except Exception as e:
             _logger.warning("build_migration_export: could not add source_instance: %s", e)
 
@@ -633,7 +636,7 @@ def import_migration_data(
                 source_user_id=um["source_user_id"],
                 target_workspace_id=tgt_ws_id,
                 target_user_id=um.get("target_user_id"),
-                match_method=um.get("match_method", "none"),
+                map_method=um.get("map_method") or um.get("match_method", "none"),
                 matched_at=datetime.now(UTC),
                 group_id=group_id,
             )

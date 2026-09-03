@@ -7,6 +7,7 @@ from typing import Any
 
 from slack_sdk.web import WebClient
 
+import constants
 import helpers
 from builders._common import (
     _deny_unauthorized,
@@ -17,17 +18,16 @@ from builders._common import (
 )
 from db import DbManager
 from db.schemas import UserMapping, Workspace, WorkspaceGroup
-from helpers.user_matching import (
-    format_last_auto_match_line,
-    get_last_auto_match,
+from helpers.user_map import (
+    format_last_auto_map_line,
+    get_last_auto_map,
 )
 from slack import actions, orm
 from slack.blocks import actions as blocks_actions, button, context as block_context, divider, header, section
 
 _logger = logging.getLogger(__name__)
 
-# Keep well under Slack's 100-block modal cap (2 blocks per row + chrome).
-_PAGE_SIZE = 20
+_PAGE_SIZE = constants.USER_MAPPING_PAGE_SIZE
 _INTRO = "_Users with the same email across Workspaces can be found by clicking Auto Map Now._"
 
 
@@ -80,8 +80,8 @@ def _ordered_mappings(
     ws_lookup: dict[int, str],
 ) -> tuple[list[UserMapping], list[UserMapping], int, int]:
     """Return (page_source ordered unmapped-first, mapped list, mapped_count, unmapped_count)."""
-    unmapped = [m for m in all_mappings if m.target_user_id is None or m.match_method == "none"]
-    mapped = [m for m in all_mappings if m.target_user_id is not None and m.match_method != "none"]
+    unmapped = [m for m in all_mappings if m.target_user_id is None or m.map_method == "none"]
+    mapped = [m for m in all_mappings if m.target_user_id is not None and m.map_method != "none"]
     unmapped.sort(key=lambda m: _display_for_mapping(m, ws_lookup).lower())
     mapped.sort(key=lambda m: _display_for_mapping(m, ws_lookup).lower())
     return unmapped + mapped, mapped, len(mapped), len(unmapped)
@@ -124,7 +124,7 @@ def build_user_mapping_list_blocks(
     group_name = _group_display_name(group_id)
     group_val = str(group_id) if group_id else "0"
     meta = {"group_id": group_id or 0, "page": max(0, page)}
-    last_line = format_last_auto_match_line(get_last_auto_match(workspace_record.id))
+    last_line = format_last_auto_map_line(get_last_auto_map(workspace_record.id))
 
     if matching:
         blocks: list[orm.BaseBlock] = [
@@ -159,7 +159,7 @@ def build_user_mapping_list_blocks(
         header(f"User Mapping: {group_name}"),
         block_context(_INTRO),
         blocks_actions(
-            button("Auto Map Now", actions.CONFIG_USER_MAPPING_AUTO_MATCH, value=group_val),
+            button("Auto Map Now", actions.CONFIG_USER_MAPPING_AUTO_MAP, value=group_val),
             button("Refresh List", actions.CONFIG_USER_MAPPING_REFRESH, value=group_val),
         ),
         block_context(last_line),
@@ -172,8 +172,8 @@ def build_user_mapping_list_blocks(
     else:
         for m in page_rows:
             label = _display_for_mapping(m, ws_lookup)
-            if m.target_user_id and m.match_method != "none":
-                row_text = f"*{label}*  \u2192  <@{m.target_user_id}> _[{m.match_method}]_"
+            if m.target_user_id and m.map_method != "none":
+                row_text = f"*{label}*  \u2192  <@{m.target_user_id}> _[{m.map_method}]_"
             else:
                 row_text = f":warning: *{label}*"
             blocks.append(section(row_text))
@@ -325,12 +325,12 @@ def build_user_mapping_edit_modal(
             if avatar_url:
                 avatar_accessory = orm.ImageAccessoryElement(image_url=avatar_url, alt_text=display)
 
-    has_mapping = mapping.target_user_id is not None and mapping.match_method != "none"
+    has_mapping = mapping.target_user_id is not None and mapping.map_method != "none"
     blocks: list[orm.BaseBlock] = [
         orm.SectionBlock(label=f"*{display}*\n_{source_ws_name}_", element=avatar_accessory),
     ]
     if has_mapping:
-        blocks.append(block_context(f"Currently mapped to <@{mapping.target_user_id}> _[{mapping.match_method}]_"))
+        blocks.append(block_context(f"Currently mapped to <@{mapping.target_user_id}> _[{mapping.map_method}]_"))
     blocks.append(divider())
     blocks.append(
         orm.InputBlock(

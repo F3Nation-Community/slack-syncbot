@@ -203,11 +203,10 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
-| `SYNCBOT_INSTANCE_ID` | This instance's UUID. Pin it when federation is on — Lambda mints a new one per cold start if it is empty. |
 
-How long uninstalled workspace data is kept, whether federation is on, and which workspaces may publish a Broadcast are set in **Settings** on the primary workspace. Extra managers and whether private Channels may be published are per-workspace Settings on every installed workspace. Those are not environment variables.
+How long uninstalled workspace data is kept, whether federation is on, and which workspaces may publish a Broadcast are set in **Settings** on the primary workspace. Extra managers and whether private Channels may be published are per-workspace Settings on every installed workspace. Those are not environment variables. This instance's federation id is derived from its Ed25519 public key; you do not pin a UUID at deploy time.
 
-Leftover deploy env such as `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, and `SYNCBOT_PUBLIC_URL` is no longer set by SAM or Terraform. If an old process still has them, the app logs a warning and ignores them — federation belongs in **Settings**.
+Leftover deploy env such as `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, `SYNCBOT_PUBLIC_URL`, and `SYNCBOT_INSTANCE_ID` is no longer set by SAM or Terraform. If an old process still has them, the app logs a warning and ignores them — federation belongs in **Settings**, and the instance id is a fingerprint of the signing key.
 
 ---
 
@@ -337,11 +336,10 @@ Use **`sam deploy --guided`** the first time if you prefer prompts. Set `Stage` 
 ```bash
 FUNCTION_ARN=$(aws cloudformation describe-stacks --stack-name YOUR_STACK_NAME \
   --query "Stacks[0].Outputs[?OutputKey=='SyncBotFunctionArn'].OutputValue" --output text)
-aws lambda invoke --function-name "$FUNCTION_ARN" --payload '{"action":"migrate"}' \
-  --cli-binary-format raw-in-base64-out /tmp/migrate.json && cat /tmp/migrate.json
+bash infra/aws/scripts/invoke_lambda_migrate.sh "$FUNCTION_ARN"
 ```
 
-The GitHub deploy role and bootstrap policy must allow `lambda:InvokeFunction` on `syncbot-*` functions; re-deploy the **bootstrap** stack if your policy predates that permission.
+`aws lambda invoke` returns success even when the function sets `FunctionError`, so use that helper (or check the invoke metadata yourself). The function timeout is **120 seconds** so a cold start plus Alembic can finish; the helper waits up to 180 seconds for the invoke. The GitHub deploy role and bootstrap policy must allow `lambda:InvokeFunction` on `syncbot-*` functions; re-deploy the **bootstrap** stack if your policy predates that permission.
 
 ### 3. GitHub Actions (AWS)
 
@@ -549,4 +547,4 @@ These files are gitignored. For CI/CD, use GitHub environment variables and secr
 
 ### Database env names (`DATABASE_*`)
 
-GitHub Environment **variables** and **secrets** use `DATABASE_BACKEND`, `DATABASE_HOST`, `DATABASE_USER`, and `secrets.DATABASE_PASSWORD`. SAM parameters are `DatabaseBackend`, `DatabaseHost`, and `DatabasePort`. Do not set leftover admin, create-user, or network-mode GitHub vars — the **AWS** CI/CD task (`gh_delete_legacy_database_vars` in `infra/aws/scripts/deploy.sh`) deletes those RDS-era names if they are present. GCP does not.
+GitHub Environment **variables** and **secrets** use `DATABASE_BACKEND`, `DATABASE_HOST`, `DATABASE_USER`, and `secrets.DATABASE_PASSWORD`. SAM parameters are `DatabaseBackend`, `DatabaseHost`, and `DatabasePort`. Do not set leftover admin, create-user, or network-mode GitHub vars — the **AWS** CI/CD task (`gh_delete_legacy_database_vars` in `infra/aws/scripts/deploy.sh`) deletes those RDS-era names if they are present, and also deletes leftover `SYNCBOT_INSTANCE_ID`. GCP does not.

@@ -16,6 +16,20 @@ from slack import actions, orm
 _logger = logging.getLogger(__name__)
 
 
+def _dm_actor(client: WebClient, body: dict, text: str) -> None:
+    """DM the acting user. Best-effort; never raises."""
+    user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
+    if not user_id:
+        return
+    try:
+        dm = client.conversations_open(users=[user_id])
+        dm_channel = helpers.safe_get(dm, "channel", "id")
+        if dm_channel:
+            client.chat_postMessage(channel=dm_channel, text=text)
+    except Exception as e:
+        _logger.warning(f"Failed to DM federation notice: {e}")
+
+
 def _require_primary_admin(
     body: dict,
     client: WebClient,
@@ -173,6 +187,12 @@ def handle_federation_label_submit(
     public_url = federation.get_public_url(context)
     if not public_url:
         _logger.warning("federation_no_public_url")
+        _dm_actor(
+            client,
+            body,
+            ":warning: SyncBot does not know this instance's public URL yet. "
+            "Open the Home tab (or wait for a Slack event), then generate the code again.",
+        )
         return
 
     values = helpers.safe_get(body, "view", "state", "values") or {}
@@ -182,7 +202,19 @@ def handle_federation_label_submit(
             if action_id == actions.CONFIG_FEDERATION_LABEL_INPUT:
                 label = (action_data.get("value") or "").strip()
 
-    encoded, raw_code = federation.generate_federation_code(workspace_record.id, label=label or None)
+    try:
+        encoded, raw_code = federation.generate_federation_code(
+            workspace_record.id, label=label or None, context=context
+        )
+    except ValueError:
+        _logger.warning("federation_no_public_url")
+        _dm_actor(
+            client,
+            body,
+            ":warning: SyncBot does not know this instance's public URL yet. "
+            "Open the Home tab (or wait for a Slack event), then generate the code again.",
+        )
+        return
 
     user_id = helpers.safe_get(body, "user", "id") or helpers.get_user_id_from_body(body)
     if user_id:
@@ -275,11 +307,17 @@ def handle_federation_code_submit(
 
     if not code_text:
         _logger.warning("federation_code_submit: empty code")
+        _dm_actor(client, body, ":warning: Paste the full connection code from the other SyncBot instance.")
         return
 
     payload = federation.parse_federation_code(code_text)
     if not payload:
         _logger.warning("federation_code_submit: invalid code format")
+        _dm_actor(
+            client,
+            body,
+            ":warning: That connection code is invalid or was tampered with. Ask the other admin to generate a new one.",
+        )
         return
 
     remote_url = payload["webhook_url"]
@@ -291,11 +329,18 @@ def handle_federation_code_submit(
         remote_code,
         team_id=workspace_record.team_id,
         workspace_name=workspace_record.workspace_name or None,
+        context=context,
     )
     if not result or not result.get("ok"):
         _logger.error(
             "federation_connect_failed",
             extra={"remote_url": remote_url, "result": result},
+        )
+        _dm_actor(
+            client,
+            body,
+            ":warning: Could not connect to the other SyncBot instance. "
+            "Check that federation is enabled there and try again.",
         )
         return
 

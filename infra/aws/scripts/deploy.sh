@@ -143,6 +143,7 @@ gh_delete_legacy_database_vars() {
     DATABASE_LAMBDA_SECURITY_GROUP_ID; do
     gh variable delete "$name" --env "$env_name" -R "$repo" 2>/dev/null || true
   done
+  gh variable delete SYNCBOT_INSTANCE_ID --env "$env_name" -R "$repo" 2>/dev/null || true
   gh secret delete DATABASE_ADMIN_PASSWORD --env "$env_name" -R "$repo" 2>/dev/null || true
 }
 
@@ -194,7 +195,6 @@ push_github_aws_ci_config() {
   _gh_push_from_env_file DATABASE_TLS_ENABLED env DATABASE_TLS_ENABLED
   _gh_push_from_env_file DATABASE_SSL_CA_PATH env DATABASE_SSL_CA_PATH
   _gh_push_from_env_file LOG_LEVEL env LOG_LEVEL
-  _gh_push_from_env_file SYNCBOT_INSTANCE_ID env SYNCBOT_INSTANCE_ID
   _gh_push_from_env_file PRIMARY_WORKSPACE env PRIMARY_WORKSPACE
   _gh_push_from_env_file ENABLE_DB_RESET env ENABLE_DB_RESET
   _gh_push_from_env_file AWS_ENABLE_XRAY env AWS_ENABLE_XRAY ENABLE_XRAY
@@ -804,7 +804,6 @@ write_deploy_receipt() {
 - DATABASE_USER=${DATABASE_USER:-}
 - DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
 - LOG_LEVEL=${LOG_LEVEL:-INFO}
-- SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
 - PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
 - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
 - AWS_ENABLE_XRAY=${AWS_ENABLE_XRAY:-false}
@@ -1132,7 +1131,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "DatabasePassword=${DATABASE_PASSWORD:-}"
     "DatabaseUser=${DATABASE_USER:-}"
     "LogLevel=${LOG_LEVEL:-INFO}"
-    "SyncbotInstanceId=${SYNCBOT_INSTANCE_ID:-}"
     "PrimaryWorkspace=${PRIMARY_WORKSPACE:-}"
     "EnableDbReset=${ENABLE_DB_RESET:-}"
     "DatabaseTlsEnabled=${DATABASE_TLS_ENABLED:-}"
@@ -1154,16 +1152,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   FUNCTION_ARN="$(output_value "$APP_OUTPUTS" "SyncBotFunctionArn")"
   if [[ -n "$FUNCTION_ARN" ]]; then
     echo "=== Lambda migrate + warm-up ==="
-    TMP_MIGRATE="$(mktemp)"
-    aws lambda invoke \
-      --function-name "$FUNCTION_ARN" \
-      --payload '{"action":"migrate"}' \
-      --cli-binary-format raw-in-base64-out \
-      "$TMP_MIGRATE" \
-      --region "$REGION"
-    cat "$TMP_MIGRATE"
-    echo
-    rm -f "$TMP_MIGRATE"
+    "$REPO_ROOT/infra/aws/scripts/invoke_lambda_migrate.sh" "$FUNCTION_ARN" "$REGION"
   fi
 
   SYNCBOT_API_URL="$(output_value "$APP_OUTPUTS" "SyncBotApiUrl")"
@@ -1256,7 +1245,6 @@ PREV_DATABASE_SCHEMA=""
 PREV_DATABASE_MODE=""
 PREV_ENABLE_KEEP_WARM=""
 PREV_LOG_LEVEL=""
-PREV_INSTANCE_ID=""
 PREV_PRIMARY_WORKSPACE=""
 PREV_ENABLE_DB_RESET=""
 PREV_DB_TLS=""
@@ -1284,7 +1272,6 @@ if [[ -n "$EXISTING_STACK_STATUS" && "$EXISTING_STACK_STATUS" != "None" ]]; then
   PREV_ENABLE_KEEP_WARM="$(stack_param_value "$EXISTING_STACK_PARAMS" "EnableKeepWarm")"
   PREV_DATABASE_SCHEMA="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseSchema")"
   PREV_LOG_LEVEL="$(stack_param_value "$EXISTING_STACK_PARAMS" "LogLevel")"
-  PREV_INSTANCE_ID="$(stack_param_value "$EXISTING_STACK_PARAMS" "SyncbotInstanceId")"
   PREV_PRIMARY_WORKSPACE="$(stack_param_value "$EXISTING_STACK_PARAMS" "PrimaryWorkspace")"
   PREV_ENABLE_DB_RESET="$(stack_param_value "$EXISTING_STACK_PARAMS" "EnableDbReset")"
   PREV_DB_TLS="$(stack_param_value "$EXISTING_STACK_PARAMS" "DatabaseTlsEnabled")"
@@ -1463,7 +1450,6 @@ if [[ "$IS_STACK_UPDATE" == "true" && -n "$PREV_LOG_LEVEL" ]]; then
   LOG_LEVEL_DEFAULT="$PREV_LOG_LEVEL"
 fi
 
-SYNCBOT_INSTANCE_ID="${PREV_INSTANCE_ID:-}"
 PRIMARY_WORKSPACE="${PREV_PRIMARY_WORKSPACE:-}"
 ENABLE_DB_RESET="${PREV_ENABLE_DB_RESET:-}"
 DATABASE_TLS_ENABLED="${PREV_DB_TLS:-}"
@@ -1476,7 +1462,6 @@ LOG_LEVEL="$(prompt_log_level "$LOG_LEVEL_DEFAULT")"
 echo
 echo "=== App Settings ==="
 PRIMARY_WORKSPACE="$(prompt_primary_workspace "$PRIMARY_WORKSPACE")"
-SYNCBOT_INSTANCE_ID="$(prompt_instance_id "$SYNCBOT_INSTANCE_ID")"
 
 echo
 echo "=== Deploy Summary ==="
@@ -1495,7 +1480,6 @@ if [[ "$ENABLE_DB_RESET" == "true" ]]; then
 else
   echo "DB reset:          (disabled)"
 fi
-[[ -n "$SYNCBOT_INSTANCE_ID" ]] && echo "Instance ID:      $SYNCBOT_INSTANCE_ID"
 echo "Deploy bucket:    $S3_BUCKET"
 if [[ "$DATABASE_BACKEND" != "sqlite" ]]; then
   echo "DB backend:       $DATABASE_BACKEND"
@@ -1533,7 +1517,6 @@ PARAMS=(
   "LogLevel=$LOG_LEVEL"
 )
 [[ -n "${DATABASE_USER:-}" ]] && PARAMS+=("DatabaseUser=$DATABASE_USER")
-[[ -n "$SYNCBOT_INSTANCE_ID" ]] && PARAMS+=("SyncbotInstanceId=$SYNCBOT_INSTANCE_ID")
 [[ -n "$PRIMARY_WORKSPACE" ]] && PARAMS+=("PrimaryWorkspace=$PRIMARY_WORKSPACE")
 [[ -n "$ENABLE_DB_RESET" ]] && PARAMS+=("EnableDbReset=$ENABLE_DB_RESET")
 [[ -n "$DATABASE_TLS_ENABLED" ]] && PARAMS+=("DatabaseTlsEnabled=$DATABASE_TLS_ENABLED")
@@ -1562,16 +1545,7 @@ APP_OUTPUTS="$(app_describe_outputs "$STACK_NAME" "$REGION")"
   FUNCTION_ARN="$(output_value "$APP_OUTPUTS" "SyncBotFunctionArn")"
   if [[ -n "$FUNCTION_ARN" ]]; then
     echo "=== Lambda migrate + warm-up ==="
-    TMP_MIGRATE="$(mktemp)"
-    aws lambda invoke \
-      --function-name "$FUNCTION_ARN" \
-      --payload '{"action":"migrate"}' \
-      --cli-binary-format raw-in-base64-out \
-      "$TMP_MIGRATE" \
-      --region "$REGION"
-    cat "$TMP_MIGRATE"
-    echo
-    rm -f "$TMP_MIGRATE"
+    "$REPO_ROOT/infra/aws/scripts/invoke_lambda_migrate.sh" "$FUNCTION_ARN" "$REGION"
   fi
 
 else

@@ -58,7 +58,6 @@ The application reads configuration from environment variables. Providers must i
 | `SlackOauthBotScopes` / `slack_bot_scopes` | `SLACK_BOT_SCOPES` | Defaults match `BOT_SCOPES` |
 | `SlackOauthUserScopes` / `slack_user_scopes` | `SLACK_USER_SCOPES` | Defaults match `USER_SCOPES` |
 | `LogLevel` / `log_level` | `LOG_LEVEL` | |
-| `SyncbotInstanceId` / `syncbot_instance_id` | `SYNCBOT_INSTANCE_ID` | |
 | `PrimaryWorkspace` / `primary_workspace` | `PRIMARY_WORKSPACE` | Hidden Backup/Restore until set **and redeployed**. AWS `--setup-github` copies it when it is set in the env file. |
 | `EnableDbReset` / `enable_db_reset` | `ENABLE_DB_RESET` | Boolean; also gated by `PRIMARY_WORKSPACE` |
 | `DatabaseTlsEnabled` / `DatabaseSslCaPath` (and TF equivalents) | `DATABASE_TLS_*` | Omit when empty so app defaults apply |
@@ -78,15 +77,14 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | `LOCAL_DEVELOPMENT` | `true` only for local dev; disables token verification and enables dev shortcuts. |
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). |
 | `PORT` | HTTP listen port for container entrypoint (`python app.py` / Cloud Run). Cloud Run injects this (typically `8080`); default `3000` when unset. |
-| `SYNCBOT_INSTANCE_ID` | UUID for this instance (optional; can be auto-generated, should be pinned for federation). |
 
-**Leftover env (not deploy inputs):** `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, and `SYNCBOT_PUBLIC_URL` are ignored if still set on an old process; the app logs a warning. Federation and admin policy belong in **Settings**, not env.
+**Leftover env (not deploy inputs):** `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, `SYNCBOT_PUBLIC_URL`, and `SYNCBOT_INSTANCE_ID` are ignored if still set on an old process; the app logs a warning. Federation and admin policy belong in **Settings**, not env. This instance's federation id is the SHA-256 hex fingerprint of its Ed25519 public key (64 characters), not a deploy-time UUID.
 
 ### Settings modal
 
-Operational policy is edited in the **Settings** modal on the SyncBot Home tab. Slack **admins and owners** on any installed workspace can open it. Each workspace always sees its own fields: extra managers (members who can configure groups and syncs without opening Settings), and whether private Channels may be published in that workspace (default off). Saving a value writes it to the database, so it takes effect without a redeploy.
+Operational policy is edited in the **Settings** modal on the SyncBot Home tab. Slack **admins and owners** on any installed workspace can open it. Each workspace always sees its own fields: extra managers (members who can configure groups and syncs without opening Settings), and whether private Channels may be published in that workspace (default off). Those workspace keys live in `workspace_settings`. Saving a value writes it to the database, so it takes effect without a redeploy.
 
-Instance-wide fields appear only when `PRIMARY_WORKSPACE` is set and matches the acting workspace: enable federation (default off), how long uninstalled workspace data is kept (default 30 days), and which workspaces may publish a Broadcast (empty means any; this list is stored now and is used when broadcast channels ship). If `PRIMARY_WORKSPACE` is unset, those three blocks are hidden everywhere. Backup/Restore and Reset Database stay on the primary workspace (reset also needs `ENABLE_DB_RESET`).
+Instance-wide fields appear only when `PRIMARY_WORKSPACE` is set and matches the acting workspace: enable federation (default off), how long uninstalled workspace data is kept (default 30 days), and which workspaces may publish a Broadcast (empty means any; this list is stored now and is used when broadcast channels ship). Those instance keys live in `instance_settings`. The last public Host is stored there too (`public_base_url`) for federation connection codes; it is not a Settings field. If `PRIMARY_WORKSPACE` is unset, those three blocks are hidden everywhere. Backup/Restore and Reset Database stay on the primary workspace (reset also needs `ENABLE_DB_RESET`).
 
 Private Channels and native reactions also need per-user authorization, which is not a configuration value and needs no new environment variable. Slack will not let an app add itself to a private Channel, and native reactions as that person need their user token on the **destination** workspace. SyncBot uses the Slack user token of the person who authorized in that workspace — never another member's token, and never a token sent over federation. Those tokens come from the OAuth install this instance already serves and are stored by Bolt in `slack_installations`; the **Authorize SyncBot** button on the Home tab is that same install flow for one more person.
 

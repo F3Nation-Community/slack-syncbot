@@ -189,7 +189,7 @@ class UserDirectory(BaseClass, GetDBClass):
 
 
 class UserMapping(BaseClass, GetDBClass):
-    """Cross-workspace user match result (or explicit no-match)."""
+    """Cross-workspace user map result (or explicit no-map stub)."""
 
     __tablename__ = "user_mappings"
     id = Column(Integer, primary_key=True)
@@ -197,7 +197,7 @@ class UserMapping(BaseClass, GetDBClass):
     source_user_id = Column(String(100), nullable=False)
     target_workspace_id = Column(Integer, ForeignKey("workspaces.id"))
     target_user_id = Column(String(100), nullable=True)
-    match_method = Column(String(20), nullable=False, default="none")
+    map_method = Column(String(20), nullable=False, default="none")
     source_display_name = Column(String(200), nullable=True)
     matched_at = Column(DateTime, nullable=False)
     group_id = Column(Integer, ForeignKey("workspace_groups.id"), nullable=True)
@@ -211,6 +211,9 @@ class InstanceKey(BaseClass, GetDBClass):
 
     The private key is stored Fernet-encrypted using DATA_ENCRYPTION_KEY.
     The public key is shared with federated workspaces during connection setup.
+    ``instance_id`` is the SHA-256 hex fingerprint of ``public_key`` (raw
+    32-byte Ed25519 key, 64 characters). Leftover ``SYNCBOT_INSTANCE_ID`` is
+    ignored.
     """
 
     __tablename__ = "instance_keys"
@@ -218,6 +221,7 @@ class InstanceKey(BaseClass, GetDBClass):
     public_key = Column(Text, nullable=False)
     private_key_encrypted = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False)
+    instance_id = Column(String(64), nullable=True)
 
     def get_id():
         return InstanceKey.id
@@ -226,9 +230,11 @@ class InstanceKey(BaseClass, GetDBClass):
 class FederatedWorkspace(BaseClass, GetDBClass):
     """A remote SyncBot instance that this instance can communicate with.
 
-    Each federated workspace has a unique ``instance_id`` (UUID), a
-    ``webhook_url`` for pushing events, and a ``public_key`` (Ed25519 PEM)
-    used to verify inbound request signatures.
+    Each federated workspace has a unique ``instance_id`` (public-key
+    fingerprint, or a legacy UUID from an older peer), a ``webhook_url``
+    (the peer's full federation endpoint, e.g. ``https://host/api/federation``;
+    resource subpaths like ``/message`` are appended when pushing), and a
+    ``public_key`` (Ed25519 PEM) used to verify inbound request signatures.
     ``primary_team_id`` and ``primary_workspace_name`` are optional and set
     when the connection is from a workspace that migrated to the remote instance.
     """

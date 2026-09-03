@@ -92,13 +92,9 @@ def _header_first(headers: dict | None, *names: str) -> str | None:
     return None
 
 
-def public_base_from_headers(headers: dict | None) -> str | None:
-    """Return this request's public origin (Function URL / Cloud Run Host).
-
-    Slack's Event and Interactivity URL is this same origin, so Authorize and
-    federation both use it instead of a separate ``SYNCBOT_PUBLIC_URL``.
-    """
-    host = _header_first(headers, "x-forwarded-host", "host")
+def _origin_from_host(host: str | None, headers: dict | None) -> str | None:
+    """Build ``https://host`` (or http in local dev) from a hostname."""
+    host = (host or "").strip()
     if not host:
         return None
     proto = _header_first(headers, "x-forwarded-proto")
@@ -107,12 +103,45 @@ def public_base_from_headers(headers: dict | None) -> str | None:
     return f"{proto}://{host}"
 
 
+def public_base_from_headers(headers: dict | None) -> str | None:
+    """Return this request's public origin (Function URL / Cloud Run Host).
+
+    Slack's Event and Interactivity URL is this same origin, so Authorize and
+    federation both use it instead of a separate ``SYNCBOT_PUBLIC_URL``.
+    """
+    host = _header_first(headers, "x-forwarded-host", "host")
+    return _origin_from_host(host, headers)
+
+
+def public_base_from_lambda_event(event: dict | None) -> str | None:
+    """Return the public origin from a Lambda Function URL / API Gateway event.
+
+    Prefers Host / X-Forwarded-Host headers, then ``requestContext.domainName``
+    (Function URL payload 2.0).
+    """
+    if not event:
+        return None
+    headers = event.get("headers") or {}
+    from_headers = public_base_from_headers(headers)
+    if from_headers:
+        return from_headers
+    request_context = event.get("requestContext") or {}
+    domain = request_context.get("domainName")
+    if isinstance(domain, str) and domain.strip():
+        return _origin_from_host(domain.strip(), headers)
+    return None
+
+
 def remember_public_base(url: str | None) -> str | None:
-    """Store *url* for later :func:`get_public_base_url` calls in this process."""
+    """Store *url* for later :func:`get_public_base_url` calls in this process and the DB."""
     base = (url or "").strip().rstrip("/")
     if not base:
         return None
+    cached = _cache_get(_PUBLIC_BASE_CACHE_KEY)
+    if cached == base:
+        return base
     _cache_set(_PUBLIC_BASE_CACHE_KEY, base, ttl=86400)
+    _persist_public_base(base)
     return base
 
 
@@ -124,12 +153,21 @@ def capture_public_base(headers: dict | None, context: dict | None = None) -> st
     return base
 
 
+def capture_public_base_from_lambda_event(event: dict | None, context: dict | None = None) -> str | None:
+    """Remember the Function URL origin (Host header or ``requestContext.domainName``)."""
+    base = remember_public_base(public_base_from_lambda_event(event))
+    if base and context is not None:
+        context["public_base_url"] = base
+    return base
+
+
 def get_public_base_url(context: dict | None = None) -> str | None:
     """Return this instance's public HTTPS origin (no trailing slash).
 
     Prefers the current Slack request (``context["public_base_url"]``), then
-    the origin remembered from an earlier request on this warm container.
-    ``SYNCBOT_PUBLIC_URL`` is ignored leftover deploy config.
+    the origin remembered from an earlier request on this warm container, then
+    the last Host persisted in ``instance_settings``. ``SYNCBOT_PUBLIC_URL`` is
+    ignored leftover deploy config.
     """
     _warn_legacy_public_url_env()
     if context:
@@ -139,7 +177,36 @@ def get_public_base_url(context: dict | None = None) -> str | None:
     cached = _cache_get(_PUBLIC_BASE_CACHE_KEY)
     if isinstance(cached, str) and cached.strip():
         return cached.strip().rstrip("/")
+    stored = _load_persisted_public_base()
+    if stored:
+        _cache_set(_PUBLIC_BASE_CACHE_KEY, stored, ttl=86400)
+        return stored
     return None
+
+
+def _persist_public_base(base: str) -> None:
+    """Write the last Host to instance_settings when it changed (internal key)."""
+    try:
+        from helpers.settings import get_raw_setting, set_setting
+
+        if get_raw_setting(constants.SETTING_PUBLIC_BASE_URL) == base:
+            return
+        set_setting(constants.SETTING_PUBLIC_BASE_URL, base)
+    except Exception:
+        _logger.debug("public_base_persist_failed", exc_info=True)
+
+
+def _load_persisted_public_base() -> str | None:
+    try:
+        from helpers.settings import get_raw_setting
+
+        raw = get_raw_setting(constants.SETTING_PUBLIC_BASE_URL)
+    except Exception:
+        return None
+    if not isinstance(raw, str):
+        return None
+    base = raw.strip().rstrip("/")
+    return base or None
 
 
 def _warn_legacy_public_url_env() -> None:

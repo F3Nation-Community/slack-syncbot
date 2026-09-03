@@ -55,8 +55,9 @@ def test_template_sqlite_and_keep_warm() -> None:
     assert "DatabaseEngine:" not in TEMPLATE
     assert "MemorySize: 256" in TEMPLATE
     assert "MemorySize: 128" not in TEMPLATE
-    assert "Timeout: 30" in TEMPLATE
+    assert "Timeout: 120" in TEMPLATE
     assert "Timeout: 10" not in TEMPLATE
+    assert "Timeout: 30" not in TEMPLATE
     assert "sqlite:////tmp/syncbot.db" in TEMPLATE
     assert "LITESTREAM_S3_BUCKET" in TEMPLATE
     assert "ReservedConcurrentExecutions" in TEMPLATE
@@ -68,6 +69,15 @@ def test_template_sqlite_and_keep_warm() -> None:
     assert "LitestreamBucketName:" in TEMPLATE
     assert "RDSEndpoint" not in TEMPLATE
     assert "VpcId" not in TEMPLATE
+
+
+def test_template_has_no_syncbot_instance_id() -> None:
+    assert "SyncbotInstanceId" not in TEMPLATE
+    assert "SYNCBOT_INSTANCE_ID" not in TEMPLATE
+    assert "SyncbotInstanceId" not in CI_SAM
+    assert "SYNCBOT_INSTANCE_ID:" not in WORKFLOW
+    assert "SyncbotInstanceId=" not in DEPLOY_SH
+    assert "SyncbotInstanceId=" not in CI_SAM
 
 
 def test_bootstrap_has_no_rds_or_vpc_create() -> None:
@@ -217,6 +227,12 @@ def test_deploy_scripts_modes_and_rds_abort() -> None:
     assert "STAGE_NAME must be test or prod" in CI_SAM
     assert "EnableKeepWarm=" in CI_SAM
     assert "ExistingDatabaseAdminUser" not in CI_SAM
+    assert "invoke_lambda_migrate.sh" in DEPLOY_SH
+    assert "invoke_lambda_migrate.sh" in WORKFLOW
+    migrate_helper = (INFRA_AWS / "scripts" / "invoke_lambda_migrate.sh").read_text(encoding="utf-8")
+    assert "FunctionError" in migrate_helper
+    assert "--cli-read-timeout 180" in migrate_helper
+
     assert "DatabaseInstanceClass" not in CI_SAM
     assert "VpcCidr" not in CI_SAM
     assert "DATABASE_NETWORK_MODE" not in CI_SAM

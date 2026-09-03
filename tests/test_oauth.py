@@ -174,6 +174,26 @@ class TestGetPublicBaseUrl:
         warnings = [r.message for r in caplog.records if "SYNCBOT_PUBLIC_URL is ignored" in r.message]
         assert len(warnings) == 1
 
+    def test_falls_back_to_persisted_instance_setting(self):
+        from helpers.oauth import get_public_base_url
+
+        with (
+            patch("helpers.oauth._cache_get", return_value=None),
+            patch("helpers.oauth._load_persisted_public_base", return_value="https://from-db.example"),
+        ):
+            assert get_public_base_url() == "https://from-db.example"
+
+    def test_lambda_event_uses_request_context_domain(self):
+        from helpers.oauth import public_base_from_lambda_event
+
+        with patch("helpers.oauth.constants.LOCAL_DEVELOPMENT", False):
+            assert (
+                public_base_from_lambda_event(
+                    {"requestContext": {"domainName": "abc.lambda-url.us-east-1.on.aws"}, "headers": {}}
+                )
+                == "https://abc.lambda-url.us-east-1.on.aws"
+            )
+
 
 class TestRefreshHomeAfterOauthInstall:
     def test_publishes_home_for_the_authorizing_user(self):

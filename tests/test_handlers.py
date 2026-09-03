@@ -50,6 +50,25 @@ class TestParseEventFields:
         assert ctx["user_id"] == "U001"
         assert ctx["msg_text"] == "Hello world"
         assert ctx["event_subtype"] is None
+        assert ctx["reply_broadcast"] is False
+
+    def test_thread_broadcast_sets_reply_broadcast(self):
+        body = {
+            "team_id": "T001",
+            "event": {
+                "type": "message",
+                "subtype": "thread_broadcast",
+                "channel": "C001",
+                "user": "U001",
+                "text": "Also send to channel",
+                "ts": "1234567890.000002",
+                "thread_ts": "1234567890.000001",
+            },
+        }
+        ctx = _parse_event_fields(body, self._make_client())
+        assert ctx["event_subtype"] == "thread_broadcast"
+        assert ctx["reply_broadcast"] is True
+        assert ctx["thread_ts"] == "1234567890.000001"
 
     def test_empty_text_defaults_to_space(self):
         body = {
@@ -116,6 +135,8 @@ class TestEventContextType:
             thread_ts=None,
             ts="123.456",
             event_subtype=None,
+            reply_broadcast=False,
+            content_blocks=[],
         )
         assert isinstance(ctx, dict)
         assert ctx["team_id"] == "T1"

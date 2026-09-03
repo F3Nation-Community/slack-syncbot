@@ -83,14 +83,7 @@ def _get_groups_for_workspace(workspace_id: int) -> list[tuple[WorkspaceGroup, W
 
 def _get_group_members(group_id: int) -> list[WorkspaceGroupMember]:
     """Return all active members of a group."""
-    return DbManager.find_records(
-        WorkspaceGroupMember,
-        [
-            WorkspaceGroupMember.group_id == group_id,
-            WorkspaceGroupMember.status == "active",
-            WorkspaceGroupMember.deleted_at.is_(None),
-        ],
-    )
+    return helpers.get_group_members(group_id)
 
 
 def _get_workspace_info(workspace: Workspace) -> dict:

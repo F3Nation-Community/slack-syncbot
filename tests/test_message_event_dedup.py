@@ -135,7 +135,7 @@ class TestRespondToMessageEventDedup:
         with (
             patch("handlers.messages._is_own_bot_message", return_value=False),
             patch("handlers.messages._handle_new_post") as mock_new,
-            patch("handlers.messages._build_file_context", return_value=([], [], [])),
+            patch("handlers.messages._build_file_context", return_value=([], [])),
         ):
             respond_to_message_event(_message_body(event_id=""), client, logger, context)
 
@@ -173,7 +173,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.messages._handle_new_post") as mock_new,
             patch(
                 "handlers.messages._build_file_context",
-                return_value=([], [], [{"path": "/tmp/x", "name": "x.jpg", "mimetype": "image/jpeg"}]),
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg", "mimetype": "image/jpeg"}]),
             ),
         ):
             respond_to_message_event(body, client, logger, context)
@@ -189,7 +189,7 @@ class TestRespondToMessageEventDedup:
         with (
             patch("handlers.messages._is_own_bot_message", return_value=False),
             patch("handlers.messages._handle_new_post") as mock_new,
-            patch("handlers.messages._build_file_context", return_value=([], [], [])),
+            patch("handlers.messages._build_file_context", return_value=([], [])),
         ):
             respond_to_message_event(body, client, logger, context)
             respond_to_message_event(body, client, logger, {**context, "slack_retry_num": 2})
@@ -210,7 +210,7 @@ class TestRespondToMessageEventDedup:
         with (
             patch("handlers.messages._is_own_bot_message", return_value=False),
             patch("handlers.messages._handle_new_post", side_effect=_boom),
-            patch("handlers.messages._build_file_context", return_value=([], [], [])),
+            patch("handlers.messages._build_file_context", return_value=([], [])),
         ):
             with pytest.raises(RuntimeError, match="sync failed"):
                 respond_to_message_event(body, client, logger, {})
@@ -229,7 +229,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.messages._is_own_bot_message", return_value=False),
             patch("handlers.messages._parse_event_fields") as parse,
             patch("handlers.messages._handle_message_edit") as mock_edit,
-            patch("handlers.messages._build_file_context", return_value=([], [], [])),
+            patch("handlers.messages._build_file_context", return_value=([], [])),
         ):
             parse.return_value = {
                 "event_subtype": "message_changed",
@@ -252,7 +252,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.messages._is_own_bot_message", return_value=False),
             patch("handlers.messages._parse_event_fields") as parse,
             patch("handlers.messages._handle_message_delete") as mock_delete,
-            patch("handlers.messages._build_file_context", return_value=([], [], [])),
+            patch("handlers.messages._build_file_context", return_value=([], [])),
         ):
             parse.return_value = {
                 "event_subtype": "message_deleted",
@@ -274,7 +274,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.messages._is_own_bot_message", return_value=False),
             patch("handlers.messages._parse_event_fields") as parse,
             patch("handlers.messages._handle_thread_reply") as mock_reply,
-            patch("handlers.messages._build_file_context", return_value=([], [], [])),
+            patch("handlers.messages._build_file_context", return_value=([], [])),
         ):
             parse.return_value = {
                 "event_subtype": None,

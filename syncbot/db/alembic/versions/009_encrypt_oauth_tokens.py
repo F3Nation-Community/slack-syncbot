@@ -37,8 +37,14 @@ def _widen_to_text(table: str, column: str) -> None:
         return
     if _column_type_name(columns[column]) == "text":
         return
+    col = columns[column]
     with op.batch_alter_table(table) as batch:
-        batch.alter_column(column, type_=sa.Text(), existing_nullable=True)
+        batch.alter_column(
+            column,
+            type_=sa.Text(),
+            existing_type=col["type"],
+            existing_nullable=col["nullable"],
+        )
 
 
 def _encrypt_plaintext_tokens(table: str, column: str) -> None:

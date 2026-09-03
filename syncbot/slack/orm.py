@@ -4,21 +4,11 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from helpers import format_error_dm, get_user_id_from_body, safe_get
+from helpers.slack_api import slack_error_code as _slack_error_code
 
 logger = logging.getLogger(__name__)
 
 _MODAL_EXPIRED_TRIGGER_DM = "SyncBot could not open that window in time. Please click the button again."
-
-
-def _slack_error_code(exc: BaseException) -> str:
-    """Return Slack's ``error`` string from a ``SlackApiError``, or ``""``."""
-    resp = getattr(exc, "response", None)
-    if resp is None:
-        return ""
-    try:
-        return str(resp.get("error") or "")
-    except Exception:
-        return ""
 
 
 def _notify_expired_trigger(

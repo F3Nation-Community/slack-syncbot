@@ -365,3 +365,109 @@ class TestInitializeDatabaseRetry:
             db_mod.initialize_database()
         assert calls["n"] == 1
         sleep.assert_not_called()
+
+
+class TestAlembic011MapMethod:
+    def test_renames_match_method_when_rewound_to_010(self, tmp_path):
+        from alembic import command
+
+        import db as db_mod
+        from db import _alembic_config, get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic011.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                with engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE user_mappings RENAME COLUMN map_method TO match_method"))
+                    conn.execute(text("UPDATE alembic_version SET version_num = '010_instance_key_instance_id'"))
+                command.upgrade(_alembic_config(), "head")
+                names = {c["name"] for c in inspect(engine).get_columns("user_mappings")}
+                assert "map_method" in names
+                assert "match_method" not in names
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
+
+
+class TestAlembic012FederationEndpoint:
+    def test_appends_mount_path_to_bare_origin(self, tmp_path):
+        from alembic import command
+
+        import db as db_mod
+        from db import _alembic_config, get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic012.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                with engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "INSERT INTO federated_workspaces "
+                            "(instance_id, webhook_url, public_key, status, created_at) VALUES "
+                            "('bare', 'https://peer.example', 'PEM', 'active', '2026-01-01'),"
+                            "('full', 'https://other.example/api/federation', 'PEM', 'active', '2026-01-01')"
+                        )
+                    )
+                    conn.execute(text("UPDATE alembic_version SET version_num = '011_user_mapping_map_method'"))
+                command.upgrade(_alembic_config(), "head")
+                with engine.begin() as conn:
+                    rows = dict(conn.execute(text("SELECT instance_id, webhook_url FROM federated_workspaces")).all())
+                assert rows["bare"] == "https://peer.example/api/federation"
+                assert rows["full"] == "https://other.example/api/federation"
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
+
+
+class TestAlembic009WidenTokens:
+    def test_widens_varchar_token_column_when_rewound_to_008(self, tmp_path):
+        from alembic import command
+
+        import db as db_mod
+        from db import _alembic_config, get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic009.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                with engine.begin() as conn:
+                    conn.execute(text("DROP TABLE slack_bots"))
+                    conn.execute(
+                        text(
+                            "CREATE TABLE slack_bots ("
+                            "id INTEGER PRIMARY KEY, "
+                            "bot_token VARCHAR(200), "
+                            "bot_refresh_token VARCHAR(200))"
+                        )
+                    )
+                    conn.execute(text("UPDATE alembic_version SET version_num = '008_post_meta_reaction_notices'"))
+                command.upgrade(_alembic_config(), "head")
+                types = {c["name"]: str(c["type"]).lower() for c in inspect(engine).get_columns("slack_bots")}
+                assert "text" in types["bot_token"]
+                assert "text" in types["bot_refresh_token"]
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
