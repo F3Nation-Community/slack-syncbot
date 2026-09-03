@@ -46,6 +46,7 @@ except ImportError:  # pragma: no cover - exercised in tests via subprocess
     SlackRequestHandler = None
 
 from constants import (
+    FEDERATION_API_BASE_PATH,
     HAS_REAL_BOT_TOKEN,
     LOCAL_DEVELOPMENT,
     validate_config,
@@ -53,6 +54,7 @@ from constants import (
 from db import initialize_database
 from federation.api import dispatch_federation_request
 from helpers import capture_public_base, federation_enabled, get_oauth_flow, get_request_type, safe_get
+from helpers.oauth import capture_public_base_from_lambda_event
 from logger import (
     configure_logging,
     emit_metric,
@@ -153,7 +155,14 @@ def handler(event: dict, context: dict) -> dict:
         }
 
     path = event.get("path", "") or event.get("rawPath", "")
-    if path.startswith("/api/federation"):
+    capture_public_base_from_lambda_event(event)
+    if path.startswith(FEDERATION_API_BASE_PATH):
+        if not federation_enabled():
+            return {
+                "statusCode": 404,
+                "headers": {"Content-Type": "text/plain;charset=utf-8"},
+                "body": "Not Found",
+            }
         return _lambda_federation_handler(event)
 
     if _lambda_http_method(event) == "GET" and path not in ("/slack/install", "/slack/oauth_redirect"):
@@ -221,9 +230,16 @@ def _as_function_url_response(resp: dict) -> dict:
 
 def _lambda_federation_handler(event: dict) -> dict:
     """Handle a federation API request inside Lambda."""
-    method = event.get("httpMethod", "GET")
-    path = event.get("path", "")
+    import base64 as _b64
+
+    method = _lambda_http_method(event) or "GET"
+    path = event.get("path", "") or event.get("rawPath", "")
     body_str = event.get("body", "") or ""
+    if event.get("isBase64Encoded") and body_str:
+        try:
+            body_str = _b64.b64decode(body_str).decode()
+        except Exception:
+            body_str = ""
     raw_headers = event.get("headers", {}) or {}
     headers = {k: v for k, v in raw_headers.items()}
 
@@ -290,6 +306,9 @@ def main_response(body: dict, logger, client, ack, context: dict) -> None:
     attached to all log entries emitted while processing it.
     """
     set_correlation_id()
+    from helpers._cache import begin_request_scope
+
+    begin_request_scope()
     request_type, request_id = get_request_type(body)
 
     if request_type == "view_submission":
@@ -435,7 +454,7 @@ def run_syncbot_http_server(
                     json.dumps({"status": "ok"}),
                 )
                 return
-            if federation_enabled() and path.startswith("/api/federation"):
+            if federation_enabled() and path.startswith(FEDERATION_API_BASE_PATH):
                 self._handle_federation("GET")
                 return
             if _bolt_oauth_flow:
@@ -464,7 +483,7 @@ def run_syncbot_http_server(
 
         def do_POST(self) -> None:
             path = self._path_no_query()
-            if federation_enabled() and path.startswith("/api/federation"):
+            if federation_enabled() and path.startswith(FEDERATION_API_BASE_PATH):
                 self._handle_federation("POST")
                 return
             if path != _bolt_endpoint_path:

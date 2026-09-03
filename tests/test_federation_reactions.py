@@ -61,11 +61,10 @@ class TestFederationMessageInbound:
         fed_ws = SimpleNamespace(instance_id="remote-instance")
         sync_channel = SimpleNamespace(id=101, channel_id="C123")
         workspace = SimpleNamespace(id=55, bot_token="enc-token")
-        mapping = SimpleNamespace(target_user_id="ULOCAL")
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
-            patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=mapping),
+            patch.object(federation_api, "_ensure_federated_author_mapped", return_value="ULOCAL"),
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-test"),
             patch.object(federation_api, "WebClient", MagicMock()),
             patch.object(
@@ -88,6 +87,7 @@ class TestFederationMessageInbound:
             workspace_name=None,
             blocks=None,
             thread_ts=None,
+            reply_broadcast=False,
         )
 
 
@@ -196,13 +196,12 @@ class TestFederationInboundTokenLookup:
         )
         workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
         post_meta = SimpleNamespace(ts=123.456)
-        mapping = SimpleNamespace(target_user_id="U_LOCAL")
         user_client = MagicMock()
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=mapping),
+            patch.object(federation_api, "_ensure_federated_author_mapped", return_value="U_LOCAL"),
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-bot"),
             patch.object(federation_api.helpers, "get_user_info", return_value=("Local Alice", None)),
             patch("helpers.reactions.get_user_token", return_value="xoxp-local") as get_token,
@@ -275,7 +274,7 @@ class TestFederationInboundTokenLookup:
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=None),
+            patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
             patch("helpers.reactions.get_user_token", return_value=None),
             patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
             patch("helpers.reactions.WebClient", return_value=bot_client),
@@ -333,7 +332,7 @@ class TestFederationInboundTokenLookup:
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_find_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_pick_user_mapping_for_federated_target", return_value=None),
+            patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
             patch("helpers.reactions.get_user_token", return_value=None),
             patch("helpers.reactions.decrypt_bot_token", return_value="xoxb-bot"),
             patch("helpers.reactions.WebClient", return_value=bot_client),

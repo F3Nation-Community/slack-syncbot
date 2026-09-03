@@ -249,15 +249,6 @@ prompt_primary_workspace() {
   esac
 }
 
-prompt_instance_id() {
-  local default="$1"
-  echo "Unique UUID for this SyncBot instance (leave empty to auto-generate at runtime)." >&2
-  local disp="${default:-(empty)}"
-  local v
-  read -r -p "SYNCBOT_INSTANCE_ID [$disp]: " v
-  echo "${v:-$default}"
-}
-
 # Parse owner/repo from a github.com git remote URL (ssh, https, ssh://). Empty if not GitHub.
 github_owner_repo_from_url() {
   local url="$1"

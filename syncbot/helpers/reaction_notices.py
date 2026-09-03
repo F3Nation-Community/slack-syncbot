@@ -11,9 +11,11 @@ from slack_sdk.errors import SlackApiError
 
 import constants
 from db import DbManager, schemas
+from helpers.slack_api import slack_error_code
 from helpers.user_action_echo import slack_message_ts
 
 _logger = logging.getLogger(__name__)
+_slack_error_code = slack_error_code
 
 
 def actor_key_for_notice(
@@ -53,7 +55,7 @@ def equivalent_actor_pairs(event_workspace_id: int, event_user_id: str) -> set[t
             schemas.UserMapping.source_workspace_id == event_workspace_id,
             schemas.UserMapping.source_user_id == event_user_id,
             schemas.UserMapping.target_user_id.isnot(None),
-            schemas.UserMapping.match_method != "none",
+            schemas.UserMapping.map_method != "none",
         ],
     )
     for mapping in forward:
@@ -64,27 +66,13 @@ def equivalent_actor_pairs(event_workspace_id: int, event_user_id: str) -> set[t
         [
             schemas.UserMapping.target_workspace_id == event_workspace_id,
             schemas.UserMapping.target_user_id == event_user_id,
-            schemas.UserMapping.match_method != "none",
+            schemas.UserMapping.map_method != "none",
         ],
     )
     for mapping in reverse:
         pairs.add((mapping.source_workspace_id, mapping.source_user_id))
 
     return pairs
-
-
-def _slack_error_code(exc: SlackApiError) -> str:
-    response = exc.response
-    if response is None:
-        return ""
-    if isinstance(response, dict):
-        err = response.get("error")
-        return str(err) if err else ""
-    data = getattr(response, "data", None)
-    if isinstance(data, dict):
-        err = data.get("error")
-        return str(err) if err else ""
-    return ""
 
 
 def chat_delete_notice(client: WebClient, channel_id: str, ts: float | str) -> None:

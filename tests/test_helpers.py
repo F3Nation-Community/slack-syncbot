@@ -348,7 +348,7 @@ class TestResolveChannelReferences:
         result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
         assert "app_redirect" not in result
 
-    @patch("helpers.user_matching.find_synced_channel_in_target")
+    @patch("helpers.user_map.find_synced_channel_in_target")
     def test_native_channel_when_synced_to_target(self, mock_find):
         mock_find.return_value = "C_LOCAL_TARGET"
         client = self._make_client(channel_name="general", domain="acme")
@@ -358,7 +358,7 @@ class TestResolveChannelReferences:
         mock_find.assert_called_with("CSOURCE123", 42)
         assert "slack.com" not in result
 
-    @patch("helpers.user_matching.find_synced_channel_in_target")
+    @patch("helpers.user_map.find_synced_channel_in_target")
     def test_archive_mrkdwn_rewritten_to_native_when_synced(self, mock_find):
         mock_find.return_value = "C_LOCAL"
         client = MagicMock()
@@ -366,7 +366,7 @@ class TestResolveChannelReferences:
         result = helpers.resolve_channel_references(text, client, None, target_workspace_id=1)
         assert result == "see <#C_LOCAL>"
 
-    @patch("helpers.user_matching.find_synced_channel_in_target")
+    @patch("helpers.user_map.find_synced_channel_in_target")
     def test_archive_mrkdwn_unchanged_when_not_synced(self, mock_find):
         mock_find.return_value = None
         client = MagicMock()
@@ -385,6 +385,9 @@ class TestLookupChannelMeta:
 
     def setup_method(self):
         helpers._CACHE.clear()
+        from helpers._cache import clear_request_scope
+
+        clear_request_scope()
 
     def test_request_client_is_tried_first(self):
         client = MagicMock()
@@ -424,10 +427,10 @@ class TestLookupChannelMeta:
         client = MagicMock()
         client.conversations_info.side_effect = Exception("channel_not_found")
 
-        name, is_private = helpers.lookup_channel_meta("C123", None, client=client)
-        helpers.lookup_channel_meta("C123", None, client=client)
+        name, is_private = helpers.lookup_channel_meta("C_UNRESOLVED", None, client=client)
+        helpers.lookup_channel_meta("C_UNRESOLVED", None, client=client)
 
-        assert name == "C123"
+        assert name == "C_UNRESOLVED"
         assert is_private is False
         assert client.conversations_info.call_count == 2
 
@@ -435,8 +438,8 @@ class TestLookupChannelMeta:
         client = MagicMock()
         client.conversations_info.return_value = {"channel": {"name": "general", "is_private": False}}
 
-        helpers.lookup_channel_meta("C123", None, client=client)
-        helpers.lookup_channel_meta("C123", None, client=client)
+        helpers.lookup_channel_meta("C_CACHED_OK", None, client=client)
+        helpers.lookup_channel_meta("C_CACHED_OK", None, client=client)
 
         assert client.conversations_info.call_count == 1
 

@@ -32,6 +32,28 @@ def format_error_dm(summary: str, details: dict[str, Any] | None = None) -> str:
     return f"{summary}\n```\n" + "\n".join(lines) + "\n```"
 
 
+def synced_from_line_username(display_name: str | None, workspace_name: str | None = None) -> str:
+    """Display name used on the Slack from line for a synced message.
+
+    Mapped authors pass ``workspace_name=None``. Unmapped authors include
+    ``(source workspace)`` after the name, matching ``chat.postMessage``.
+    """
+    name = (display_name or "").strip() or "Someone"
+    if workspace_name:
+        return f"{name} ({workspace_name})"
+    return name
+
+
+def code_ticked_display_name(display_name: str | None, workspace_name: str | None = None) -> str:
+    """From-line display name in code ticks (no @mention, no square brackets)."""
+    return f"`{synced_from_line_username(display_name, workspace_name)}`"
+
+
+def format_file_share_notice(display_name: str | None, workspace_name: str | None = None) -> str:
+    """Bot notice for who shared a file. Never tags; from-line name in code ticks."""
+    return f"{code_ticked_display_name(display_name, workspace_name)} shared a file"
+
+
 def safe_get(data: Any, *keys: Any) -> Any:
     """Safely traverse nested dicts/lists. Returns None on missing keys."""
     if not data:

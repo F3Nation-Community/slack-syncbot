@@ -14,11 +14,13 @@ from helpers.conversations import get_user_token
 from helpers.core import safe_get
 from helpers.encryption import decrypt_bot_token
 from helpers.reaction_notices import delete_notices_for_unreact, reaction_notice_post_id
+from helpers.slack_api import slack_error_code
 from helpers.user_action_echo import reaction_echo_fingerprint, remember_user_action, slack_message_ts
 
 _logger = logging.getLogger(__name__)
 
 ApplyResult = Literal["direct", "thread", "skipped", "failed"]
+_slack_error_code = slack_error_code
 
 
 def reaction_direction(sync_channel: schemas.SyncChannel | None) -> str:
@@ -79,7 +81,7 @@ def _mapped_user_for_target(
     target_client: WebClient | None = None,
     target_workspace: schemas.Workspace | None = None,
 ) -> str | None:
-    from helpers.user_matching import ensure_mapped_target_user_id, get_mapped_target_user_id
+    from helpers.user_map import ensure_mapped_target_user_id, get_mapped_target_user_id
 
     if not source_user_id or not source_workspace_id:
         return None
@@ -182,20 +184,6 @@ def _post_threaded_reaction_notice(
 
 _NO_AUTHORIZE_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "missing_scope", "account_inactive"})
 _IDEMPOTENT_ADD_ERRORS = frozenset({"already_reacted", "already_added"})
-
-
-def _slack_error_code(exc: SlackApiError) -> str:
-    response = exc.response
-    if response is None:
-        return ""
-    if isinstance(response, dict):
-        err = response.get("error")
-        return str(err) if err else ""
-    data = getattr(response, "data", None)
-    if isinstance(data, dict):
-        err = data.get("error")
-        return str(err) if err else ""
-    return ""
 
 
 def _dest_reaction_name_is_invalid(
@@ -308,6 +296,13 @@ def apply_reaction_to_target(
     target_ts = slack_message_ts(target_post_meta.ts)
     channel_id = target_sync_channel.channel_id
     parent_post_id = str(getattr(target_post_meta, "post_id", None) or "")
+    bot_client: WebClient | None = None
+
+    def dest_bot_client() -> WebClient:
+        nonlocal bot_client
+        if bot_client is None:
+            bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+        return bot_client
 
     resolved_user = mapped_user_id or _mapped_user_for_target(
         source_user_id,
@@ -348,7 +343,6 @@ def apply_reaction_to_target(
         except SlackApiError as exc:
             error_code = _slack_error_code(exc)
             if action == "remove":
-                bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
                 ws_id = event_workspace_id if event_workspace_id is not None else target_workspace.id
                 actor_user = source_user_id or resolved_user
                 if actor_user:
@@ -358,7 +352,7 @@ def apply_reaction_to_target(
                         sync_channel=target_sync_channel,
                         event_workspace_id=ws_id,
                         event_user_id=actor_user,
-                        client=bot_client,
+                        client=dest_bot_client(),
                     )
                 return "skipped", None
             if error_code in _IDEMPOTENT_ADD_ERRORS:
@@ -375,7 +369,6 @@ def apply_reaction_to_target(
                 return "failed", None
 
     if action != "add":
-        bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
         ws_id = event_workspace_id if event_workspace_id is not None else (source_workspace_id or target_workspace.id)
         actor_user = source_user_id
         if actor_user and ws_id is not None:
@@ -385,20 +378,19 @@ def apply_reaction_to_target(
                 sync_channel=target_sync_channel,
                 event_workspace_id=ws_id,
                 event_user_id=actor_user,
-                client=bot_client,
+                client=dest_bot_client(),
             )
         return "skipped", None
 
     if style != constants.REACTION_STYLE_THREADED_AND_DIRECT:
         return "skipped", None
 
-    bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
     # Same Slack workspace shares the emoji catalog. Cross-workspace — including
     # federation inbound (source_workspace_id is None) — must probe dest names.
     skip_probe = source_workspace_id is not None and source_workspace_id == target_workspace.id
     if not skip_probe:
         name_invalid = _dest_reaction_name_is_invalid(
-            bot_client,
+            dest_bot_client(),
             team_id=getattr(target_workspace, "team_id", None),
             channel_id=channel_id,
             target_ts=target_ts,
@@ -409,7 +401,7 @@ def apply_reaction_to_target(
             return "skipped", None
 
     notice = _post_threaded_reaction_notice(
-        target_client=bot_client,
+        target_client=dest_bot_client(),
         sync_channel=target_sync_channel,
         post_meta=target_post_meta,
         reaction=reaction,

@@ -225,12 +225,6 @@ variable "database_port" {
   description = "DATABASE_PORT. Empty uses the engine default (3306 MySQL, 5432 PostgreSQL). Set for a non-standard port (e.g. TiDB Cloud 4000). Unused for sqlite."
 }
 
-variable "syncbot_instance_id" {
-  type        = string
-  default     = ""
-  description = "SYNCBOT_INSTANCE_ID; leave empty for app auto-generation."
-}
-
 variable "primary_workspace" {
   type        = string
   default     = ""

@@ -16,10 +16,10 @@ from builders.user_mapping import (
 )
 from db import DbManager, schemas
 from handlers._common import _get_authorized_workspace, _parse_private_metadata
-from helpers.user_matching import (
-    _AUTO_MATCH_RUNNING_TTL,
-    auto_match_running_key,
-    set_last_auto_match,
+from helpers.user_map import (
+    _AUTO_MAP_RUNNING_TTL,
+    auto_map_running_key,
+    set_last_auto_map,
 )
 from slack import actions
 
@@ -35,7 +35,7 @@ def handle_team_join(
     """Handle a team_join event: a new user joined a connected workspace.
 
     1. Upsert the new user into ``user_directory`` for this workspace.
-    2. Re-check all ``match_method='none'`` mappings targeting this workspace.
+    2. Re-check all ``map_method='none'`` mappings targeting this workspace.
     """
     event = body.get("event", {})
     user_data = event.get("user", {})
@@ -59,7 +59,7 @@ def handle_team_join(
 
     helpers._upsert_single_user_to_directory(user_data, workspace_record.id)
     # ``user_auto_match_complete`` is the single INFO summary (do not also log team_join_matching).
-    helpers.run_auto_match_for_workspace(client, workspace_record.id)
+    helpers.run_auto_map_for_workspace(client, workspace_record.id)
 
 
 def handle_user_profile_changed(
@@ -170,7 +170,7 @@ def handle_user_mapping_auto_match(
         return
 
     group_id, page = _group_and_page_from_body(body)
-    running_key = auto_match_running_key(workspace_record.id)
+    running_key = auto_map_running_key(workspace_record.id)
     if helpers._cache_get(running_key):
         update_user_mapping_modal(
             client,
@@ -183,7 +183,7 @@ def handle_user_mapping_auto_match(
         )
         return
 
-    helpers._cache_set(running_key, True, ttl=_AUTO_MATCH_RUNNING_TTL)
+    helpers._cache_set(running_key, True, ttl=_AUTO_MAP_RUNNING_TTL)
     update_user_mapping_modal(
         client,
         view_id,
@@ -198,13 +198,13 @@ def handle_user_mapping_auto_match(
     still_unmatched = 0
     try:
         seeded = seed_mappings_for_workspace(workspace_record, group_id, context=context)
-        newly_matched, still_unmatched = helpers.run_auto_match_for_workspace(
+        newly_matched, still_unmatched = helpers.run_auto_map_for_workspace(
             client,
             workspace_record.id,
             allow_slack_email_lookup=False,
             seeded=seeded,
         )
-        set_last_auto_match(
+        set_last_auto_map(
             workspace_record.id,
             newly_matched=newly_matched,
             still_unmatched=still_unmatched,
@@ -295,7 +295,7 @@ def handle_user_mapping_edit_submit(
             [schemas.UserMapping.id == mapping.id],
             {
                 schemas.UserMapping.target_user_id: None,
-                schemas.UserMapping.match_method: "none",
+                schemas.UserMapping.map_method: "none",
                 schemas.UserMapping.matched_at: now,
             },
         )
@@ -307,7 +307,7 @@ def handle_user_mapping_edit_submit(
                 schemas.UserMapping.source_workspace_id == mapping.source_workspace_id,
                 schemas.UserMapping.target_workspace_id == mapping.target_workspace_id,
                 schemas.UserMapping.target_user_id == selected,
-                schemas.UserMapping.match_method != "none",
+                schemas.UserMapping.map_method != "none",
                 schemas.UserMapping.id != mapping.id,
             ],
         )
@@ -329,7 +329,7 @@ def handle_user_mapping_edit_submit(
             [schemas.UserMapping.id == mapping.id],
             {
                 schemas.UserMapping.target_user_id: selected,
-                schemas.UserMapping.match_method: "manual",
+                schemas.UserMapping.map_method: "manual",
                 schemas.UserMapping.matched_at: now,
             },
         )

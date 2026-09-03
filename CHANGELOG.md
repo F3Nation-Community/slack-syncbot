@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [1.5.1] - 2026-09-03
+
+### Changed
+
+- User Mapping uses map wording and a 20-row modal page
+- Auto Map Now stores last_auto_map on workspace settings
+- Federation instance id is a SHA-256 fingerprint of the Ed25519 public key
+- Federation connection codes carry the peer's full endpoint URL, not a hardcoded path
+- Sync hot paths reuse per-request caches for user tokens, mappings, and channel names
+- Admin ids and federated sync lookups use the 60s process cache
+- Federation retries a timed-out request without an extra backoff sleep
+
+### Fixed
+
+- Also-send-to-channel thread replies sync with dest reply_broadcast
+- Hosted files of any type sync on the same instance
+- File shares skip tombstoned and access-restricted attachments
+- Caption-only file shares post as one message at the correct thread level so thread replies on the file sync
+- Block Kit bot posts (preblasts and similar) keep newlines and emoji; Slack's truncated text fallback is not used
+- File shares name the author in code ticks as a bot notice and never tag them
+- Unmapped mention fallbacks use the same code-ticked display name as file shares (no @ or brackets)
+- Top-level text-plus-file shares also send the threaded file notice to the channel via chat.update reply_broadcast
+- Mapping ensure uses dest directory email then one lookupByEmail and persists a none stub
+- Federation connection codes include a signed webhook URL
+- Federation thread and edit payloads include public image blocks
+- Federation accepts lowercased headers and base64 bodies on Lambda Function URLs
+- Federated mention rewriting and directory exchange no longer query per user
+- The public origin persists in settings, so connection codes survive a cold start
+- User info is cached per bot token, so a warm container cannot mix workspaces
+- Partial sync failures log as warnings; reactions on unsynced messages log as debug
+- Lambda returns 404 for federation when Settings federation is off
+- Alembic MySQL column CHANGE includes the existing type
+- AWS deploy fails when Lambda migrate returns FunctionError
+- Lambda function timeout is 120s so post-deploy migrate can finish
+- Leftover SYNCBOT_INSTANCE_ID is ignored
 
 ## [1.5.0] - 2026-09-02
 

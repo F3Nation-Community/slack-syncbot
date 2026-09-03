@@ -1,6 +1,7 @@
 """Message sync handlers — new posts, replies, edits, deletes, reactions."""
 
 import logging
+import re
 import uuid
 from logging import Logger
 
@@ -29,44 +30,37 @@ def _find_source_workspace_id(records: list[tuple], channel_id: str, ws_index: i
 _logger = logging.getLogger(__name__)
 
 
-def _shared_by_file_initial_comment(
-    *,
-    user_id: str,
-    source_workspace_id: int,
-    target_workspace_id: int,
-    name_for_target: str,
-    target_client: WebClient,
-    channel_id: str,
-    text_message_ts: str | None,
-) -> str:
-    """Build ``initial_comment`` for ``files_upload_v2`` (mention + optional permalink to text)."""
-    mapped_id = helpers.get_mapped_target_user_id(user_id or "", source_workspace_id or 0, target_workspace_id)
-    user_ref = f"<@{mapped_id}>" if mapped_id else name_for_target
-    if not text_message_ts:
-        return f"Shared by {user_ref}"
-    permalink = None
-    try:
-        plink_resp = target_client.chat_getPermalink(channel=channel_id, message_ts=text_message_ts)
-        permalink = helpers.safe_get(plink_resp, "permalink")
-    except Exception:
-        pass
-    if permalink:
-        return f"Shared by {user_ref} in <{permalink}|this message>"
-    return f"Shared by {user_ref}"
+def _event_is_bot_post(event: dict) -> bool:
+    """True for ``bot_message`` and for ``message_changed`` of a bot post."""
+    if event.get("subtype") == "bot_message" or event.get("bot_id"):
+        return True
+    nested = event.get("message") if isinstance(event.get("message"), dict) else {}
+    return bool(nested.get("bot_id") or nested.get("subtype") == "bot_message")
 
 
 def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
     """Extract the common fields every message handler needs."""
     event: dict = body.get("event", {})
-    msg_text: str = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
-    msg_text = msg_text if msg_text else " "
+    layout_blocks = helpers.content_blocks_for_sync(helpers.event_layout_blocks(event))
+    if not layout_blocks and _event_is_bot_post(event):
+        layout_blocks = helpers.content_blocks_for_sync(helpers.fetch_message_layout_blocks(client, event))
+    event_text = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
+    msg_text = helpers.choose_message_text(event_text, layout_blocks)
+    mentioned_users = helpers.parse_mentioned_users(msg_text, client)
+    extra_ids = [
+        uid
+        for uid in helpers.collect_user_ids_from_blocks(layout_blocks)
+        if uid not in {u.get("user_id") for u in mentioned_users}
+    ]
+    if extra_ids:
+        mentioned_users.extend(helpers.parse_mentioned_users("".join(f"<@{uid}>" for uid in extra_ids), client))
 
     return EventContext(
         team_id=helpers.safe_get(body, "team_id"),
         channel_id=helpers.safe_get(event, "channel"),
         user_id=(helpers.safe_get(event, "user") or helpers.safe_get(event, "message", "user")),
         msg_text=msg_text,
-        mentioned_users=helpers.parse_mentioned_users(msg_text, client),
+        mentioned_users=mentioned_users,
         thread_ts=helpers.safe_get(event, "thread_ts"),
         ts=(
             helpers.safe_get(event, "message", "ts")
@@ -74,15 +68,58 @@ def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
             or helpers.safe_get(event, "ts")
         ),
         event_subtype=helpers.safe_get(event, "subtype"),
+        reply_broadcast=helpers.safe_get(event, "subtype") in ("thread_broadcast", "reply_broadcast"),
+        content_blocks=layout_blocks,
     )
 
 
-def _build_file_context(body: dict, client: WebClient, logger: Logger) -> tuple[list[dict], list[dict], list[dict]]:
+def _dest_layout_blocks(
+    *,
+    ctx: EventContext,
+    photo_blocks: list[dict],
+    client: WebClient,
+    target_client: WebClient,
+    source_workspace_id: int,
+    target_workspace_id: int,
+    source_ws,
+    source_workspace_name: str | None,
+) -> list[dict]:
+    """Content blocks rewritten for dest, plus GIF image blocks."""
+    content = ctx.get("content_blocks") or []
+    if not content:
+        return photo_blocks or []
+
+    def rewrite_mrkdwn(text: str) -> str:
+        adapted = helpers.resolve_channel_references(text, client, source_ws, target_workspace_id=target_workspace_id)
+
+        def repl(match: re.Match) -> str:
+            return helpers.resolve_mention_for_workspace(
+                client,
+                match.group(1),
+                source_workspace_id,
+                target_client,
+                target_workspace_id,
+            )
+
+        return re.sub(r"<@(\w+)>", repl, adapted or "")
+
+    def map_user_id(uid: str) -> str | None:
+        return helpers.get_mapped_target_user_id(uid, source_workspace_id, target_workspace_id)
+
+    names = {u.get("user_id"): u.get("user_name") for u in ctx.get("mentioned_users") or []}
+
+    def unmapped_label(uid: str) -> str:
+        return helpers.unmapped_author_label(names.get(uid) or uid, source_workspace_name)
+
+    rewritten = helpers.rewrite_content_blocks(content, rewrite_mrkdwn, map_user_id, unmapped_label)
+    return rewritten + (photo_blocks or [])
+
+
+def _build_file_context(body: dict, client: WebClient, logger: Logger) -> tuple[list[dict], list[dict]]:
     """Process files attached to a message event.
 
-    Returns ``(photo_list, photo_blocks, direct_files)`` where:
+    Returns ``(photo_blocks, direct_files)`` where:
 
-    * *photo_list* — always [] (kept for cleanup API; no S3).
     * *photo_blocks* — Slack Block Kit ``image`` blocks for inline images
       (e.g. GIF picker URLs), ready for ``chat.postMessage``.
     * *direct_files* — files downloaded to ``/tmp`` for direct upload to
@@ -92,23 +129,16 @@ def _build_file_context(body: dict, client: WebClient, logger: Logger) -> tuple[
     files = (helpers.safe_get(event, "files") or helpers.safe_get(event, "message", "files") or [])[:20]
     event_subtype = helpers.safe_get(event, "subtype")
 
-    images = [f for f in files if f.get("mimetype", "").startswith("image")]
-    videos = [f for f in files if f.get("mimetype", "").startswith("video")]
-
     photo_blocks: list[dict] = []
     direct_files: list[dict] = []
-
     is_edit = event_subtype in ("message_changed", "message_deleted")
 
     if not is_edit:
-        direct_files = helpers.download_slack_files(images + videos, client, logger)
+        direct_files = helpers.download_slack_files(files, client, logger)
 
-    # Handle GIFs/images from attachments (e.g. GIPHY bot, Slack GIF picker,
-    # unfurled URLs) when no file attachments are present.  We always use
-    # image blocks for these since the URLs are publicly accessible — this
-    # avoids a download/re-upload round-trip and gives us a proper message
-    # ts for PostMeta so reactions work correctly.
-    if not files and not is_edit:
+    # Public GIF/image URLs (GIPHY, Slack GIF picker). Include edits so federation
+    # thread/edit payloads can carry the same image blocks as new posts.
+    if not files:
         attachments = event.get("attachments") or helpers.safe_get(event, "message", "attachments") or []
         for att in attachments:
             img_url = att.get("image_url") or att.get("thumb_url")
@@ -136,7 +166,7 @@ def _build_file_context(body: dict, client: WebClient, logger: Logger) -> tuple[
             name = att.get("fallback") or "attachment.gif"
             photo_blocks.append(orm.ImageBlock(image_url=img_url, alt_text=name).as_form_field())
 
-    return [], photo_blocks, direct_files
+    return photo_blocks, direct_files
 
 
 def _get_workspace_name(records: list, channel_id: str, workspace_index: int) -> str | None:
@@ -147,12 +177,144 @@ def _get_workspace_name(records: list, channel_id: str, workspace_index: int) ->
     )
 
 
+def _image_payloads_from_blocks(photo_blocks: list[dict] | None) -> list[dict]:
+    """Public image blocks as federation JSON (GIF picker / GIPHY URLs)."""
+    payloads: list[dict] = []
+    for block in photo_blocks or []:
+        if block.get("type") == "image":
+            payloads.append(
+                {
+                    "url": block.get("image_url", ""),
+                    "alt_text": block.get("alt_text", "Shared image"),
+                }
+            )
+    return payloads
+
+
+def _leave_unconfigured_channel(client: WebClient, channel_id: str, user_id: str | None, logger: Logger) -> None:
+    """Tell the channel SyncBot is leaving, then leave."""
+    if not user_id:
+        return
+    try:
+        client.chat_postMessage(
+            channel=channel_id,
+            text=":wave: Hello! I'm SyncBot. I was added to this Channel, but this Channel "
+            "doesn't seem to be part of a Channel Sync. I'm leaving now. Please open the SyncBot Home "
+            "tab to Publish or Subscribe.",
+        )
+        client.conversations_leave(channel=channel_id)
+    except Exception as e:
+        logger.error(f"Failed to notify and leave unconfigured channel {channel_id}: {e}")
+
+
+def _same_instance_dest_post(
+    *,
+    body: dict,
+    client: WebClient,
+    ctx: EventContext,
+    photo_blocks: list[dict],
+    direct_files: list[dict] | None,
+    sync_channel: schemas.SyncChannel,
+    workspace: schemas.Workspace,
+    source_workspace_id: int | None,
+    user_name: str | None,
+    user_profile_url: str | None,
+    workspace_name: str | None,
+    thread_ts: str | None = None,
+) -> tuple[str | None, str | None]:
+    """Post to a same-instance dest channel. Author map runs before mention rewrite.
+
+    Returns ``(message_ts, split_file_ts)``.
+    """
+    msg_text = ctx["msg_text"]
+    mentioned_users = ctx["mentioned_users"]
+    user_id = ctx["user_id"]
+    reply_broadcast = ctx.get("reply_broadcast") or False
+
+    bot_token = helpers.decrypt_bot_token(workspace.bot_token)
+    target_client = WebClient(token=bot_token)
+    target_display_name, target_icon_url, author_is_mapped, _ = helpers.get_display_name_and_icon_for_synced_message(
+        user_id or "",
+        source_workspace_id or 0,
+        user_name,
+        user_profile_url,
+        target_client,
+        workspace.id,
+        source_client=client,
+    )
+    name_for_target = target_display_name or user_name or "Someone"
+    remote_workspace_label = None if author_is_mapped else workspace_name
+    file_notice = helpers.format_file_share_notice(name_for_target, remote_workspace_label)
+
+    adapted_text = helpers.apply_mentioned_users(
+        msg_text,
+        client,
+        target_client,
+        mentioned_users,
+        source_workspace_id=source_workspace_id or 0,
+        target_workspace_id=workspace.id,
+    )
+    source_ws = helpers.get_workspace_by_id(source_workspace_id) if source_workspace_id else None
+    adapted_text = helpers.resolve_channel_references(adapted_text, client, source_ws, target_workspace_id=workspace.id)
+    dest_blocks = _dest_layout_blocks(
+        ctx=ctx,
+        photo_blocks=photo_blocks,
+        client=client,
+        target_client=target_client,
+        source_workspace_id=source_workspace_id or 0,
+        target_workspace_id=workspace.id,
+        source_ws=source_ws,
+        source_workspace_name=workspace_name,
+    )
+
+    split_file_ts: str | None = None
+    files = direct_files or []
+
+    if files and not msg_text.strip():
+        _, file_ts = helpers.upload_files_to_slack(
+            bot_token=bot_token,
+            channel_id=sync_channel.channel_id,
+            files=files,
+            initial_comment=file_notice,
+            thread_ts=thread_ts,
+            reply_broadcast=reply_broadcast,
+        )
+        ts = file_ts or helpers.safe_get(body, "event", "ts")
+        return ts, None
+
+    res = helpers.post_message(
+        bot_token=bot_token,
+        channel_id=sync_channel.channel_id,
+        msg_text=adapted_text,
+        user_name=name_for_target,
+        user_profile_url=target_icon_url or user_profile_url,
+        workspace_name=remote_workspace_label,
+        blocks=dest_blocks,
+        thread_ts=thread_ts,
+        reply_broadcast=reply_broadcast,
+    )
+    ts = helpers.safe_get(res, "ts") or helpers.safe_get(body, "event", "ts")
+
+    if files:
+        # Nest under the text post when top-level; also send that share to the channel.
+        file_thread_ts = thread_ts or ts
+        file_broadcast = reply_broadcast or thread_ts is None
+        _, split_file_ts = helpers.upload_files_to_slack(
+            bot_token=bot_token,
+            channel_id=sync_channel.channel_id,
+            files=files,
+            initial_comment=file_notice,
+            thread_ts=file_thread_ts,
+            reply_broadcast=file_broadcast,
+        )
+    return ts, split_file_ts
+
+
 def _handle_new_post(
     body: dict,
     client: WebClient,
     logger: Logger,
     ctx: EventContext,
-    photo_list: list[dict],
     photo_blocks: list[dict],
     direct_files: list[dict] | None = None,
 ) -> None:
@@ -160,7 +322,6 @@ def _handle_new_post(
     team_id = ctx["team_id"]
     channel_id = ctx["channel_id"]
     msg_text = ctx["msg_text"]
-    mentioned_users = ctx["mentioned_users"]
     user_id = ctx["user_id"]
 
     sync_records = helpers.get_sync_list(team_id, channel_id)
@@ -174,17 +335,7 @@ def _handle_new_post(
         )
         if any_sync_channel:
             return
-        if user_id:
-            try:
-                client.chat_postMessage(
-                    channel=channel_id,
-                    text=":wave: Hello! I'm SyncBot. I was added to this Channel, but this Channel "
-                    "doesn't seem to be part of a Channel Sync. I'm leaving now. Please open the SyncBot Home "
-                    "tab to Publish or Subscribe.",
-                )
-                client.conversations_leave(channel=channel_id)
-            except Exception as e:
-                logger.error(f"Failed to notify and leave unconfigured channel {channel_id}: {e}")
+        _leave_unconfigured_channel(client, channel_id, user_id, logger)
         return
 
     if user_id:
@@ -213,15 +364,6 @@ def _handle_new_post(
             if sync_channel.channel_id == channel_id:
                 ts = helpers.safe_get(body, "event", "ts")
             elif fed_ws and workspace.id != source_workspace_id:
-                image_payloads = []
-                for block in photo_blocks or []:
-                    if block.get("type") == "image":
-                        image_payloads.append(
-                            {
-                                "url": block.get("image_url", ""),
-                                "alt_text": block.get("alt_text", "Shared image"),
-                            }
-                        )
                 payload = federation.build_message_payload(
                     sync_id=sync_channel.sync_id,
                     post_id=post_uuid,
@@ -230,90 +372,29 @@ def _handle_new_post(
                     user_avatar_url=user_profile_url,
                     workspace_name=workspace_name,
                     text=fed_adapted_text,
-                    images=image_payloads,
+                    images=_image_payloads_from_blocks(photo_blocks),
                     timestamp=helpers.safe_get(body, "event", "ts"),
                     user_id=user_id,
+                    reply_broadcast=ctx.get("reply_broadcast") or False,
                 )
                 result = federation.push_message(fed_ws, payload)
                 ts = helpers.safe_get(result, "ts") if result else helpers.safe_get(body, "event", "ts")
                 if not ts:
                     ts = helpers.safe_get(body, "event", "ts")
             else:
-                bot_token = helpers.decrypt_bot_token(workspace.bot_token)
-                target_client = WebClient(token=bot_token)
-                adapted_text = helpers.apply_mentioned_users(
-                    msg_text,
-                    client,
-                    target_client,
-                    mentioned_users,
-                    source_workspace_id=source_workspace_id or 0,
-                    target_workspace_id=workspace.id,
+                ts, split_file_ts = _same_instance_dest_post(
+                    body=body,
+                    client=client,
+                    ctx=ctx,
+                    photo_blocks=photo_blocks,
+                    direct_files=direct_files,
+                    sync_channel=sync_channel,
+                    workspace=workspace,
+                    source_workspace_id=source_workspace_id,
+                    user_name=user_name,
+                    user_profile_url=user_profile_url,
+                    workspace_name=workspace_name,
                 )
-                source_ws = helpers.get_workspace_by_id(source_workspace_id) if source_workspace_id else None
-                adapted_text = helpers.resolve_channel_references(
-                    adapted_text, client, source_ws, target_workspace_id=workspace.id
-                )
-
-                target_display_name, target_icon_url, author_is_mapped = (
-                    helpers.get_display_name_and_icon_for_synced_message(
-                        user_id or "",
-                        source_workspace_id or 0,
-                        user_name,
-                        user_profile_url,
-                        target_client,
-                        workspace.id,
-                        source_client=client,
-                    )
-                )
-                name_for_target = target_display_name or user_name or "Someone"
-
-                if direct_files and not msg_text.strip():
-                    file_comment = _shared_by_file_initial_comment(
-                        user_id=user_id or "",
-                        source_workspace_id=source_workspace_id or 0,
-                        target_workspace_id=workspace.id,
-                        name_for_target=name_for_target,
-                        target_client=target_client,
-                        channel_id=sync_channel.channel_id,
-                        text_message_ts=None,
-                    )
-                    _, file_ts = helpers.upload_files_to_slack(
-                        bot_token=bot_token,
-                        channel_id=sync_channel.channel_id,
-                        files=direct_files,
-                        initial_comment=file_comment,
-                    )
-                    ts = file_ts or helpers.safe_get(body, "event", "ts")
-                else:
-                    res = helpers.post_message(
-                        bot_token=bot_token,
-                        channel_id=sync_channel.channel_id,
-                        msg_text=adapted_text,
-                        user_name=name_for_target,
-                        user_profile_url=target_icon_url or user_profile_url,
-                        workspace_name=None if author_is_mapped else workspace_name,
-                        blocks=photo_blocks,
-                    )
-                    ts = helpers.safe_get(res, "ts") or helpers.safe_get(body, "event", "ts")
-
-                    if direct_files:
-                        text_ts = str(ts) if ts else None
-                        file_comment = _shared_by_file_initial_comment(
-                            user_id=user_id or "",
-                            source_workspace_id=source_workspace_id or 0,
-                            target_workspace_id=workspace.id,
-                            name_for_target=name_for_target,
-                            target_client=target_client,
-                            channel_id=sync_channel.channel_id,
-                            text_message_ts=text_ts,
-                        )
-                        _, split_file_ts = helpers.upload_files_to_slack(
-                            bot_token=bot_token,
-                            channel_id=sync_channel.channel_id,
-                            files=direct_files,
-                            thread_ts=ts,
-                            initial_comment=file_comment,
-                        )
 
             if ts:
                 post_list.append(schemas.PostMeta(post_id=post_uuid, sync_channel_id=sync_channel.id, ts=float(ts)))
@@ -324,7 +405,7 @@ def _handle_new_post(
             if ts or split_file_ts:
                 channels_synced += 1
         except Exception as exc:
-            _logger.error(f"Failed to sync new post to channel {sync_channel.channel_id}: {exc}")
+            _logger.warning(f"Failed to sync new post to channel {sync_channel.channel_id}: {exc}")
 
     synced = channels_synced
     failed = len(sync_records) - synced
@@ -332,7 +413,7 @@ def _handle_new_post(
     if failed:
         emit_metric("sync_failures", value=failed, sync_type="new_post")
 
-    helpers.cleanup_temp_files(photo_list, direct_files)
+    helpers.cleanup_temp_files(None, direct_files)
 
     if post_list:
         DbManager.create_records(post_list)
@@ -349,7 +430,6 @@ def _handle_thread_reply(
     """Sync a threaded reply to all linked channels."""
     channel_id = ctx["channel_id"]
     msg_text = ctx["msg_text"]
-    mentioned_users = ctx["mentioned_users"]
     user_id = ctx["user_id"]
     thread_ts = ctx["thread_ts"]
 
@@ -394,92 +474,31 @@ def _handle_thread_reply(
                     workspace_name=workspace_name,
                     text=fed_adapted_text,
                     thread_post_id=str(thread_post_id) if thread_post_id else None,
+                    images=_image_payloads_from_blocks(photo_blocks),
                     timestamp=helpers.safe_get(body, "event", "ts"),
                     user_id=user_id,
+                    reply_broadcast=ctx.get("reply_broadcast") or False,
                 )
                 result = federation.push_message(fed_ws, payload)
                 ts = helpers.safe_get(result, "ts") if result else helpers.safe_get(body, "event", "ts")
                 if not ts:
                     ts = helpers.safe_get(body, "event", "ts")
             else:
-                bot_token = helpers.decrypt_bot_token(workspace.bot_token)
-                target_client = WebClient(token=bot_token)
-                adapted_text = helpers.apply_mentioned_users(
-                    msg_text,
-                    client,
-                    target_client,
-                    mentioned_users,
-                    source_workspace_id=source_workspace_id or 0,
-                    target_workspace_id=workspace.id,
-                )
-                source_ws = helpers.get_workspace_by_id(source_workspace_id) if source_workspace_id else None
-                adapted_text = helpers.resolve_channel_references(
-                    adapted_text, client, source_ws, target_workspace_id=workspace.id
-                )
                 parent_ts = f"{post_meta.ts:.6f}"
-
-                target_display_name, target_icon_url, author_is_mapped = (
-                    helpers.get_display_name_and_icon_for_synced_message(
-                        user_id or "",
-                        source_workspace_id or 0,
-                        user_name,
-                        user_profile_url,
-                        target_client,
-                        workspace.id,
-                        source_client=client,
-                    )
+                ts, split_file_ts = _same_instance_dest_post(
+                    body=body,
+                    client=client,
+                    ctx=ctx,
+                    photo_blocks=photo_blocks,
+                    direct_files=direct_files,
+                    sync_channel=sync_channel,
+                    workspace=workspace,
+                    source_workspace_id=source_workspace_id,
+                    user_name=user_name,
+                    user_profile_url=user_profile_url,
+                    workspace_name=workspace_name,
+                    thread_ts=parent_ts,
                 )
-                name_for_target = target_display_name or user_name or "Someone"
-
-                if direct_files and not msg_text.strip():
-                    file_comment = _shared_by_file_initial_comment(
-                        user_id=user_id or "",
-                        source_workspace_id=source_workspace_id or 0,
-                        target_workspace_id=workspace.id,
-                        name_for_target=name_for_target,
-                        target_client=target_client,
-                        channel_id=sync_channel.channel_id,
-                        text_message_ts=None,
-                    )
-                    _, file_ts = helpers.upload_files_to_slack(
-                        bot_token=bot_token,
-                        channel_id=sync_channel.channel_id,
-                        files=direct_files,
-                        initial_comment=file_comment,
-                        thread_ts=parent_ts,
-                    )
-                    ts = file_ts or helpers.safe_get(body, "event", "ts")
-                else:
-                    res = helpers.post_message(
-                        bot_token=bot_token,
-                        channel_id=sync_channel.channel_id,
-                        msg_text=adapted_text,
-                        user_name=name_for_target,
-                        user_profile_url=target_icon_url or user_profile_url,
-                        thread_ts=parent_ts,
-                        workspace_name=None if author_is_mapped else workspace_name,
-                        blocks=photo_blocks,
-                    )
-                    ts = helpers.safe_get(res, "ts")
-
-                    if direct_files:
-                        text_ts = str(ts) if ts else None
-                        file_comment = _shared_by_file_initial_comment(
-                            user_id=user_id or "",
-                            source_workspace_id=source_workspace_id or 0,
-                            target_workspace_id=workspace.id,
-                            name_for_target=name_for_target,
-                            target_client=target_client,
-                            channel_id=sync_channel.channel_id,
-                            text_message_ts=text_ts,
-                        )
-                        _, split_file_ts = helpers.upload_files_to_slack(
-                            bot_token=bot_token,
-                            channel_id=sync_channel.channel_id,
-                            files=direct_files,
-                            thread_ts=parent_ts,
-                            initial_comment=file_comment,
-                        )
 
             if ts:
                 post_list.append(schemas.PostMeta(post_id=post_uuid, sync_channel_id=sync_channel.id, ts=float(ts)))
@@ -490,7 +509,7 @@ def _handle_thread_reply(
             if ts or split_file_ts:
                 channels_synced += 1
         except Exception as exc:
-            _logger.error(f"Failed to sync thread reply to channel {sync_channel.channel_id}: {exc}")
+            _logger.warning(f"Failed to sync thread reply to channel {sync_channel.channel_id}: {exc}")
 
     synced = channels_synced
     failed = len(post_records) - synced
@@ -543,6 +562,7 @@ def _handle_message_edit(
                     channel_id=sync_channel.channel_id,
                     text=fed_adapted_text,
                     timestamp=f"{post_meta.ts:.6f}",
+                    images=_image_payloads_from_blocks(photo_blocks),
                 )
                 federation.push_edit(fed_ws, payload)
             else:
@@ -560,18 +580,28 @@ def _handle_message_edit(
                 adapted_text = helpers.resolve_channel_references(
                     adapted_text, client, source_ws, target_workspace_id=workspace.id
                 )
+                dest_blocks = _dest_layout_blocks(
+                    ctx=ctx,
+                    photo_blocks=photo_blocks,
+                    client=client,
+                    target_client=target_client,
+                    source_workspace_id=source_workspace_id or 0,
+                    target_workspace_id=workspace.id,
+                    source_ws=source_ws,
+                    source_workspace_name=workspace_name,
+                )
                 helpers.post_message(
                     bot_token=bot_token,
                     channel_id=sync_channel.channel_id,
                     msg_text=adapted_text,
                     update_ts=f"{post_meta.ts:.6f}",
                     workspace_name=workspace_name,
-                    blocks=photo_blocks,
+                    blocks=dest_blocks,
                 )
             synced += 1
         except Exception as exc:
             failed += 1
-            _logger.error(f"Failed to sync message edit to channel {sync_channel.channel_id}: {exc}")
+            _logger.warning(f"Failed to sync message edit to channel {sync_channel.channel_id}: {exc}")
 
     emit_metric("messages_synced", value=synced, sync_type="message_edit")
     if failed:
@@ -618,7 +648,7 @@ def _handle_message_delete(
             synced += 1
         except Exception as exc:
             failed += 1
-            _logger.error(f"Failed to sync message delete to channel {sync_channel.channel_id}: {exc}")
+            _logger.warning(f"Failed to sync message delete to channel {sync_channel.channel_id}: {exc}")
 
     emit_metric("messages_synced", value=synced, sync_type="message_delete")
     if failed:
@@ -685,7 +715,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                 continue
 
             target_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
-            target_display_name, target_icon_url, author_is_mapped = (
+            target_display_name, target_icon_url, author_is_mapped, mapped_user_id = (
                 helpers.get_display_name_and_icon_for_synced_message(
                     user_id or "",
                     source_workspace_id or 0,
@@ -711,6 +741,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                 icon_url=target_icon_url or user_profile_url,
                 posted_from=posted_from,
                 author_is_mapped=author_is_mapped,
+                mapped_user_id=mapped_user_id,
                 name_probe_cache=name_probe_cache,
                 event_workspace_id=source_workspace_id,
             )
@@ -722,7 +753,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
                 failed += 1
         except Exception as exc:
             failed += 1
-            _logger.error(f"Failed to sync reaction to channel {sync_channel.channel_id}: {exc}")
+            _logger.warning(f"Failed to sync reaction to channel {sync_channel.channel_id}: {exc}")
 
     if post_list:
         DbManager.create_records(post_list)
@@ -760,7 +791,7 @@ def _handle_reaction(
 
     reacted_records = helpers.get_post_records(msg_ts)
     if not reacted_records:
-        _logger.info(
+        _logger.debug(
             "reaction_no_post_meta",
             extra={"msg_ts": msg_ts, "channel_id": channel_id, "float_ts": float(msg_ts)},
         )
@@ -869,7 +900,8 @@ def respond_to_message_event(
         return
 
     # Slack sends a plain message event and then a file_share for the same post; process only file_share
-    # so we do not sync twice (and avoid downloading files twice).
+    # so we do not sync twice (and avoid downloading files twice). thread_broadcast carries files on
+    # the same event — do not wait for a second file_share.
     event_has_files = bool(
         helpers.safe_get(body, "event", "files") or helpers.safe_get(body, "event", "message", "files")
     )
@@ -880,16 +912,38 @@ def respond_to_message_event(
         )
         return
 
+    _SYNCED_SUBTYPES = frozenset(
+        {
+            None,
+            "bot_message",
+            "file_share",
+            "thread_broadcast",
+            "reply_broadcast",
+            "me_message",
+            "message_changed",
+            "message_deleted",
+        }
+    )
+    if event_subtype not in _SYNCED_SUBTYPES:
+        _logger.info(
+            "unhandled_message_subtype",
+            extra={"subtype": event_subtype, "channel": helpers.safe_get(body, "event", "channel")},
+        )
+        return
+
     def _sync_message() -> None:
-        photo_list, photo_blocks, direct_files = _build_file_context(body, client, logger)
+        photo_blocks, direct_files = _build_file_context(body, client, logger)
         has_files = bool(photo_blocks or direct_files)
-        if (
-            (not event_subtype and not event_has_files)
-            or event_subtype == "bot_message"
-            or (event_subtype == "file_share" and (ctx["msg_text"] != "" or has_files))
-        ):
+        if event_subtype in (
+            None,
+            "bot_message",
+            "file_share",
+            "thread_broadcast",
+            "reply_broadcast",
+            "me_message",
+        ) and (event_subtype != "file_share" or ctx["msg_text"] != "" or has_files):
             if not ctx["thread_ts"]:
-                _handle_new_post(body, client, logger, ctx, photo_list, photo_blocks, direct_files)
+                _handle_new_post(body, client, logger, ctx, photo_blocks, direct_files)
             else:
                 _handle_thread_reply(body, client, logger, ctx, photo_blocks, direct_files)
         elif event_subtype == "message_changed":

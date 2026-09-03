@@ -11,7 +11,8 @@ from slack_sdk.errors import SlackApiError
 
 from db import DbManager, schemas
 from helpers._cache import _USER_INFO_CACHE_TTL, _cache_get, _cache_set
-from helpers.core import safe_get
+from helpers.core import safe_get, synced_from_line_username
+from helpers.message_blocks import blocks_include_body, event_layout_blocks
 
 _logger = logging.getLogger(__name__)
 
@@ -128,9 +129,33 @@ def get_bot_info_from_event(body: dict) -> tuple[str | None, str | None]:
     return bot_name, icon_url
 
 
+def slack_error_code(exc: BaseException | None) -> str:
+    """Return Slack's ``error`` string from a ``SlackApiError``, or empty."""
+    if exc is None:
+        return ""
+    resp = getattr(exc, "response", None)
+    if resp is None:
+        return ""
+    if isinstance(resp, dict):
+        err = resp.get("error")
+        return str(err) if err else ""
+    try:
+        err = resp.get("error")
+        if err:
+            return str(err)
+    except Exception:
+        pass
+    data = getattr(resp, "data", None)
+    if isinstance(data, dict):
+        err = data.get("error")
+        return str(err) if err else ""
+    return ""
+
+
 def get_user_info(client: WebClient, user_id: str) -> tuple[str | None, str | None]:
     """Return (display_name, profile_image_url) for a Slack user."""
-    cache_key = f"user_info:{user_id}"
+    fingerprint = _token_fingerprint(client)
+    cache_key = f"user_info:{fingerprint}:{user_id}" if fingerprint else f"user_info:{user_id}"
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
@@ -152,6 +177,38 @@ def get_user_info(client: WebClient, user_id: str) -> tuple[str | None, str | No
 
 
 @slack_retry
+def _conversations_history(client: WebClient, **kwargs) -> dict:
+    """Low-level wrapper so the retry decorator can catch SlackApiError."""
+    return client.conversations_history(**kwargs)
+
+
+def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
+    """Load Block Kit from ``conversations.history`` when the Events payload omitted it.
+
+    Bot posts sometimes arrive with flattened ``text`` and no ``blocks``. The
+    client ``Show more`` control is not a second payload; history is the full
+    message Slack stored.
+    """
+    if not event:
+        return []
+    nested = event.get("message") if isinstance(event.get("message"), dict) else {}
+    channel = event.get("channel") or nested.get("channel")
+    # message_changed uses event.ts as the edit-event id; the stored message is message.ts.
+    ts = nested.get("ts") or event.get("ts")
+    if not channel or not ts:
+        return []
+    try:
+        res = _conversations_history(client, channel=channel, latest=str(ts), inclusive=True, limit=1)
+    except SlackApiError as exc:
+        _logger.debug("fetch_message_layout_blocks failed: %s", exc)
+        return []
+    messages = res.get("messages") if res is not None else None
+    if not isinstance(messages, list) or not messages or not isinstance(messages[0], dict):
+        return []
+    return event_layout_blocks(messages[0])
+
+
+@slack_retry
 def post_message(
     bot_token: str,
     channel_id: str,
@@ -162,19 +219,19 @@ def post_message(
     update_ts: str | None = None,
     workspace_name: str | None = None,
     blocks: list[dict] | None = None,
+    reply_broadcast: bool = False,
 ) -> dict:
     """Post or update a message in a Slack channel."""
     slack_client = WebClient(bot_token)
-    posted_from = f"({workspace_name})" if workspace_name else ""
     if blocks:
-        if msg_text.strip():
+        if msg_text.strip() and not blocks_include_body(blocks):
             msg_block = {"type": "section", "text": {"type": "mrkdwn", "text": msg_text}}
             all_blocks = [msg_block] + blocks
         else:
             all_blocks = blocks
     else:
         all_blocks = []
-    fallback_text = msg_text if msg_text.strip() else "Shared an image"
+    fallback_text = msg_text if msg_text.strip() else "Shared a file"
     if update_ts:
         res = slack_client.chat_update(
             channel=channel_id,
@@ -183,15 +240,18 @@ def post_message(
             blocks=all_blocks,
         )
     else:
-        username_str = f"{user_name} {posted_from}".strip() if user_name else None
-        res = slack_client.chat_postMessage(
-            channel=channel_id,
-            text=fallback_text,
-            username=username_str,
-            icon_url=user_profile_url,
-            thread_ts=thread_ts,
-            blocks=all_blocks,
-        )
+        username_str = synced_from_line_username(user_name, workspace_name) if user_name else None
+        kwargs: dict = {
+            "channel": channel_id,
+            "text": fallback_text,
+            "username": username_str,
+            "icon_url": user_profile_url,
+            "thread_ts": thread_ts,
+            "blocks": all_blocks,
+        }
+        if reply_broadcast:
+            kwargs["reply_broadcast"] = True
+        res = slack_client.chat_postMessage(**kwargs)
     return res
 
 

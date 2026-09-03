@@ -32,6 +32,38 @@ from slack.blocks import divider, header, section
 _logger = logging.getLogger(__name__)
 
 
+def _prefetch_group_channel_and_mapping_counts(
+    group_id: int, sync_ids: list[int]
+) -> tuple[dict[int, list], dict[int, int], dict[int, int]]:
+    """Return ``(channels_by_sync, channel_count_by_ws, mapped_count_by_ws)``."""
+    channels_by_sync: dict[int, list] = {}
+    channel_count_by_ws: dict[int, int] = {}
+    if sync_ids:
+        channels = DbManager.find_records(
+            SyncChannel,
+            [
+                SyncChannel.sync_id.in_(sync_ids),
+                SyncChannel.deleted_at.is_(None),
+            ],
+        )
+        for row in channels:
+            channels_by_sync.setdefault(row.sync_id, []).append(row)
+            if row.workspace_id:
+                channel_count_by_ws[row.workspace_id] = channel_count_by_ws.get(row.workspace_id, 0) + 1
+    mapped_count_by_ws: dict[int, int] = {}
+    mappings = DbManager.find_records(
+        UserMapping,
+        [
+            UserMapping.group_id == group_id,
+            UserMapping.map_method != "none",
+        ],
+    )
+    for row in mappings:
+        if row.target_workspace_id:
+            mapped_count_by_ws[row.target_workspace_id] = mapped_count_by_ws.get(row.target_workspace_id, 0) + 1
+    return channels_by_sync, channel_count_by_ws, mapped_count_by_ws
+
+
 def _home_tab_content_hash(
     workspace_record: Workspace,
     user_id: str | None = None,
@@ -78,50 +110,21 @@ def _home_tab_content_hash(
         members = _get_group_members(group.id)
         syncs = DbManager.find_records(Sync, [Sync.group_id == group.id])
         sync_ids = [s.id for s in syncs]
-        # Sync channels drive the "Synced Channels" section
+        channels_by_sync, ch_by_ws, mapped_by_ws = _prefetch_group_channel_and_mapping_counts(group.id, sync_ids)
         sync_channel_tuples: list[tuple] = []
         for sync in syncs:
-            channels = DbManager.find_records(
-                SyncChannel,
-                [
-                    SyncChannel.sync_id == sync.id,
-                    SyncChannel.deleted_at.is_(None),
-                ],
-            )
+            channels = channels_by_sync.get(sync.id, [])
             channel_sig = tuple(
                 (sync_channel.workspace_id, sync_channel.channel_id, sync_channel.status or "active")
                 for sync_channel in sorted(channels, key=lambda c: (c.workspace_id, c.channel_id))
             )
             sync_channel_tuples.append((sync.id, channel_sig))
         sync_channel_tuples.sort(key=lambda x: x[0])
-        # Per-member channel_count and mapped_count (shown in group section)
         member_sigs: list[tuple] = []
         for member in members:
             ws_id = member.workspace_id or 0
-            ch_count = 0
-            if ws_id and sync_ids:
-                ch_count = len(
-                    DbManager.find_records(
-                        SyncChannel,
-                        [
-                            SyncChannel.sync_id.in_(sync_ids),
-                            SyncChannel.workspace_id == ws_id,
-                            SyncChannel.deleted_at.is_(None),
-                        ],
-                    )
-                )
-            mapped_count = 0
-            if ws_id:
-                mapped_count = len(
-                    DbManager.find_records(
-                        UserMapping,
-                        [
-                            UserMapping.group_id == group.id,
-                            UserMapping.target_workspace_id == ws_id,
-                            UserMapping.match_method != "none",
-                        ],
-                    )
-                )
+            ch_count = ch_by_ws.get(ws_id, 0) if ws_id else 0
+            mapped_count = mapped_by_ws.get(ws_id, 0) if ws_id else 0
             member_sigs.append((ws_id, ch_count, mapped_count))
         member_sigs.sort(key=lambda x: x[0])
         group_payload.append((group.id, len(members), len(syncs), tuple(sync_channel_tuples), tuple(member_sigs)))
@@ -490,7 +493,7 @@ def _build_group_section(
         ),
         orm.ButtonElement(
             label="User Mapping",
-            action=actions.CONFIG_MANAGE_USER_MATCHING,
+            action=actions.CONFIG_MANAGE_USER_MAPPING,
             value=str(group.id),
         ),
     ]
@@ -517,6 +520,7 @@ def _build_group_section(
 
     syncs_for_group = DbManager.find_records(Sync, [Sync.group_id == group.id])
     sync_ids = [s.id for s in syncs_for_group]
+    _, ch_by_ws, mapped_by_ws = _prefetch_group_channel_and_mapping_counts(group.id, sync_ids)
 
     for member in all_members:
         if member.workspace_id:
@@ -533,29 +537,8 @@ def _build_group_section(
         joined_str = f"{member.joined_at:%B %d, %Y}" if member.joined_at else "Unknown"
 
         ws_id = member.workspace_id
-        channel_count = 0
-        if ws_id and sync_ids:
-            channels = DbManager.find_records(
-                SyncChannel,
-                [
-                    SyncChannel.sync_id.in_(sync_ids),
-                    SyncChannel.workspace_id == ws_id,
-                    SyncChannel.deleted_at.is_(None),
-                ],
-            )
-            channel_count = len(channels)
-
-        mapped_count = 0
-        if ws_id:
-            mapped = DbManager.find_records(
-                UserMapping,
-                [
-                    UserMapping.group_id == group.id,
-                    UserMapping.target_workspace_id == ws_id,
-                    UserMapping.match_method != "none",
-                ],
-            )
-            mapped_count = len(mapped)
+        channel_count = ch_by_ws.get(ws_id, 0) if ws_id else 0
+        mapped_count = mapped_by_ws.get(ws_id, 0) if ws_id else 0
 
         stats = f"Member Since: `{joined_str}`\nSynced Channels: `{channel_count}`\nMapped Users: `{mapped_count}` "
         text = f"*{name}*\n{stats}"

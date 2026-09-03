@@ -26,6 +26,8 @@ class EventContext(TypedDict):
     thread_ts: str | None
     ts: str | None
     event_subtype: str | None
+    reply_broadcast: bool
+    content_blocks: list[dict]
 
 
 def _parse_private_metadata(body: dict) -> dict:

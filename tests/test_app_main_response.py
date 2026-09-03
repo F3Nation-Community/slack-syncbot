@@ -225,6 +225,22 @@ class TestLambdaHandler:
 
         assert get_public_base_url() == "https://fn.lambda-url.us-east-1.on.aws"
 
+    def test_federation_path_is_404_when_settings_off(self):
+        with (
+            patch.object(app_module, "federation_enabled", return_value=False),
+            patch.object(app_module, "SlackRequestHandler") as mock_srh,
+        ):
+            result = app_module.handler(
+                {
+                    "requestContext": {"http": {"method": "GET"}},
+                    "rawPath": "/api/federation/ping",
+                    "headers": {"host": "fn.example"},
+                },
+                {},
+            )
+        mock_srh.assert_not_called()
+        assert result["statusCode"] == 404
+
 
 class TestAsFunctionUrlResponse:
     def test_moves_set_cookie_header_to_cookies_array(self):

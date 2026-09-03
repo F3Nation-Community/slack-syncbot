@@ -113,7 +113,6 @@ jobs:
           DATABASE_TLS_ENABLED: ${{ vars.DATABASE_TLS_ENABLED }}
           DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
-          SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
           PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
           ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
           AWS_ENABLE_XRAY: ${{ vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false' }}
@@ -128,12 +127,7 @@ jobs:
             --stack-name ${{ vars.AWS_STACK_NAME || 'syncbot-test' }} \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotFunctionArn'].OutputValue" \
             --output text)
-          aws lambda invoke \
-            --function-name "$FUNCTION_ARN" \
-            --payload '{"action":"migrate"}' \
-            --cli-binary-format raw-in-base64-out \
-            /tmp/migrate-response.json
-          cat /tmp/migrate-response.json
+          bash infra/aws/scripts/invoke_lambda_migrate.sh "$FUNCTION_ARN"
 
       - name: Post-deploy summary
         run: |
@@ -201,7 +195,6 @@ jobs:
           DATABASE_TLS_ENABLED: ${{ vars.DATABASE_TLS_ENABLED }}
           DATABASE_SSL_CA_PATH: ${{ vars.DATABASE_SSL_CA_PATH }}
           LOG_LEVEL: ${{ vars.LOG_LEVEL || 'INFO' }}
-          SYNCBOT_INSTANCE_ID: ${{ vars.SYNCBOT_INSTANCE_ID }}
           PRIMARY_WORKSPACE: ${{ vars.PRIMARY_WORKSPACE }}
           ENABLE_DB_RESET: ${{ vars.ENABLE_DB_RESET }}
           AWS_ENABLE_XRAY: ${{ vars.AWS_ENABLE_XRAY || vars.ENABLE_XRAY || 'false' }}
@@ -216,12 +209,7 @@ jobs:
             --stack-name ${{ vars.AWS_STACK_NAME || 'syncbot-prod' }} \
             --query "Stacks[0].Outputs[?OutputKey=='SyncBotFunctionArn'].OutputValue" \
             --output text)
-          aws lambda invoke \
-            --function-name "$FUNCTION_ARN" \
-            --payload '{"action":"migrate"}' \
-            --cli-binary-format raw-in-base64-out \
-            /tmp/migrate-response.json
-          cat /tmp/migrate-response.json
+          bash infra/aws/scripts/invoke_lambda_migrate.sh "$FUNCTION_ARN"
 
       - name: Post-deploy summary
         run: |

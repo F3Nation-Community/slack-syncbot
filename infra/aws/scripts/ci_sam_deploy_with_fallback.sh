@@ -149,7 +149,6 @@ emit_override_lines() {
   printf 'DatabasePort=%s\n' "${DATABASE_PORT:-}"
   printf 'DatabaseSchema=%s\n' "${DATABASE_SCHEMA}"
   printf 'LogLevel=%s\n' "${LOG_LEVEL:-INFO}"
-  printf 'SyncbotInstanceId=%s\n' "${SYNCBOT_INSTANCE_ID:-}"
   printf 'PrimaryWorkspace=%s\n' "${PRIMARY_WORKSPACE:-}"
   printf 'EnableDbReset=%s\n' "${ENABLE_DB_RESET:-}"
   printf 'EnableXRay=%s\n' "${AWS_ENABLE_XRAY:-false}"

@@ -1,6 +1,7 @@
 """User Mapping modal, directory email map, and Auto Map Now."""
 
 import os
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -21,7 +22,7 @@ from handlers.users import (  # noqa: E402
     handle_user_mapping_edit_submit,
     handle_user_mapping_refresh,
 )
-from helpers.user_matching import (  # noqa: E402
+from helpers.user_map import (  # noqa: E402
     _find_user_match,
     _match_from_directory,
     ensure_mapped_target_user_id,
@@ -82,9 +83,9 @@ class TestSeedWithoutPartnerCrawl:
             )
         ]
         with (
-            patch("helpers.user_matching.DbManager.find_records") as find,
-            patch("helpers.user_matching.DbManager.create_records") as create_many,
-            patch("helpers.user_matching.DbManager.update_records"),
+            patch("helpers.user_map.DbManager.find_records") as find,
+            patch("helpers.user_map.DbManager.create_records") as create_many,
+            patch("helpers.user_map.DbManager.update_records"),
         ):
             find.side_effect = [source_entries, []]
             created = seed_user_mappings(1, 2, group_id=9)
@@ -93,7 +94,7 @@ class TestSeedWithoutPartnerCrawl:
         row = create_many.call_args.args[0][0]
         assert row.source_user_id == "U_SRC"
         assert row.target_workspace_id == 2
-        assert row.match_method == "none"
+        assert row.map_method == "none"
 
     def test_auto_match_does_not_refresh_directory(self):
         mapping = SimpleNamespace(
@@ -101,7 +102,7 @@ class TestSeedWithoutPartnerCrawl:
             source_workspace_id=1,
             source_user_id="U_SRC",
             target_workspace_id=2,
-            match_method="none",
+            map_method="none",
         )
         target_dir = SimpleNamespace(
             slack_user_id="U_TGT",
@@ -113,10 +114,9 @@ class TestSeedWithoutPartnerCrawl:
         )
 
         with (
-            patch("helpers.user_matching.DbManager.find_records") as find,
-            patch("helpers.user_matching.DbManager.update_records") as update,
-            patch("helpers.user_matching._refresh_user_directory") as refresh,
-            patch("helpers.user_matching._source_profile_from_directory") as profile,
+            patch("helpers.user_map.DbManager.find_records") as find,
+            patch("helpers.user_map.DbManager.update_records") as update,
+            patch("helpers.user_map._source_profile_from_directory") as profile,
         ):
             find.side_effect = [[mapping], [target_dir]]
             profile.return_value = {
@@ -128,7 +128,6 @@ class TestSeedWithoutPartnerCrawl:
 
         assert newly == 1
         assert still == 0
-        refresh.assert_not_called()
         assert update.called
 
     def test_auto_map_skips_source_slack_lookup_when_disallowed(self):
@@ -137,13 +136,13 @@ class TestSeedWithoutPartnerCrawl:
             source_workspace_id=1,
             source_user_id="U_SRC",
             target_workspace_id=2,
-            match_method="none",
+            map_method="none",
         )
         with (
-            patch("helpers.user_matching.DbManager.find_records") as find,
-            patch("helpers.user_matching._source_profile_from_directory", return_value=None),
-            patch("helpers.user_matching._get_source_profile_full") as slack_lookup,
-            patch("helpers.user_matching.get_workspace_by_id") as get_ws,
+            patch("helpers.user_map.DbManager.find_records") as find,
+            patch("helpers.user_map._source_profile_from_directory", return_value=None),
+            patch("helpers.user_map._get_source_profile_full") as slack_lookup,
+            patch("helpers.user_map.get_workspace_by_id") as get_ws,
         ):
             find.side_effect = [[mapping], []]
             newly, still = run_auto_match_for_workspace(MagicMock(), 2, allow_slack_email_lookup=False, seeded=0)
@@ -188,14 +187,12 @@ class TestUserMappingModal:
             patch("builders.user_mapping.orm.BlockView.post_modal") as post,
             patch("builders.user_mapping.seed_mappings_for_workspace") as seed,
             patch("helpers.run_auto_match_for_workspace") as match,
-            patch("builders.user_mapping.helpers._refresh_user_directory") as refresh_dir,
         ):
             build_user_matching_entry(body, client, MagicMock(), {})
 
         post.assert_called_once()
         seed.assert_not_called()
         match.assert_not_called()
-        refresh_dir.assert_not_called()
         client.views_publish.assert_not_called()
 
     def test_edit_save_does_not_refresh_home(self):
@@ -205,7 +202,7 @@ class TestUserMappingModal:
             source_workspace_id=2,
             target_workspace_id=1,
             target_user_id=None,
-            match_method="none",
+            map_method="none",
         )
         body = {
             "view": {
@@ -239,14 +236,13 @@ class TestUserMappingModal:
         client = MagicMock()
         with (
             patch("handlers.users._get_authorized_workspace", return_value=("U1", workspace)),
-            patch("handlers.users.helpers._refresh_user_directory") as refresh_dir,
             patch("handlers.users.seed_mappings_for_workspace") as seed,
             patch("handlers.users.helpers.run_auto_match_for_workspace") as match,
             patch("handlers.users.update_user_mapping_modal") as update_modal,
         ):
             handle_user_mapping_refresh(body, client, MagicMock(), {})
 
-        refresh_dir.assert_not_called()
+        seed.assert_not_called()
         seed.assert_not_called()
         match.assert_not_called()
         update_modal.assert_called_once()
@@ -266,10 +262,10 @@ class TestUserMappingModal:
             patch("handlers.users.helpers._cache_delete"),
             patch("handlers.users.seed_mappings_for_workspace", return_value=2) as seed,
             patch(
-                "handlers.users.helpers.run_auto_match_for_workspace",
+                "handlers.users.helpers.run_auto_map_for_workspace",
                 return_value=(20, 3),
             ) as match,
-            patch("handlers.users.set_last_auto_match") as set_last,
+            patch("handlers.users.set_last_auto_map") as set_last,
             patch("handlers.users.helpers._cache_delete_prefix"),
             patch("handlers.users.update_user_mapping_modal") as update_modal,
             patch("handlers.users.builders.refresh_home_tab_for_workspace") as refresh_home,
@@ -311,7 +307,7 @@ class TestUserMappingModal:
         workspace = SimpleNamespace(id=1, team_id="T1")
         with (
             patch("builders.user_mapping.DbManager.find_records", return_value=[]),
-            patch("builders.user_mapping.get_last_auto_match", return_value=None),
+            patch("builders.user_mapping.get_last_auto_map", return_value=None),
             patch("builders.user_mapping._linked_workspace_ids") as linked,
             patch("builders.user_mapping._collect_mappings") as collect,
         ):
@@ -321,7 +317,7 @@ class TestUserMappingModal:
         collect.assert_not_called()
         blob = str(BlockView(blocks=blocks).as_form_field())
         assert "Mapping users..." in blob
-        assert "user_mapping_auto_match" not in blob
+        assert "user_mapping_auto_map" not in blob
         assert "Refresh List" in blob
         assert "Users with the same email across Workspaces can be found by clicking Auto Map Now." in blob
 
@@ -329,7 +325,7 @@ class TestUserMappingModal:
         workspace = SimpleNamespace(id=1, team_id="T1")
         with (
             patch("builders.user_mapping.DbManager.find_records", return_value=[]),
-            patch("builders.user_mapping.get_last_auto_match", return_value=None),
+            patch("builders.user_mapping.get_last_auto_map", return_value=None),
             patch("builders.user_mapping._linked_workspace_ids", return_value=set()),
             patch("builders.user_mapping._collect_mappings", return_value=[]),
         ):
@@ -337,7 +333,7 @@ class TestUserMappingModal:
 
         blob = str(BlockView(blocks=blocks).as_form_field())
         assert "Auto Map Now" in blob
-        assert "user_mapping_auto_match" in blob
+        assert "user_mapping_auto_map" in blob
         assert "Refresh List" in blob
         assert "Auto-match" not in blob
 
@@ -353,13 +349,11 @@ class TestJoinSeedsOnly:
             patch("handlers.groups.DbManager.find_records", return_value=[member]),
             patch("handlers.groups.helpers.get_workspace_by_id", return_value=partner),
             patch("handlers.groups.helpers.seed_user_mappings") as seed,
-            patch("handlers.groups.helpers._refresh_user_directory") as refresh,
             patch("handlers.groups.helpers.run_auto_match_for_workspace") as match,
         ):
             _activate_group_membership(MagicMock(), workspace, group)
 
         assert seed.call_count == 2
-        refresh.assert_not_called()
         match.assert_not_called()
 
 
@@ -414,21 +408,15 @@ class TestEnsureMappedTargetUserId:
         )
         target_client = MagicMock()
         with (
-            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch("helpers.user_map._mapping_row_for_pair", return_value=None),
             patch(
-                "helpers.user_matching._source_profile_from_directory",
+                "helpers.user_map._source_profile_from_directory",
                 return_value={"email": "same@ex.com", "display_name": "Ada", "real_name": "Ada"},
             ),
-            patch("helpers.user_matching._get_source_profile_full") as source_slack,
-            patch(
-                "helpers.user_matching.DbManager.find_records",
-                side_effect=[
-                    [dest],  # target directory in _find_user_match
-                    [],  # existing mapping in _persist
-                ],
-            ),
-            patch("helpers.user_matching.DbManager.create_record") as create,
-            patch("helpers.user_matching.get_workspace_by_id", return_value=SimpleNamespace(team_id="TDEST")),
+            patch("helpers.user_map._get_source_profile_full") as source_slack,
+            patch("helpers.user_map.DbManager.find_records", return_value=[dest]),
+            patch("helpers.user_map.DbManager.create_record") as create,
+            patch("helpers.user_map.get_workspace_by_id", return_value=SimpleNamespace(team_id="TDEST")),
             patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
         ):
             uid = ensure_mapped_target_user_id(
@@ -445,21 +433,21 @@ class TestEnsureMappedTargetUserId:
         create.assert_called_once()
         row = create.call_args.args[0]
         assert row.target_user_id == "U_DEST"
-        assert row.match_method == "email"
+        assert row.map_method == "email"
         invalidate.assert_called_once_with("TDEST")
 
     def test_directory_miss_uses_one_lookup_by_email(self):
         target_client = MagicMock()
         target_client.users_lookupByEmail.return_value = {"user": {"id": "U_LOOKED"}}
         with (
-            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch("helpers.user_map._mapping_row_for_pair", return_value=None),
             patch(
-                "helpers.user_matching._source_profile_from_directory",
+                "helpers.user_map._source_profile_from_directory",
                 return_value={"email": "a@ex.com", "display_name": "A", "real_name": "A"},
             ),
-            patch("helpers.user_matching.DbManager.find_records", side_effect=[[], []]),
-            patch("helpers.user_matching.DbManager.create_record") as create,
-            patch("helpers.user_matching.get_workspace_by_id", return_value=SimpleNamespace(team_id="T2")),
+            patch("helpers.user_map.DbManager.find_records", return_value=[]),
+            patch("helpers.user_map.DbManager.create_record") as create,
+            patch("helpers.user_map.get_workspace_by_id", return_value=SimpleNamespace(team_id="T2")),
             patch("helpers.export_import.invalidate_home_tab_caches_for_team"),
         ):
             uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=target_client)
@@ -467,8 +455,9 @@ class TestEnsureMappedTargetUserId:
         assert uid == "U_LOOKED"
         target_client.users_lookupByEmail.assert_called_once_with(email="a@ex.com")
         create.assert_called_once()
+        assert create.call_args.args[0].map_method == "email"
 
-    def test_ambiguous_dest_email_does_not_write(self):
+    def test_ambiguous_dest_email_persists_none_stub(self):
         a = SimpleNamespace(
             slack_user_id="U1", email="dup@ex.com", real_name="A", display_name="A", normalized_name="A"
         )
@@ -477,31 +466,56 @@ class TestEnsureMappedTargetUserId:
         )
         target_client = MagicMock()
         with (
-            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch("helpers.user_map._mapping_row_for_pair", return_value=None),
             patch(
-                "helpers.user_matching._source_profile_from_directory",
+                "helpers.user_map._source_profile_from_directory",
                 return_value={"email": "dup@ex.com", "display_name": "X", "real_name": "X"},
             ),
-            patch("helpers.user_matching.DbManager.find_records", return_value=[a, b]),
-            patch("helpers.user_matching.DbManager.create_record") as create,
-            patch("helpers.user_matching.DbManager.update_records") as update,
+            patch("helpers.user_map.DbManager.find_records", return_value=[a, b]),
+            patch("helpers.user_map.DbManager.create_record") as create,
+            patch("helpers.user_map.DbManager.update_records") as update,
         ):
             uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=target_client)
 
         assert uid is None
-        create.assert_not_called()
+        create.assert_called_once()
+        row = create.call_args.args[0]
+        assert row.map_method == "none"
+        assert row.target_user_id is None
         update.assert_not_called()
-        # Ambiguous email is present in directory, so lookup is skipped.
         target_client.users_lookupByEmail.assert_not_called()
+
+    def test_lookup_miss_persists_none_stub(self):
+        target_client = MagicMock()
+        with (
+            patch("helpers.user_map._mapping_row_for_pair", return_value=None),
+            patch(
+                "helpers.user_map._source_profile_from_directory",
+                return_value={"email": "gone@ex.com", "display_name": "G", "real_name": "G"},
+            ),
+            patch("helpers.user_map.DbManager.find_records", return_value=[]),
+            patch("helpers.user_map._lookup_user_by_email", return_value=None),
+            patch("helpers.user_map.DbManager.create_record") as create,
+        ):
+            uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=target_client)
+
+        assert uid is None
+        create.assert_called_once()
+        assert create.call_args.args[0].map_method == "none"
 
     def test_already_mapped_skips_slack_and_write(self):
         source_client = MagicMock()
         target_client = MagicMock()
+        existing = SimpleNamespace(
+            map_method="email",
+            target_user_id="U_EXISTING",
+            matched_at=datetime.now(UTC),
+        )
         with (
-            patch("helpers.user_matching.get_mapped_target_user_id", return_value="U_EXISTING"),
-            patch("helpers.user_matching._source_profile_from_directory") as profile,
-            patch("helpers.user_matching.DbManager.create_record") as create,
-            patch("helpers.user_matching.DbManager.update_records") as update,
+            patch("helpers.user_map._mapping_row_for_pair", return_value=existing),
+            patch("helpers.user_map._source_profile_from_directory") as profile,
+            patch("helpers.user_map.DbManager.create_record") as create,
+            patch("helpers.user_map.DbManager.update_records") as update,
         ):
             uid = ensure_mapped_target_user_id(
                 "U_SRC",
@@ -520,9 +534,9 @@ class TestEnsureMappedTargetUserId:
 
     def test_failure_returns_none_without_raising(self):
         with (
-            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch("helpers.user_map._mapping_row_for_pair", return_value=None),
             patch(
-                "helpers.user_matching._source_profile_from_directory",
+                "helpers.user_map._source_profile_from_directory",
                 side_effect=RuntimeError("boom"),
             ),
         ):
@@ -538,14 +552,14 @@ class TestEnsureMappedTargetUserId:
             normalized_name="Ada",
         )
         with (
-            patch("helpers.user_matching.get_mapped_target_user_id", return_value=None),
+            patch("helpers.user_map._mapping_row_for_pair", return_value=None),
             patch(
-                "helpers.user_matching._source_profile_from_directory",
+                "helpers.user_map._source_profile_from_directory",
                 return_value={"email": "same@ex.com", "display_name": "Ada", "real_name": "Ada"},
             ),
-            patch("helpers.user_matching.DbManager.find_records", side_effect=[[dest], []]),
-            patch("helpers.user_matching.DbManager.create_record"),
-            patch("helpers.user_matching.get_workspace_by_id", side_effect=RuntimeError("db down")),
+            patch("helpers.user_map.DbManager.find_records", return_value=[dest]),
+            patch("helpers.user_map.DbManager.create_record"),
+            patch("helpers.user_map.get_workspace_by_id", side_effect=RuntimeError("db down")),
         ):
             uid = ensure_mapped_target_user_id("U_SRC", 1, 2, target_client=MagicMock())
         assert uid == "U_DEST"
@@ -555,10 +569,10 @@ class TestSyncedMessageDisplayName:
     def test_mapped_author_uses_dest_display_name(self):
         target_client = MagicMock()
         with (
-            patch("helpers.user_matching.ensure_mapped_target_user_id", return_value="U_DEST"),
-            patch("helpers.user_matching.get_user_info", return_value=("Local Nacho", "https://dest/n.png")),
+            patch("helpers.user_map.ensure_mapped_target_user_id", return_value="U_DEST"),
+            patch("helpers.user_map.get_user_info", return_value=("Local Nacho", "https://dest/n.png")),
         ):
-            name, icon, mapped = get_display_name_and_icon_for_synced_message(
+            name, icon, mapped, mapped_id = get_display_name_and_icon_for_synced_message(
                 "U_SRC",
                 1,
                 "Remote Alice",
@@ -569,15 +583,16 @@ class TestSyncedMessageDisplayName:
         assert mapped is True
         assert name == "Local Nacho"
         assert icon == "https://dest/n.png"
+        assert mapped_id == "U_DEST"
 
     def test_mapped_author_stays_mapped_if_dest_profile_missing(self):
         target_client = MagicMock()
         with (
-            patch("helpers.user_matching.ensure_mapped_target_user_id", return_value="U_DEST"),
-            patch("helpers.user_matching.get_user_info", return_value=(None, None)),
-            patch("helpers.user_matching._source_profile_from_directory", return_value=None),
+            patch("helpers.user_map.ensure_mapped_target_user_id", return_value="U_DEST"),
+            patch("helpers.user_map.get_user_info", return_value=(None, None)),
+            patch("helpers.user_map._source_profile_from_directory", return_value=None),
         ):
-            name, _icon, mapped = get_display_name_and_icon_for_synced_message(
+            name, _icon, mapped, mapped_id = get_display_name_and_icon_for_synced_message(
                 "U_SRC",
                 1,
                 "Remote Alice",
@@ -587,3 +602,64 @@ class TestSyncedMessageDisplayName:
             )
         assert mapped is True
         assert name == "Remote Alice"
+        assert mapped_id == "U_DEST"
+
+    def test_display_name_is_not_normalized_for_sync(self):
+        target_client = MagicMock()
+        with patch("helpers.user_map.ensure_mapped_target_user_id", return_value=None):
+            name, _icon, mapped, mapped_id = get_display_name_and_icon_for_synced_message(
+                "U_SRC",
+                1,
+                "John Smith (Admin)",
+                None,
+                target_client,
+                2,
+            )
+        assert mapped is False
+        assert mapped_id is None
+        assert name == "John Smith (Admin)"
+
+
+class TestAuthorBeforeMentions:
+    def test_same_instance_dest_maps_author_before_mention_rewrite(self):
+        from handlers.messages import _same_instance_dest_post
+
+        order: list[str] = []
+
+        def _display(*_a, **_k):
+            order.append("author")
+            return ("Ada", None, True, "U_MAP")
+
+        def _mentions(text, *_a, **_k):
+            order.append("mentions")
+            return text
+
+        ctx = {
+            "msg_text": "hi <@U_SRC>",
+            "mentioned_users": [{"user_id": "U_SRC"}],
+            "user_id": "U_SRC",
+            "reply_broadcast": False,
+        }
+        with (
+            patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
+            patch("handlers.messages.WebClient"),
+            patch("handlers.messages.helpers.get_display_name_and_icon_for_synced_message", side_effect=_display),
+            patch("handlers.messages.helpers.apply_mentioned_users", side_effect=_mentions),
+            patch("handlers.messages.helpers.resolve_channel_references", side_effect=lambda t, *_a, **_k: t),
+            patch("handlers.messages.helpers.get_workspace_by_id", return_value=None),
+            patch("handlers.messages.helpers.post_message", return_value={"ts": "2.0"}),
+        ):
+            _same_instance_dest_post(
+                body={"event": {"ts": "1.0"}},
+                client=MagicMock(),
+                ctx=ctx,
+                photo_blocks=[],
+                direct_files=None,
+                sync_channel=SimpleNamespace(channel_id="C_TGT", id=2),
+                workspace=SimpleNamespace(id=2, bot_token="enc"),
+                source_workspace_id=1,
+                user_name="Ada",
+                user_profile_url=None,
+                workspace_name="A",
+            )
+        assert order == ["author", "mentions"]

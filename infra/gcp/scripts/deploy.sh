@@ -388,7 +388,6 @@ write_deploy_receipt() {
 - DATABASE_USER=${DATABASE_USER:-}
 - DATABASE_TLS_ENABLED=${DATABASE_TLS_ENABLED:-}
 - LOG_LEVEL=${LOG_LEVEL:-INFO}
-- SYNCBOT_INSTANCE_ID=${SYNCBOT_INSTANCE_ID:-}
 - PRIMARY_WORKSPACE=${PRIMARY_WORKSPACE:-}
 - SLACK_CLIENT_ID=${SLACK_CLIENT_ID:-}
 - ENABLE_DB_RESET=${ENABLE_DB_RESET:-false}
@@ -566,7 +565,6 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   [[ -n "${DATABASE_PORT:-}" ]] && VARS+=("-var=database_port=$DATABASE_PORT")
   [[ -n "$CLOUD_IMAGE" ]] && VARS+=("-var=cloud_run_image=$CLOUD_IMAGE")
   [[ -n "${DATABASE_USER:-}" ]] && VARS+=("-var=database_user=$DATABASE_USER")
-  [[ -n "${SYNCBOT_INSTANCE_ID:-}" ]] && VARS+=("-var=syncbot_instance_id=$SYNCBOT_INSTANCE_ID")
   [[ -n "${PRIMARY_WORKSPACE:-}" ]] && VARS+=("-var=primary_workspace=$PRIMARY_WORKSPACE")
   [[ -n "${ENABLE_DB_RESET:-}" ]] && VARS+=("-var=enable_db_reset=$ENABLE_DB_RESET")
   [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && VARS+=("-var=database_tls_enabled=$DATABASE_TLS_ENABLED")
@@ -800,15 +798,12 @@ echo "=== Log Level ==="
 LOG_LEVEL="$(prompt_log_level "$LOG_LEVEL_DEFAULT")"
 
 # Preserve optional runtime env on redeploy (Terraform defaults otherwise).
-INSTANCE_ID_VAR=""
 PRIMARY_WORKSPACE_VAR=""
 ENABLE_DB_RESET_VAR=""
 DB_TLS_VAR=""
 DB_SSL_CA_VAR=""
 DB_BACKEND="${DATABASE_BACKEND:-sqlite}"
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
-  DETECTED_INSTANCE_ID="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "SYNCBOT_INSTANCE_ID")"
-  INSTANCE_ID_VAR="${DETECTED_INSTANCE_ID:-}"
   DETECTED_PW="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "PRIMARY_WORKSPACE")"
   PRIMARY_WORKSPACE_VAR="${DETECTED_PW:-}"
   DETECTED_ER="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "ENABLE_DB_RESET")"
@@ -824,7 +819,6 @@ fi
 echo
 echo "=== App Settings ==="
 PRIMARY_WORKSPACE_VAR="$(prompt_primary_workspace "$PRIMARY_WORKSPACE_VAR")"
-INSTANCE_ID_VAR="$(prompt_instance_id "$INSTANCE_ID_VAR")"
 
 echo
 echo "=== App Secrets ==="
@@ -861,7 +855,6 @@ VARS=(
   "-var=region=$REGION"
   "-var=stage=$STAGE"
   "-var=log_level=$LOG_LEVEL"
-  "-var=syncbot_instance_id=${INSTANCE_ID_VAR:-}"
   "-var=primary_workspace=${PRIMARY_WORKSPACE_VAR:-}"
   "-var=enable_db_reset=${ENABLE_DB_RESET_VAR:-}"
   "-var=database_tls_enabled=${DB_TLS_VAR:-}"
@@ -897,7 +890,6 @@ if [[ "$ENABLE_DB_RESET_VAR" == "true" ]]; then
 else
   echo "DB reset:          (disabled)"
 fi
-[[ -n "$INSTANCE_ID_VAR" ]] && echo "Instance ID:      $INSTANCE_ID_VAR"
 echo
 echo "=== Terraform Plan ==="
 terraform plan "${VARS[@]}"
