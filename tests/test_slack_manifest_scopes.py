@@ -86,3 +86,36 @@ def test_permission_group_labels_are_plain_language():
         assert label[0].isupper()
         assert 1 <= len(label.split()) <= 4
         assert scopes
+
+
+def test_gcp_variables_slack_scope_defaults_match_constants():
+    root = Path(__file__).resolve().parent.parent
+    text = root.joinpath("infra/gcp/variables.tf").read_text(encoding="utf-8")
+    bot = re.search(
+        r'variable "slack_bot_scopes"\s*\{[^}]*default\s*=\s*"([^"]+)"',
+        text,
+        re.DOTALL,
+    )
+    user = re.search(
+        r'variable "slack_user_scopes"\s*\{[^}]*default\s*=\s*"([^"]+)"',
+        text,
+        re.DOTALL,
+    )
+    assert bot, "slack_bot_scopes default not found"
+    assert user, "slack_user_scopes default not found"
+    assert bot.group(1) == bot_scopes_comma_separated()
+    assert user.group(1) == user_scopes_comma_separated()
+
+
+def test_aws_deploy_script_scope_fallbacks_match_constants():
+    root = Path(__file__).resolve().parent.parent
+    for rel in (
+        "infra/aws/scripts/ci_sam_deploy_with_fallback.sh",
+        "infra/aws/scripts/deploy.sh",
+    ):
+        text = root.joinpath(rel).read_text(encoding="utf-8")
+        bot_m = re.search(r"SLACK_BOT_SCOPES:-([^}]+)\}", text)
+        user_m = re.search(r"SLACK_USER_SCOPES:-([^}]+)\}", text)
+        assert bot_m and user_m, f"scope fallbacks missing in {rel}"
+        assert bot_m.group(1) == bot_scopes_comma_separated()
+        assert user_m.group(1) == user_scopes_comma_separated()

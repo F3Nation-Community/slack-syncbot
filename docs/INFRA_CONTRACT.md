@@ -78,7 +78,7 @@ Deploy-only warmth knobs are **not** app runtime env: **`GCP_CLOUD_RUN_MIN_INSTA
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (default `INFO`). |
 | `PORT` | HTTP listen port for container entrypoint (`python app.py` / Cloud Run). Cloud Run injects this (typically `8080`); default `3000` when unset. |
 
-**Leftover env (not deploy inputs):** `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, `SYNCBOT_PUBLIC_URL`, and `SYNCBOT_INSTANCE_ID` are ignored if still set on an old process; the app logs a warning. Federation and admin policy belong in **Settings**, not env. This instance's federation id is the SHA-256 hex fingerprint of its Ed25519 public key (64 characters), not a deploy-time UUID.
+**Leftover env (not deploy inputs):** `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, `SYNCBOT_PUBLIC_URL`, `SYNCBOT_INSTANCE_ID`, `ALLOW_PRIVATE_CHANNELS`, `BROADCAST_ALLOWED_WORKSPACES`, and `SOFT_DELETE_RETENTION_DAYS` are ignored if still set on an old process; the app logs a warning. Federation, private-channel policy, broadcast allowlists, soft-delete retention, and admin policy belong in **Settings**, not env. This instance's federation id is the SHA-256 hex fingerprint of its Ed25519 public key (64 characters), not a deploy-time UUID.
 
 ### Settings modal
 

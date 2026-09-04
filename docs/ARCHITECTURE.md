@@ -49,7 +49,7 @@ sequenceDiagram
 
     loop For each target channel
         L->>L: Re-map @mentions (cached user mapping)
-        L->>L: Resolve #channel refs (native if synced, else archive URL)
+        L->>L: Resolve #channel refs (code-tick) and source message permalinks
         L->>SB: chat.postMessage (as sender)
         SB-->>L: ts (timestamp)
         L->>DB: Save PostMeta record
@@ -64,9 +64,9 @@ The same pattern applies to edits (`chat.update`), deletes (`chat.delete`), thre
 
 Slack delivers Events API payloads **at least once** (retries, queued cold starts). Message and reaction handlers claim Slack envelope ``event_id`` + ``team_id`` in ``processed_events`` before side effects: a duplicate delivery is a no-op; a failed attempt releases the claim so the retry can recover. User-token echo rows are separate from envelope ``event_id`` and are consumed when the matching inbound event is skipped. Local fixtures that omit ``event_id`` are processed without claiming.
 
-Message bodies are taken from Block Kit when present. Slack ``event.text`` is a notification fallback: long app posts (Slackblast preblasts, Workflows) often arrive with newlines flattened to spaces and a truncated tail. The client **Show more** control is chrome on ``blocks``, not a second payload. SyncBot copies content blocks (``section``, ``header``, ``rich_text``, and similar), drops ``actions`` / ``input`` (those buttons belong to the source app), and skips ``file`` blocks that only have a source ``slack_file`` id. Link unfurls (Maps, and similar) are not copied as attachments; the destination client rebuilds them from URLs in the text. When a ``bot_message`` has no usable blocks, SyncBot loads the stored message with ``conversations.history``. Emoji in the body is copied as-is; dest catalog probes are for reactions only.
+Message bodies are taken from Block Kit when present. Slack ``event.text`` is a notification fallback: long app posts (Slackblast preblasts, Workflows) often arrive with newlines flattened to spaces and a truncated tail. The client **Show more** control is chrome on ``blocks``, not a second payload. SyncBot copies content blocks (``section``, ``header``, ``rich_text``, and similar), drops ``actions`` / ``input`` (those buttons belong to the source app), and skips ``file`` blocks that only have a source ``slack_file`` id. Link unfurls (Maps, and similar) are not copied as attachments; the destination client rebuilds them from URLs in the text. Slack message permalinks in the source are rewritten to a labeled source URL and dest posts set ``unfurl_links=false``. Those links open the source message in the Slack mobile app. Slack's web client treats the same ``archives/C…/p…`` URL as a message in the destination workspace (a Private chip); that is accepted. When a ``bot_message`` has no usable blocks, SyncBot loads the stored message with ``conversations.history``. Emoji in the body is copied as-is; dest catalog probes are for reactions only.
 
-For **federation**, the receiving instance resolves `@` mentions and `#` channel references locally before `chat.postMessage` / `chat.update`: mapped users become native `<@U>` tags, channels that are part of the same sync become native `<#C>` tags, and other channels keep the archive links sent by the origin instance. This instance identifies itself with the SHA-256 hex fingerprint of its Ed25519 public key (64 characters), stored on `instance_keys`. Leftover `SYNCBOT_INSTANCE_ID` is ignored.
+For **federation**, the receiving instance resolves `@` mentions and `#` channel references locally before `chat.postMessage` / `chat.update`: mapped users become native `<@U>` tags, and `#` channel mentions become a code-ticked `#name (Workspace)` (never a dest twin `<#C>`). Source message permalinks keep the source URL with a label so the Slack mobile app can open the original message. Slack web may still show a Private chip; that is accepted. This instance identifies itself with the SHA-256 hex fingerprint of its Ed25519 public key (64 characters), stored on `instance_keys`. Leftover `SYNCBOT_INSTANCE_ID` is ignored.
 
 ## AWS Infrastructure
 

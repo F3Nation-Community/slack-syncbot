@@ -6,6 +6,7 @@ A single public HTTPS base serves every path. On AWS that is the Lambda Function
 
 | Method | Path | Purpose |
 |--------|------|---------|
+| `GET` | `/health` | Liveness probe used by GCP Cloud Scheduler keep-warm and operators; returns a simple OK response |
 | `POST` | `/slack/events` | Receives all Slack events (messages, actions, and view submissions) |
 | `GET` | `/slack/install` | Starts OAuth: sets Bolt's state cookie and redirects the browser to Slack's authorization screen |
 | `GET` | `/slack/oauth_redirect` | OAuth callback after the user approves. On success, SyncBot publishes that user's Home tab so **Authorize SyncBot** can disappear without a Refresh |

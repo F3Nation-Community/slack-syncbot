@@ -30,6 +30,8 @@ _CONTENT_BLOCK_TYPES = frozenset(
         "video",
     }
 )
+_SLACK_MAX_BLOCKS = 50
+_SLACK_MAX_SECTION_TEXT = 3000
 _SKIP_BLOCK_TYPES = frozenset(
     {
         "actions",
@@ -98,7 +100,39 @@ def content_blocks_for_sync(blocks: list[dict] | None) -> list[dict]:
         if isinstance(accessory, dict) and accessory.get("type") in _INTERACTIVE_ACCESSORY:
             block.pop("accessory", None)
         out.append(block)
+    if len(out) > _SLACK_MAX_BLOCKS:
+        _logger.warning(
+            "content_blocks_trimmed",
+            extra={"original": len(out), "kept": _SLACK_MAX_BLOCKS},
+        )
+        out = out[:_SLACK_MAX_BLOCKS]
     return out
+
+
+def trim_dest_blocks(blocks: list[dict] | None, *, limit: int = _SLACK_MAX_BLOCKS) -> list[dict]:
+    """Cap dest Block Kit at Slack's postMessage limit."""
+    items = list(blocks or [])
+    if len(items) <= limit:
+        return items
+    _logger.warning("dest_blocks_trimmed", extra={"original": len(items), "kept": limit})
+    return items[:limit]
+
+
+def clamp_section_text_in_blocks(blocks: list[dict] | None, *, limit: int = _SLACK_MAX_SECTION_TEXT) -> list[dict]:
+    """Truncate section/header ``text.text`` fields that exceed Slack's limit."""
+    for block in blocks or []:
+        if not isinstance(block, dict):
+            continue
+        text_obj = block.get("text")
+        if isinstance(text_obj, dict) and isinstance(text_obj.get("text"), str):
+            raw = text_obj["text"]
+            if len(raw) > limit:
+                _logger.warning(
+                    "section_text_clamped",
+                    extra={"original": len(raw), "kept": limit, "block_type": block.get("type")},
+                )
+                text_obj["text"] = raw[: limit - 1] + "…"
+    return blocks or []
 
 
 def text_from_blocks(blocks: list[dict] | None) -> str:
@@ -135,7 +169,9 @@ def rewrite_content_blocks(
     unmapped_user_label: Callable[[str], str],
 ) -> list[dict]:
     """Rewrite mentions inside copied blocks for the destination workspace."""
-    return [_rewrite_node(copy.deepcopy(b), rewrite_mrkdwn, map_user_id, unmapped_user_label) for b in blocks]
+    rewritten = [_rewrite_node(copy.deepcopy(b), rewrite_mrkdwn, map_user_id, unmapped_user_label) for b in blocks]
+    clamp_section_text_in_blocks(rewritten)
+    return rewritten
 
 
 def collect_user_ids_from_blocks(blocks: list[dict] | None) -> list[str]:
@@ -230,6 +266,35 @@ def _rich_text_elements_to_str(elements: list) -> str:
     return "".join(parts)
 
 
+_MRKDWN_LINK = re.compile(r"^<([^<>|]+)\|([^>]+)>$")
+_MRKDWN_CODE = re.compile(r"^`([^`]+)`$")
+
+
+def _rich_text_from_mrkdwn_span(mrkdwn: str, *, style: dict | None = None) -> dict:
+    """Turn ``resolve_channel_references`` output into a rich_text element.
+
+    Labeled permalinks become ``type: link`` (do not leave mrkdwn ``<url|label>``
+    in a text node). Channel ticks become ``style.code``. Slack web still chips
+    ``archives/C…/p…`` as dest; mobile opens the source URL.
+    """
+    s = (mrkdwn or "").strip()
+    m = _MRKDWN_LINK.fullmatch(s)
+    if m:
+        out: dict = {"type": "link", "url": m.group(1), "text": m.group(2)}
+        if style:
+            out["style"] = style
+        return out
+    code = _MRKDWN_CODE.fullmatch(s)
+    if code:
+        merged = dict(style or {})
+        merged["code"] = True
+        return {"type": "text", "text": code.group(1), "style": merged}
+    out = {"type": "text", "text": mrkdwn}
+    if style:
+        out["style"] = style
+    return out
+
+
 def _emoji_to_str(el: dict) -> str:
     name = el.get("name") or ""
     uni = el.get("unicode")
@@ -258,6 +323,18 @@ def _rewrite_node(
             out["user_id"] = mapped
             return out
         return {"type": "text", "text": unmapped_user_label(node["user_id"])}
+    if node.get("type") == "channel" and node.get("channel_id"):
+        return _rich_text_from_mrkdwn_span(
+            rewrite_mrkdwn(f"<#{node['channel_id']}>"),
+            style=node.get("style") if isinstance(node.get("style"), dict) else None,
+        )
+    if node.get("type") == "link" and isinstance(node.get("url"), str):
+        rewritten = rewrite_mrkdwn(node["url"])
+        if rewritten != node["url"]:
+            return _rich_text_from_mrkdwn_span(
+                rewritten,
+                style=node.get("style") if isinstance(node.get("style"), dict) else None,
+            )
     out: dict = {}
     for key, val in node.items():
         if key == "text" and isinstance(val, str):

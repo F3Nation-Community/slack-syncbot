@@ -354,3 +354,41 @@ def test_handler_without_litestream_bucket_skips_bootstrap(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "app", SimpleNamespace(handler=lambda event, context: {"ok": True}))
     assert h.handler({"action": "ping"}, None) == {"ok": True}
     assert boot == []
+
+
+def test_update_stack_params_use_previous_when_empty() -> None:
+    """Empty override values must not become ParameterValue: \"\" (wipes secrets)."""
+    import json
+    import subprocess
+
+    script = """
+import json, sys
+result = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    k, _, v = line.partition('=')
+    if v == '':
+        result.append({'ParameterKey': k, 'UsePreviousValue': True})
+    else:
+        result.append({'ParameterKey': k, 'ParameterValue': v})
+print(json.dumps(result))
+"""
+    # Mirror the shipped helpers: empty DataEncryptionKey / Slack secrets keep previous.
+    for path_name in ("ci_sam_deploy_with_fallback.sh", "deploy.sh"):
+        text = (INFRA_AWS / "scripts" / path_name).read_text(encoding="utf-8")
+        assert "UsePreviousValue" in text
+        assert "if v == '':" in text
+    proc = subprocess.run(
+        ["python3", "-c", script],
+        input="DataEncryptionKey=\nSlackClientSecret=secret\nPrimaryWorkspace=\n",
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    params = json.loads(proc.stdout)
+    by_key = {p["ParameterKey"]: p for p in params}
+    assert by_key["DataEncryptionKey"] == {"ParameterKey": "DataEncryptionKey", "UsePreviousValue": True}
+    assert by_key["SlackClientSecret"]["ParameterValue"] == "secret"
+    assert by_key["PrimaryWorkspace"]["UsePreviousValue"] is True

@@ -32,7 +32,9 @@ locals {
     trimspace(var.database_user) != "" ? trimspace(var.database_user) : trimspace(var.existing_db_user)
   ) : ""
   db_schema = local.use_existing_database ? (
-    trimspace(var.database_schema) != "" ? trimspace(var.database_schema) : var.existing_db_schema
+    trimspace(var.database_schema) != "" ? trimspace(var.database_schema) : (
+      trimspace(var.existing_db_schema) != "" ? trimspace(var.existing_db_schema) : "syncbot_${var.stage}"
+    )
   ) : ""
   db_backend = local.resolved_database_backend
 

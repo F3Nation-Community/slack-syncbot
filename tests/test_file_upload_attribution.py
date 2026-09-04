@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from handlers.messages import _same_instance_dest_post
 from helpers.core import format_file_share_notice, synced_from_line_username
+from tests.event_fixtures import make_event_context
 
 
 class TestFromLineUsername:
@@ -33,12 +34,7 @@ class TestFromLineUsername:
 
 class TestFileOnlyAuthorAttribution:
     def test_pdf_uses_single_upload_with_ticked_notice(self):
-        ctx = {
-            "msg_text": " ",
-            "mentioned_users": [],
-            "user_id": "U_SRC",
-            "reply_broadcast": False,
-        }
+        ctx = make_event_context(msg_text=" ", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),
@@ -73,12 +69,7 @@ class TestFileOnlyAuthorAttribution:
         assert upload.call_args.kwargs["thread_ts"] is None
 
     def test_file_only_thread_reply_uses_parent_thread_ts(self):
-        ctx = {
-            "msg_text": "",
-            "mentioned_users": [],
-            "user_id": "U_SRC",
-            "reply_broadcast": False,
-        }
+        ctx = make_event_context(msg_text="", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),
@@ -113,12 +104,7 @@ class TestFileOnlyAuthorAttribution:
         assert upload.call_args.kwargs["initial_comment"] == "`Ada` shared a file"
 
     def test_image_file_uses_same_notice_as_pdf(self):
-        ctx = {
-            "msg_text": "",
-            "mentioned_users": [],
-            "user_id": "U_SRC",
-            "reply_broadcast": False,
-        }
+        ctx = make_event_context(msg_text="", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),
@@ -152,12 +138,7 @@ class TestFileOnlyAuthorAttribution:
 
 class TestTextPlusFileUpload:
     def test_threaded_file_uses_same_notice(self):
-        ctx = {
-            "msg_text": "see attached",
-            "mentioned_users": [],
-            "user_id": "U_SRC",
-            "reply_broadcast": False,
-        }
+        ctx = make_event_context(msg_text="see attached", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),
@@ -189,12 +170,7 @@ class TestTextPlusFileUpload:
         assert upload_files.call_args.kwargs["reply_broadcast"] is True
 
     def test_thread_reply_text_plus_file_uploads_at_parent_thread(self):
-        ctx = {
-            "msg_text": "see attached",
-            "mentioned_users": [],
-            "user_id": "U_SRC",
-            "reply_broadcast": False,
-        }
+        ctx = make_event_context(msg_text="see attached", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),
@@ -265,3 +241,24 @@ class TestUploadReplyBroadcast:
                 reply_broadcast=False,
             )
         client.chat_update.assert_not_called()
+
+
+class TestExtractFileMessageTs:
+    def test_prefers_share_matching_thread_ts(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        client.files_info.return_value = {
+            "file": {
+                "shares": {
+                    "public": {
+                        "C1": [
+                            {"ts": "100.0"},
+                            {"ts": "200.0", "thread_ts": "150.0"},
+                        ]
+                    }
+                }
+            }
+        }
+        ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1", thread_ts="150.0")
+        assert ts == "200.0"

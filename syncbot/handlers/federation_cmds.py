@@ -11,6 +11,7 @@ import builders
 import federation
 import helpers
 from db import DbManager, schemas
+from helpers.workspace import invalidate_fed_ws_for_sync_cache
 from slack import actions, orm
 
 _logger = logging.getLogger(__name__)
@@ -380,6 +381,8 @@ def handle_federation_code_submit(
     )
     DbManager.create_record(fed_member)
 
+    invalidate_fed_ws_for_sync_cache()
+
     _logger.info(
         "federation_connection_established",
         extra={
@@ -432,6 +435,8 @@ def handle_remove_federation_connection(
             schemas.WorkspaceGroupMember.deleted_at: now,
         },
     )
+
+    invalidate_fed_ws_for_sync_cache()
 
     _logger.info("federation_connection_removed", extra={"member_id": member_id})
 

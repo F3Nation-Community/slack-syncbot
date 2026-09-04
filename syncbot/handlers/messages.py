@@ -13,6 +13,7 @@ import helpers
 from db import DbManager, schemas
 from db.event_claims import run_claimed
 from handlers._common import EventContext
+from helpers.message_blocks import trim_dest_blocks
 from logger import emit_metric
 from slack import orm
 
@@ -90,7 +91,7 @@ def _dest_layout_blocks(
         return photo_blocks or []
 
     def rewrite_mrkdwn(text: str) -> str:
-        adapted = helpers.resolve_channel_references(text, client, source_ws, target_workspace_id=target_workspace_id)
+        adapted = helpers.resolve_channel_references(text, client, source_ws)
 
         def repl(match: re.Match) -> str:
             return helpers.resolve_mention_for_workspace(
@@ -103,16 +104,30 @@ def _dest_layout_blocks(
 
         return re.sub(r"<@(\w+)>", repl, adapted or "")
 
+    resolved_by_uid: dict[str, str] = {}
+
     def map_user_id(uid: str) -> str | None:
-        return helpers.get_mapped_target_user_id(uid, source_workspace_id, target_workspace_id)
+        tag = helpers.resolve_mention_for_workspace(
+            client,
+            uid,
+            source_workspace_id,
+            target_client,
+            target_workspace_id,
+        )
+        resolved_by_uid[uid] = tag
+        m = re.fullmatch(r"<@(\w+)>", tag or "")
+        return m.group(1) if m else None
 
     names = {u.get("user_id"): u.get("user_name") for u in ctx.get("mentioned_users") or []}
 
     def unmapped_label(uid: str) -> str:
+        tag = resolved_by_uid.get(uid)
+        if tag and not re.fullmatch(r"<@\w+>", tag):
+            return tag
         return helpers.unmapped_author_label(names.get(uid) or uid, source_workspace_name)
 
     rewritten = helpers.rewrite_content_blocks(content, rewrite_mrkdwn, map_user_id, unmapped_label)
-    return rewritten + (photo_blocks or [])
+    return trim_dest_blocks(rewritten + (photo_blocks or []))
 
 
 def _build_file_context(body: dict, client: WebClient, logger: Logger) -> tuple[list[dict], list[dict]]:
@@ -255,7 +270,7 @@ def _same_instance_dest_post(
         target_workspace_id=workspace.id,
     )
     source_ws = helpers.get_workspace_by_id(source_workspace_id) if source_workspace_id else None
-    adapted_text = helpers.resolve_channel_references(adapted_text, client, source_ws, target_workspace_id=workspace.id)
+    adapted_text = helpers.resolve_channel_references(adapted_text, client, source_ws)
     dest_blocks = _dest_layout_blocks(
         ctx=ctx,
         photo_blocks=photo_blocks,
@@ -577,9 +592,7 @@ def _handle_message_edit(
                     target_workspace_id=workspace.id,
                 )
                 source_ws = helpers.get_workspace_by_id(source_workspace_id) if source_workspace_id else None
-                adapted_text = helpers.resolve_channel_references(
-                    adapted_text, client, source_ws, target_workspace_id=workspace.id
-                )
+                adapted_text = helpers.resolve_channel_references(adapted_text, client, source_ws)
                 dest_blocks = _dest_layout_blocks(
                     ctx=ctx,
                     photo_blocks=photo_blocks,

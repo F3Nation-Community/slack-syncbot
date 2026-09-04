@@ -193,10 +193,25 @@ def _extract_file_message_ts(
             shares = info_resp["file"]["shares"]
             for share_type in ("public", "private"):
                 channel_shares = shares.get(share_type, {}).get(channel_id, [])
-                if channel_shares:
-                    ts = channel_shares[0].get("ts")
+                if not channel_shares:
+                    continue
+                if thread_ts:
+                    for share in channel_shares:
+                        if str(share.get("ts") or "") == str(thread_ts) or str(share.get("thread_ts") or "") == str(
+                            thread_ts
+                        ):
+                            ts = share.get("ts")
+                            if ts:
+                                _logger.info(
+                                    "_extract_file_message_ts: success",
+                                    extra={"file_id": file_id, "ts": ts, "attempt": attempt},
+                                )
+                                return ts
+                ts = channel_shares[0].get("ts")
+                if ts:
                     _logger.info(
-                        "_extract_file_message_ts: success", extra={"file_id": file_id, "ts": ts, "attempt": attempt}
+                        "_extract_file_message_ts: success",
+                        extra={"file_id": file_id, "ts": ts, "attempt": attempt},
                     )
                     return ts
         except (KeyError, TypeError, IndexError):

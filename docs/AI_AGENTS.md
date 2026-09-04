@@ -11,6 +11,10 @@ This repository is set up so coding agents (Cursor, GitHub Copilot, Codex, Claud
 | [.cursor/rules/](../.cursor/rules/) | Cursor rules (architecture, short commits/changelog, helpers imports, tests, infra) |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Short Conventional Commits + workflow |
 
+## Plan files (never commit)
+
+Write working plans only under **`.plans/`** at the repo root. That folder is gitignored and is not documentation. Do not park plans under `docs/` (even ignored `docs/PLAN_*.md` names look like operator docs). Cursor UI plans live outside the tree; do not copy them into `docs/`. `git status` at PR time must not show a plan file.
+
 ## How CI guards agents
 
 On pull requests, [.github/workflows/ci.yml](../.github/workflows/ci.yml) includes:
@@ -38,6 +42,7 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 - Changelog bullets stay **1.2.0** length (one short line). Reject paragraph dumps.
 - Look for forbidden-file edits; CI should fail them, but reviewers should still watch for secrets.
 - Ensure tests cover behavior changes; spot-check Slack/event flows when touching handlers.
+- Pytest `pythonpath` is `syncbot/` and `infra/aws/lambda` only. Import test helpers as `from tests.event_fixtures import …`; do not add `tests` to `pythonpath`.
 
 ## When changing Slack user scopes
 
@@ -73,6 +78,8 @@ Link buttons still fire `block_actions`. Register a no-op in `ACTION_MAPPER` (Au
 **User-token echo:** Slack does not mark an `xoxp` write as a bot action. After a successful user-token side effect, `remember_user_action` in [`syncbot/helpers/user_action_echo.py`](../syncbot/helpers/user_action_echo.py); matching handlers call `take_user_action_echo` inside `run_claimed` before fan-out. Do not store echo rows in `processed_events`. Import the helper submodule directly (`from helpers.user_action_echo import …`), not via `helpers/__init__.py`.
 
 **Hybrid emoji probe:** `_dest_reaction_name_is_invalid` in [`syncbot/helpers/reactions.py`](../syncbot/helpers/reactions.py) runs only when Hybrid is about to post a thread notice (no dest user token, or that token hit an auth error). Skip the probe only when source and dest are the **same Slack workspace**. Same-instance cross-workspace and **federation inbound** still probe: dest custom emoji are per workspace, and origin having the name does not mean dest does. Direct-only and a successful native `reactions_add` must not probe. Do not use `emoji.list`; the dest bot `reactions_add` / `reactions_remove` probe is the current method.
+
+**Source `#channel` and permalinks:** Dest message bodies never remap `#channel` to a dest twin. `resolve_channel_references` in [`syncbot/helpers/user_map.py`](../syncbot/helpers/user_map.py) turns `<#C>` and channel-only archive URLs into `` `#name (Workspace)` `` (federation too). Message permalinks (`/archives/C…/p…`) keep the source URL with a `Message in #channel (Workspace)` label. That opens the source message in the **Slack mobile app**. Slack **web** treats the same URL as dest and shows a Private chip; accepted — do not switch to `slack://` or `app.slack.com/client` to fix the desktop browser. Dest `chat.postMessage` / `chat.update` use `unfurl_links=false`. Home `_format_channel_ref(is_local=True)` may still use native `<#C>` for this workspace's own channel. Do not put mrkdwn `<url|label>` inside a rich_text text node.
 
 ## DB identity and deletes
 

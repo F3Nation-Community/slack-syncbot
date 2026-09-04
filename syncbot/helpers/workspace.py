@@ -55,6 +55,13 @@ def get_sync_list(team_id: str, channel_id: str) -> list[tuple[schemas.SyncChann
     return sync_channels
 
 
+def invalidate_fed_ws_for_sync_cache() -> None:
+    """Drop cached federation fan-out lookups after pair, unpair, or restore."""
+    from helpers._cache import _cache_delete_prefix
+
+    _cache_delete_prefix("fed_ws_for_sync:")
+
+
 def get_federated_workspace_for_sync(sync_id: int) -> schemas.FederatedWorkspace | None:
     """Return the federated workspace for a sync, checking group membership."""
     from helpers._cache import _cache_get, _cache_set
@@ -449,7 +456,10 @@ def lookup_channel_meta(
         except Exception as exc:
             _logger.debug(f"lookup_channel_meta: conversations_info failed for {channel_id}: {exc}")
 
+    # Always memoize in request scope (including misses) so publish/Home does not
+    # re-hit Slack for the same unknown private channel. Process cache stays
+    # success-only so a later join can resolve the name.
+    request_scope_set(req_key, (name, is_private))
     if name != channel_id:
         _cache_set(cache_key, (name, is_private), ttl=3600)
-        request_scope_set(req_key, (name, is_private))
     return name, is_private
