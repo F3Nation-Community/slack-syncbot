@@ -50,7 +50,7 @@ variable "existing_db_host" {
 variable "existing_db_schema" {
   type        = string
   default     = ""
-  description = "Alias for database_schema. Empty defaults to syncbot_\${stage} (for example syncbot_test)."
+  description = "Alias for database_schema. Empty defaults to syncbot_$${stage} (for example syncbot_test)."
 }
 
 variable "existing_db_user" {
@@ -68,7 +68,7 @@ variable "database_host" {
 variable "database_schema" {
   type        = string
   default     = ""
-  description = "DATABASE_SCHEMA. Empty uses existing_db_schema, then syncbot_\${stage}."
+  description = "DATABASE_SCHEMA. Empty uses existing_db_schema, then syncbot_$${stage}."
 }
 
 # ---------------------------------------------------------------------------

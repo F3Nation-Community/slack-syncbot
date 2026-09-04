@@ -165,6 +165,7 @@ def test_existing_db_schema_defaults_to_stage() -> None:
     vars_tf = (INFRA_GCP / "variables.tf").read_text(encoding="utf-8")
     schema_block = vars_tf.split('variable "existing_db_schema"', 1)[1].split("variable ", 1)[0]
     assert 'default     = ""' in schema_block
+    assert "syncbot_$${stage}" in schema_block
     main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
     assert 'name_prefix = "syncbot-${var.stage}"' in main_tf
     assert '"syncbot_${var.stage}"' in main_tf
