@@ -153,3 +153,22 @@ def test_deploy_gcp_workflow_is_gated_and_not_a_stub() -> None:
     assert "gcloud run services update" in workflow
     assert "GCP deploy is not implemented" not in workflow
     assert "placeholder until" not in workflow.lower()
+
+
+def test_main_tf_has_no_leftover_syncbot_env() -> None:
+    main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    for name in ("SYNCBOT_INSTANCE_ID", "SYNCBOT_PUBLIC_URL", "REQUIRE_ADMIN"):
+        assert name not in main_tf
+
+
+def test_existing_db_schema_defaults_to_stage() -> None:
+    vars_tf = (INFRA_GCP / "variables.tf").read_text(encoding="utf-8")
+    schema_block = vars_tf.split('variable "existing_db_schema"', 1)[1].split("variable ", 1)[0]
+    assert 'default     = ""' in schema_block
+    main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    assert 'name_prefix = "syncbot-${var.stage}"' in main_tf
+    assert '"syncbot_${var.stage}"' in main_tf
+    deploy = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "syncbot_${STAGE}" in deploy
+    assert "slack_bot_scopes" in deploy
+    assert "slack_user_scopes" in deploy

@@ -569,6 +569,8 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   [[ -n "${ENABLE_DB_RESET:-}" ]] && VARS+=("-var=enable_db_reset=$ENABLE_DB_RESET")
   [[ -n "${DATABASE_TLS_ENABLED:-}" ]] && VARS+=("-var=database_tls_enabled=$DATABASE_TLS_ENABLED")
   [[ -n "${DATABASE_SSL_CA_PATH:-}" ]] && VARS+=("-var=database_ssl_ca_path=$DATABASE_SSL_CA_PATH")
+  [[ -n "${SLACK_BOT_SCOPES:-}" ]] && VARS+=("-var=slack_bot_scopes=$SLACK_BOT_SCOPES")
+  [[ -n "${SLACK_USER_SCOPES:-}" ]] && VARS+=("-var=slack_user_scopes=$SLACK_USER_SCOPES")
 
   if [[ "$USE_EXISTING" == "true" ]]; then
     if [[ -z "${DATABASE_HOST:-}" ]]; then
@@ -585,7 +587,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     fi
     VARS+=("-var=database_password=$DATABASE_PASSWORD")
     VARS+=("-var=database_host=$DATABASE_HOST")
-    VARS+=("-var=database_schema=${DATABASE_SCHEMA:-syncbot}")
+    VARS+=("-var=database_schema=${DATABASE_SCHEMA:-syncbot_${STAGE}}")
     VARS+=("-var=database_user=$DATABASE_USER")
   fi
 
@@ -750,7 +752,7 @@ if [[ -n "$EXISTING_SERVICE_URL" ]]; then
 fi
 if [[ "$USE_EXISTING" == "true" ]]; then
   EXISTING_HOST="$(prompt_line "Existing database host" "$DETECTED_EXISTING_HOST")"
-  EXISTING_SCHEMA="$(prompt_line "Database schema name" "${DETECTED_EXISTING_SCHEMA:-syncbot}")"
+  EXISTING_SCHEMA="$(prompt_line "Database schema name" "${DETECTED_EXISTING_SCHEMA:-syncbot_${STAGE}}")"
   EXISTING_USER="$(prompt_line "Database user (full username, including any TiDB prefix)" "$DETECTED_EXISTING_USER")"
   if [[ -z "$EXISTING_HOST" ]]; then
     echo "Error: DATABASE_HOST is required when DATABASE_BACKEND=${DATABASE_BACKEND}." >&2
@@ -868,6 +870,8 @@ VARS=(
   "-var=slack_client_secret=$SLACK_CLIENT_SECRET"
   "-var=data_encryption_key=$DATA_ENCRYPTION_KEY"
 )
+[[ -n "${SLACK_BOT_SCOPES:-}" ]] && VARS+=("-var=slack_bot_scopes=$SLACK_BOT_SCOPES")
+[[ -n "${SLACK_USER_SCOPES:-}" ]] && VARS+=("-var=slack_user_scopes=$SLACK_USER_SCOPES")
 [[ -n "${DB_PORT:-}" ]] && VARS+=("-var=database_port=$DB_PORT")
 [[ -n "$CLOUD_IMAGE" ]] && VARS+=("-var=cloud_run_image=$CLOUD_IMAGE")
 [[ -n "$DATABASE_USER" ]] && VARS+=("-var=database_user=$DATABASE_USER")
@@ -968,7 +972,7 @@ if [[ "$TASK_BUILD_DEPLOY" == "true" ]] && prompt_yn "Save config to .env.deploy
       [[ -n "${DB_PORT:-}" ]] && echo "DATABASE_PORT=$DB_PORT"
       echo "DATABASE_USER=${DATABASE_USER:-}"
       echo "DATABASE_PASSWORD=${DATABASE_PASSWORD:-}"
-      echo "DATABASE_SCHEMA=${EXISTING_SCHEMA:-${DATABASE_SCHEMA:-syncbot}}"
+      echo "DATABASE_SCHEMA=${EXISTING_SCHEMA:-${DATABASE_SCHEMA:-syncbot_${STAGE}}}"
     fi
   } > "$ENV_SAVE_FILE"
   chmod 600 "$ENV_SAVE_FILE"
