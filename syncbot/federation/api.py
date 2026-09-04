@@ -30,6 +30,8 @@ import constants
 import helpers
 from db import DbManager, schemas
 from federation import core as federation
+from helpers.user_action_echo import slack_message_ts
+from helpers.workspace import invalidate_fed_ws_for_sync_cache
 
 _logger = logging.getLogger(__name__)
 
@@ -157,17 +159,18 @@ def _resolve_mentions_for_federated(msg_text: str, target_workspace_id: int, rem
 
     for uid in user_ids:
         mapping = maps_by_uid.get(uid)
-        if mapping and mapping.target_user_id:
+        method = getattr(mapping, "map_method", None) if mapping else None
+        if mapping and mapping.target_user_id and method != "none":
             rep = f"<@{mapping.target_user_id}>"
         elif mapping and mapping.source_display_name:
-            rep = helpers.code_ticked_display_name(mapping.source_display_name, remote_workspace_label)
+            rep = helpers.unmapped_author_label(mapping.source_display_name, remote_workspace_label)
         else:
             entry = dir_by_uid.get(uid)
             display = (entry.display_name or entry.real_name) if entry else None
             if display:
-                rep = helpers.code_ticked_display_name(display, remote_workspace_label)
+                rep = helpers.unmapped_author_label(display, remote_workspace_label)
             else:
-                rep = helpers.code_ticked_display_name(uid, remote_workspace_label)
+                rep = helpers.unmapped_author_label(uid, remote_workspace_label)
         msg_text = re.sub(rf"<@{re.escape(uid)}>", rep, msg_text)
 
     return msg_text
@@ -407,6 +410,8 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
     )
     DbManager.create_record(member)
 
+    invalidate_fed_ws_for_sync_cache()
+
     # Instance A detection: if the connecting side sent team_id, soft-delete the matching local workspace
     if primary_team_id:
         local_workspaces = DbManager.find_records(
@@ -485,7 +490,8 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
                 workspace_name = None
 
     text = _resolve_mentions_for_federated(text, workspace.id, remote_label_for_mentions)
-    text = helpers.resolve_channel_references(text, ws_client, None, target_workspace_id=workspace.id)
+    # Dest bot cannot conversations_info source C IDs; ticks may stay #Cid.
+    text = helpers.resolve_channel_references(text, ws_client, None)
 
     try:
         thread_ts = None
@@ -498,7 +504,7 @@ def handle_message(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple[int,
                 ],
             )
             if post_records:
-                thread_ts = str(post_records[0].ts)
+                thread_ts = slack_message_ts(post_records[0].ts)
 
         photo_blocks = []
         if images:
@@ -569,7 +575,8 @@ def handle_message_edit(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple
     remote_label = fed_ws.primary_workspace_name or fed_ws.name or "Remote"
     text = _resolve_mentions_for_federated(text, workspace.id, remote_label)
     ws_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
-    text = helpers.resolve_channel_references(text, ws_client, None, target_workspace_id=workspace.id)
+    # Dest bot cannot conversations_info source C IDs; ticks may stay #Cid.
+    text = helpers.resolve_channel_references(text, ws_client, None)
 
     post_records = _find_post_records(post_id, sync_channel.id)
 
@@ -592,12 +599,14 @@ def handle_message_edit(body: dict, fed_ws: schemas.FederatedWorkspace) -> tuple
                 bot_token=bot_token,
                 channel_id=channel_id,
                 msg_text=text,
-                update_ts=str(post_meta.ts),
+                update_ts=slack_message_ts(post_meta.ts),
                 blocks=photo_blocks if photo_blocks else None,
             )
             updated += 1
         except Exception:
-            _logger.warning("federation_edit_failed", extra={"channel_id": channel_id, "ts": str(post_meta.ts)})
+            _logger.warning(
+                "federation_edit_failed", extra={"channel_id": channel_id, "ts": slack_message_ts(post_meta.ts)}
+            )
 
     return 200, {"ok": True, "updated": updated}
 
@@ -627,10 +636,12 @@ def handle_message_delete(body: dict, fed_ws: schemas.FederatedWorkspace) -> tup
     ws_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
     for post_meta in post_records:
         try:
-            ws_client.chat_delete(channel=channel_id, ts=str(post_meta.ts))
+            ws_client.chat_delete(channel=channel_id, ts=slack_message_ts(post_meta.ts))
             deleted += 1
         except Exception:
-            _logger.warning("federation_delete_failed", extra={"channel_id": channel_id, "ts": str(post_meta.ts)})
+            _logger.warning(
+                "federation_delete_failed", extra={"channel_id": channel_id, "ts": slack_message_ts(post_meta.ts)}
+            )
 
     return 200, {"ok": True, "deleted": deleted}
 

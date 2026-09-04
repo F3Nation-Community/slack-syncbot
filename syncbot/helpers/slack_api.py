@@ -238,6 +238,8 @@ def post_message(
             text=fallback_text,
             ts=update_ts,
             blocks=all_blocks,
+            unfurl_links=False,
+            unfurl_media=False,
         )
     else:
         username_str = synced_from_line_username(user_name, workspace_name) if user_name else None
@@ -248,6 +250,10 @@ def post_message(
             "icon_url": user_profile_url,
             "thread_ts": thread_ts,
             "blocks": all_blocks,
+            # Source permalinks must not unfurl as dest messages. This does not
+            # change Slack web treating archives/p URLs as dest (Private chip).
+            "unfurl_links": False,
+            "unfurl_media": False,
         }
         if reply_broadcast:
             kwargs["reply_broadcast"] = True

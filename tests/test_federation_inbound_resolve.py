@@ -19,6 +19,7 @@ class TestResolveMentionsForFederated:
         m.source_user_id = "UREMOTE"
         m.target_user_id = "ULOCAL"
         m.source_display_name = "Alice"
+        m.map_method = "email"
 
         def fake_find(model, _filters):
             if model == schemas.UserMapping:
@@ -34,6 +35,7 @@ class TestResolveMentionsForFederated:
         m.source_user_id = "UREMOTE"
         m.target_user_id = None
         m.source_display_name = "Bob"
+        m.map_method = "none"
 
         def fake_find(model, _filters):
             if model == schemas.UserMapping:
@@ -66,10 +68,12 @@ class TestResolveMentionsForFederated:
         good.source_user_id = "U1"
         good.target_user_id = "UBEST"
         good.source_display_name = "Best"
+        good.map_method = "email"
         stale = MagicMock()
         stale.source_user_id = "U1"
         stale.target_user_id = None
         stale.source_display_name = "Stale"
+        stale.map_method = "none"
 
         def fake_find(model, _filters):
             if model == schemas.UserMapping:
@@ -79,3 +83,20 @@ class TestResolveMentionsForFederated:
         with patch.object(federation_api.DbManager, "find_records", side_effect=fake_find):
             out = federation_api._resolve_mentions_for_federated("<@U1>", 10, "R")
         assert out == "<@UBEST>"
+
+    def test_ignores_none_map_method_even_with_target_user_id(self):
+        m = MagicMock()
+        m.source_user_id = "USTUB"
+        m.target_user_id = "USHouldNotUse"
+        m.source_display_name = "Stub"
+        m.map_method = "none"
+
+        def fake_find(model, _filters):
+            if model == schemas.UserMapping:
+                return [m]
+            return []
+
+        with patch.object(federation_api.DbManager, "find_records", side_effect=fake_find):
+            out = federation_api._resolve_mentions_for_federated("hi <@USTUB>", 10, "Partner WS")
+        assert out == "hi `Stub (Partner WS)`"
+        assert "USHouldNotUse" not in out

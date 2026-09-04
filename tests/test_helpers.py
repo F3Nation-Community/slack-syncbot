@@ -260,7 +260,7 @@ class TestSlackRetry:
 
 
 class TestResolveChannelReferences:
-    """Tests for helpers.resolve_channel_references (archive URL generation)."""
+    """Source #channel ticks and labeled message permalinks."""
 
     def setup_method(self):
         helpers._CACHE.clear()
@@ -271,10 +271,9 @@ class TestResolveChannelReferences:
         ws.workspace_name = name
         return ws
 
-    def _make_client(self, channel_name="general", domain="acme"):
+    def _make_client(self, channel_name="general"):
         client = MagicMock()
         client.conversations_info.return_value = {"channel": {"name": channel_name}}
-        client.team_info.return_value = {"team": {"domain": domain}}
         return client
 
     def test_no_channel_refs_unchanged(self):
@@ -289,26 +288,26 @@ class TestResolveChannelReferences:
         result = helpers.resolve_channel_references(None, MagicMock())
         assert result is None
 
-    def test_archive_url_with_workspace(self):
-        client = self._make_client(channel_name="general", domain="acme")
+    def test_code_tick_with_workspace(self):
+        client = self._make_client(channel_name="general")
         ws = self._make_workspace(team_id="T123", name="Acme")
         result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
-        assert "https://acme.slack.com/archives/CABC123" in result
-        assert "#general (Acme)" in result
+        assert result == "see `#general (Acme)`"
+        assert "slack://" not in result
+        assert "<#C" not in result
 
-    def test_archive_url_without_workspace(self):
-        client = self._make_client(channel_name="general", domain="acme")
+    def test_code_tick_without_workspace(self):
+        client = self._make_client(channel_name="general")
         result = helpers.resolve_channel_references("see <#CABC123>", client, None)
-        assert "#general" in result
+        assert result == "see `#general`"
 
-    def test_fallback_when_domain_unavailable(self):
+    def test_code_tick_does_not_need_team_info(self):
         client = MagicMock()
         client.conversations_info.return_value = {"channel": {"name": "general"}}
         client.team_info.side_effect = Exception("api error")
         ws = self._make_workspace(team_id="T123", name="Acme")
         result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
-        assert result == "see `[#general (Acme)]`"
-        assert "slack.com" not in result
+        assert result == "see `#general (Acme)`"
 
     def test_fallback_when_channel_unresolvable(self):
         client = MagicMock()
@@ -318,61 +317,68 @@ class TestResolveChannelReferences:
         assert result == "see #CABC123"
 
     def test_channel_ref_with_label(self):
-        client = self._make_client(channel_name="general", domain="acme")
+        client = self._make_client(channel_name="general")
         ws = self._make_workspace(team_id="T123", name="Acme")
         result = helpers.resolve_channel_references("see <#CABC123|general>", client, ws)
-        assert "https://acme.slack.com/archives/CABC123" in result
+        assert result == "see `#general (Acme)`"
 
     def test_multiple_channel_refs(self):
         client = MagicMock()
-        call_count = 0
 
         def conv_info(channel):
-            nonlocal call_count
-            call_count += 1
             names = {"CABC111": "alpha", "CABC222": "beta"}
             return {"channel": {"name": names.get(channel, channel)}}
 
         client.conversations_info.side_effect = conv_info
-        client.team_info.return_value = {"team": {"domain": "acme"}}
         ws = self._make_workspace(team_id="T123", name="Acme")
         result = helpers.resolve_channel_references("see <#CABC111> and <#CABC222>", client, ws)
-        assert "archives/CABC111" in result
-        assert "archives/CABC222" in result
+        assert result == "see `#alpha (Acme)` and `#beta (Acme)`"
         assert "#alpha" in result
         assert "#beta" in result
 
-    def test_no_app_redirect_in_output(self):
-        client = self._make_client(channel_name="general", domain="acme")
+    def test_no_deep_links_in_channel_mentions(self):
+        client = self._make_client(channel_name="general")
         ws = self._make_workspace(team_id="T123", name="Acme")
         result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
         assert "app_redirect" not in result
+        assert "app.slack.com" not in result
+        assert "slack://" not in result
+        assert result == "see `#general (Acme)`"
 
-    @patch("helpers.user_map.find_synced_channel_in_target")
-    def test_native_channel_when_synced_to_target(self, mock_find):
-        mock_find.return_value = "C_LOCAL_TARGET"
-        client = self._make_client(channel_name="general", domain="acme")
+    def test_source_tick_even_when_dest_twin_would_exist(self):
+        """Synced twins must not become dest <#C>; keep a code-ticked source name."""
+        client = self._make_client(channel_name="ao-channel")
         ws = self._make_workspace(team_id="T123", name="Acme")
-        result = helpers.resolve_channel_references("see <#CSOURCE123>", client, ws, target_workspace_id=42)
-        assert result == "see <#C_LOCAL_TARGET>"
-        mock_find.assert_called_with("CSOURCE123", 42)
-        assert "slack.com" not in result
+        result = helpers.resolve_channel_references("see <#CSOURCE123>", client, ws)
+        assert result == "see `#ao-channel (Acme)`"
+        assert "<#C" not in result
+        assert "C_LOCAL" not in result
 
-    @patch("helpers.user_map.find_synced_channel_in_target")
-    def test_archive_mrkdwn_rewritten_to_native_when_synced(self, mock_find):
-        mock_find.return_value = "C_LOCAL"
-        client = MagicMock()
+    def test_channel_archive_url_becomes_tick(self):
+        client = self._make_client(channel_name="blackops")
+        ws = self._make_workspace(team_id="T123", name="Acme")
         text = "see <https://acme.slack.com/archives/CSRC|#general (Remote)>"
-        result = helpers.resolve_channel_references(text, client, None, target_workspace_id=1)
-        assert result == "see <#C_LOCAL>"
+        result = helpers.resolve_channel_references(text, client, ws)
+        assert result == "see `#blackops (Acme)`"
 
-    @patch("helpers.user_map.find_synced_channel_in_target")
-    def test_archive_mrkdwn_unchanged_when_not_synced(self, mock_find):
-        mock_find.return_value = None
+    def test_message_permalink_keeps_source_url_with_label(self):
+        client = self._make_client(channel_name="blackops")
+        ws = self._make_workspace(team_id="T123", name="Sprock Dev Beta")
+        url = "https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219"
+        result = helpers.resolve_channel_references(f"see {url}", client, ws)
+        assert result == f"see <{url}|Message in #blackops (Sprock Dev Beta)>"
+
+    def test_message_permalink_uses_subdomain_when_channel_unknown(self):
         client = MagicMock()
-        text = "see <https://acme.slack.com/archives/CSRC|#general (Remote)>"
-        result = helpers.resolve_channel_references(text, client, None, target_workspace_id=1)
-        assert result == text
+        client.conversations_info.side_effect = Exception("channel_not_found")
+        result = helpers.resolve_channel_references(
+            "https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219",
+            client,
+            None,
+        )
+        assert result == (
+            "<https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219|Message in sprockdevbeta>"
+        )
 
 
 # -----------------------------------------------------------------------
@@ -423,16 +429,30 @@ class TestLookupChannelMeta:
         assert is_private is True
         user_client.conversations_info.assert_called_once_with(channel="CPRIV")
 
-    def test_unresolved_name_is_the_channel_id_and_is_not_cached(self):
+    def test_unresolved_name_is_the_channel_id_and_is_not_process_cached(self):
+        from helpers._cache import begin_request_scope, clear_request_scope
+
         client = MagicMock()
         client.conversations_info.side_effect = Exception("channel_not_found")
 
+        # Without a request scope, misses are not memoized (process cache stays success-only).
         name, is_private = helpers.lookup_channel_meta("C_UNRESOLVED", None, client=client)
         helpers.lookup_channel_meta("C_UNRESOLVED", None, client=client)
-
         assert name == "C_UNRESOLVED"
         assert is_private is False
         assert client.conversations_info.call_count == 2
+
+        # Within one request, misses are memoized so Home/publish do not re-hit Slack.
+        begin_request_scope()
+        try:
+            client.reset_mock()
+            client.conversations_info.side_effect = Exception("channel_not_found")
+            helpers.lookup_channel_meta("C_UNRESOLVED2", None, client=client)
+            helpers.lookup_channel_meta("C_UNRESOLVED2", None, client=client)
+            assert client.conversations_info.call_count == 1
+            assert "chan_meta:C_UNRESOLVED2" not in helpers._CACHE
+        finally:
+            clear_request_scope()
 
     def test_successful_lookup_is_cached(self):
         client = MagicMock()
@@ -488,3 +508,20 @@ class TestOwnAuthInfoIsPerWorkspace:
         helpers.get_own_bot_user_id(client, bypass_cache=True)
 
         assert client.auth_test.call_count == 2
+
+
+class TestApplyMentionedUsersCap:
+    def test_more_than_fifty_mentions_does_not_raise(self):
+        ids = [f"U{i:03d}" for i in range(55)]
+        text = " ".join(f"<@{uid}>" for uid in ids)
+        mentioned = [{"user_id": uid, "user_name": uid} for uid in ids[:50]]
+        source = MagicMock()
+        target = MagicMock()
+        with patch(
+            "helpers.user_map.resolve_mention_for_workspace",
+            side_effect=lambda **kw: f"<@{kw['source_user_id']}_D>",
+        ):
+            out = helpers.apply_mentioned_users(text, source, target, mentioned, 1, 2)
+        assert "<@U000_D>" in out
+        assert "<@U049_D>" in out
+        assert "<@U050>" in out  # leftover unchanged

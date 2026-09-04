@@ -45,7 +45,7 @@ def synced_from_line_username(display_name: str | None, workspace_name: str | No
 
 
 def code_ticked_display_name(display_name: str | None, workspace_name: str | None = None) -> str:
-    """From-line display name in code ticks (no @mention, no square brackets)."""
+    """Name in code ticks, optionally with (Workspace). From-line, unmapped people, source #channel."""
     return f"`{synced_from_line_username(display_name, workspace_name)}`"
 
 

@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 from slack_sdk.web import WebClient
 
 from handlers.messages import _handle_new_post, _handle_thread_reply
+from tests.event_fixtures import make_event_context
 
 
 class TestSplitMessagePostMeta:
@@ -25,13 +26,7 @@ class TestSplitMessagePostMeta:
                 "team": "T1",
             }
         }
-        ctx = {
-            "team_id": "T1",
-            "channel_id": "C_SRC",
-            "msg_text": "hello",
-            "mentioned_users": [],
-            "user_id": "U1",
-        }
+        ctx = make_event_context(team_id="T1", channel_id="C_SRC", msg_text="hello", user_id="U1")
         direct_files = [{"path": "/tmp/f.jpg", "name": "f.jpg"}]
 
         created: list = []
@@ -82,13 +77,12 @@ class TestSplitMessagePostMeta:
         post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
 
         body = {"event": {"channel": "C_SRC", "ts": "150.000000"}}
-        ctx = {
-            "channel_id": "C_SRC",
-            "msg_text": "reply",
-            "mentioned_users": [],
-            "user_id": "U1",
-            "thread_ts": "10.000000",
-        }
+        ctx = make_event_context(
+            channel_id="C_SRC",
+            msg_text="reply",
+            user_id="U1",
+            thread_ts="10.000000",
+        )
         direct_files = [{"path": "/tmp/f.jpg", "name": "f.jpg"}]
 
         created: list = []
@@ -135,13 +129,12 @@ class TestFileOnlyThreadPostMeta:
         post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
 
         body = {"event": {"channel": "C_SRC", "ts": "150.000000"}}
-        ctx = {
-            "channel_id": "C_SRC",
-            "msg_text": " ",
-            "mentioned_users": [],
-            "user_id": "U1",
-            "thread_ts": "10.000000",
-        }
+        ctx = make_event_context(
+            channel_id="C_SRC",
+            msg_text=" ",
+            user_id="U1",
+            thread_ts="10.000000",
+        )
         direct_files = [{"path": "/tmp/a.pdf", "name": "a.pdf", "mimetype": "application/pdf"}]
 
         created: list = []

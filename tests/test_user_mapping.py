@@ -32,6 +32,7 @@ from helpers.user_map import (  # noqa: E402
     seed_user_mappings,
 )
 from slack.orm import BlockView  # noqa: E402
+from tests.event_fixtures import make_event_context  # noqa: E402
 
 
 class TestDirectoryEmailMatch:
@@ -634,12 +635,12 @@ class TestAuthorBeforeMentions:
             order.append("mentions")
             return text
 
-        ctx = {
-            "msg_text": "hi <@U_SRC>",
-            "mentioned_users": [{"user_id": "U_SRC"}],
-            "user_id": "U_SRC",
-            "reply_broadcast": False,
-        }
+        ctx = make_event_context(
+            msg_text="hi <@U_SRC>",
+            mentioned_users=[{"user_id": "U_SRC"}],
+            user_id="U_SRC",
+            reply_broadcast=False,
+        )
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),

@@ -10,6 +10,7 @@ from helpers.message_blocks import (
     text_from_blocks,
 )
 from helpers.slack_api import post_message
+from tests.event_fixtures import make_event_context
 
 
 def _preblast_blocks():
@@ -174,14 +175,14 @@ class TestHandleMessageEditForwardsLayoutBlocks:
     def test_chat_update_gets_section_blocks(self):
         from handlers.messages import _handle_message_edit
 
-        ctx = {
-            "channel_id": "C_SRC",
-            "msg_text": text_from_blocks(content_blocks_for_sync(_preblast_blocks())),
-            "mentioned_users": [{"user_id": "U_SRC", "user_name": "Loboto"}],
-            "ts": "1.0",
-            "user_id": None,
-            "content_blocks": content_blocks_for_sync(_preblast_blocks()),
-        }
+        ctx = make_event_context(
+            channel_id="C_SRC",
+            msg_text=text_from_blocks(content_blocks_for_sync(_preblast_blocks())),
+            mentioned_users=[{"user_id": "U_SRC", "user_name": "Loboto"}],
+            ts="1.0",
+            user_id=None,
+            content_blocks=content_blocks_for_sync(_preblast_blocks()),
+        )
         post_meta = SimpleNamespace(post_id="p1", ts=2.0, sync_channel_id=2)
         sync_channel = SimpleNamespace(channel_id="C_TGT", id=2, sync_id=1)
         workspace = SimpleNamespace(id=2, bot_token="enc")
@@ -206,13 +207,13 @@ class TestHandleMessageEditForwardsLayoutBlocks:
 
 class TestDestPostForwardsLayoutBlocks:
     def test_does_not_flatten_into_a_single_section(self):
-        ctx = {
-            "msg_text": text_from_blocks(content_blocks_for_sync(_preblast_blocks())),
-            "mentioned_users": [{"user_id": "U_SRC", "user_name": "Loboto"}],
-            "user_id": None,
-            "reply_broadcast": False,
-            "content_blocks": content_blocks_for_sync(_preblast_blocks()),
-        }
+        ctx = make_event_context(
+            msg_text=text_from_blocks(content_blocks_for_sync(_preblast_blocks())),
+            mentioned_users=[{"user_id": "U_SRC", "user_name": "Loboto"}],
+            user_id=None,
+            reply_broadcast=False,
+            content_blocks=content_blocks_for_sync(_preblast_blocks()),
+        )
         with (
             patch("handlers.messages.helpers.decrypt_bot_token", return_value="xoxb"),
             patch("handlers.messages.WebClient"),
@@ -275,3 +276,128 @@ class TestPostMessageSkipsPrependWhenBodyBlocksPresent:
         assert sent[0]["type"] == "section"
         assert sent[0]["text"]["text"] == "hello"
         assert sent[1]["type"] == "image"
+        assert slack.chat_postMessage.call_args.kwargs["unfurl_links"] is False
+        assert slack.chat_postMessage.call_args.kwargs["unfurl_media"] is False
+
+    def test_chat_update_also_disables_unfurl(self):
+        slack = MagicMock()
+        slack.chat_update.return_value = {"ts": "2.0"}
+        with patch("helpers.slack_api.WebClient", return_value=slack):
+            post_message(bot_token="xoxb", channel_id="C1", msg_text="hello", update_ts="2.0")
+        assert slack.chat_update.call_args.kwargs["unfurl_links"] is False
+        assert slack.chat_update.call_args.kwargs["unfurl_media"] is False
+
+
+class TestRewriteContentBlocksRichText:
+    def test_rich_text_channel_becomes_code_text(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "text", "text": "Where: "},
+                            {"type": "channel", "channel_id": "C_SRC"},
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        def rewrite_mrkdwn(text: str) -> str:
+            if text == "<#C_SRC>":
+                return "`#ao (Acme)`"
+            return text
+
+        out = rewrite_content_blocks(blocks, rewrite_mrkdwn, lambda _u: None, lambda u: f"`{u}`")
+        els = out[0]["elements"][0]["elements"]
+        assert els[0] == {"type": "text", "text": "Where: "}
+        assert els[1] == {"type": "text", "text": "#ao (Acme)", "style": {"code": True}}
+        assert els[1].get("channel_id") is None
+
+    def test_section_mrkdwn_uses_code_ticks(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "Where: <#C_SRC>"}}]
+        out = rewrite_content_blocks(
+            blocks,
+            lambda t: t.replace("<#C_SRC>", "`#ao (Acme)`"),
+            lambda _u: None,
+            lambda u: u,
+        )
+        assert out[0]["text"]["text"] == "Where: `#ao (Acme)`"
+
+    def test_rich_text_permalink_link_gets_source_label(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        url = "https://sprockdevbeta.slack.com/archives/C0APSA79WR4/p1788488496065219"
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "link", "url": url}],
+                    }
+                ],
+            }
+        ]
+
+        def rewrite_mrkdwn(text: str) -> str:
+            if text == url:
+                return f"<{url}|Message in #blackops (Sprock Dev Beta)>"
+            return text
+
+        out = rewrite_content_blocks(blocks, rewrite_mrkdwn, lambda _u: None, lambda u: u)
+        els = out[0]["elements"][0]["elements"]
+        assert els[0] == {
+            "type": "link",
+            "url": url,
+            "text": "Message in #blackops (Sprock Dev Beta)",
+        }
+
+    def test_rich_text_user_mapped_and_unmapped(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        blocks = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [
+                            {"type": "user", "user_id": "U_SRC"},
+                            {"type": "text", "text": " "},
+                            {"type": "user", "user_id": "U_NONE"},
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        def map_user(uid: str):
+            return "U_DST" if uid == "U_SRC" else None
+
+        out = rewrite_content_blocks(blocks, lambda t: t, map_user, lambda u: f"`{u} (Acme)`")
+        els = out[0]["elements"][0]["elements"]
+        assert els[0] == {"type": "user", "user_id": "U_DST"}
+        assert els[2] == {"type": "text", "text": "`U_NONE (Acme)`"}
+
+
+class TestBlockKitLimits:
+    def test_content_blocks_trimmed_to_fifty(self):
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": f"b{i}"}} for i in range(55)]
+        out = content_blocks_for_sync(blocks)
+        assert len(out) == 50
+
+    def test_section_text_clamped_after_rewrite(self):
+        from helpers.message_blocks import rewrite_content_blocks
+
+        long = "x" * 3500
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "short"}}]
+        out = rewrite_content_blocks(blocks, lambda _t: long, lambda _u: None, lambda u: u)
+        assert len(out[0]["text"]["text"]) == 3000
+        assert out[0]["text"]["text"].endswith("…")

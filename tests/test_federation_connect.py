@@ -238,6 +238,25 @@ class TestInboundInstanceIdUpgrade:
         fields = update.call_args.args[2]
         assert fields[schemas.FederatedWorkspace.instance_id] == fingerprint
 
+    def test_verify_accepts_lowercase_function_url_headers(self):
+        from federation import api as federation_api
+
+        _private, public_pem = _keypair()
+        fingerprint = federation_core.public_key_fingerprint(public_pem)
+        existing = SimpleNamespace(id=3, instance_id=fingerprint, public_key=public_pem, status="active")
+        headers = {
+            "x-federation-signature": "sig",
+            "x-federation-timestamp": "1",
+            "x-federation-instance": fingerprint,
+        }
+        with (
+            patch.object(federation_api.DbManager, "find_records", return_value=[existing]),
+            patch.object(federation_api.federation, "federation_verify", return_value=True) as verify,
+        ):
+            got = federation_api._verify_federated_request("{}", headers)
+        assert got is existing
+        verify.assert_called_once_with("{}", "sig", "1", public_pem)
+
 
 class TestEndpointAndSubpaths:
     def test_endpoint_url_appends_mount_path(self):
@@ -329,3 +348,68 @@ class TestEmptyUrlDm:
             handle_federation_label_submit(body, client, MagicMock(), {})
         dm.assert_called_once()
         assert "public URL" in dm.call_args.args[2]
+
+
+class TestFedWsCacheInvalidation:
+    def test_remove_connection_invalidates_fed_ws_cache(self):
+        from handlers.federation_cmds import handle_remove_federation_connection
+
+        body = {
+            "user": {"id": "U_ADMIN"},
+            "team": {"id": "T1"},
+            "actions": [{"action_id": "remove_federation_connection_9"}],
+        }
+        workspace = SimpleNamespace(id=1, team_id="T1")
+        member = SimpleNamespace(id=9, group_id=3, federated_workspace_id=2)
+        with (
+            patch("handlers.federation_cmds._require_primary_admin", return_value=workspace),
+            patch("handlers.federation_cmds.DbManager.get_record", return_value=member),
+            patch("handlers.federation_cmds.DbManager.update_records"),
+            patch("handlers.federation_cmds.invalidate_fed_ws_for_sync_cache") as inv,
+            patch("handlers.federation_cmds.helpers.get_workspace_record", return_value=workspace),
+            patch("handlers.federation_cmds.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_remove_federation_connection(body, MagicMock(), MagicMock(), {})
+        inv.assert_called_once_with()
+
+    def test_inbound_pair_invalidates_fed_ws_cache(self):
+        from federation import api as federation_api
+
+        body = {
+            "code": "FED-ABCD1234",
+            "webhook_url": "https://peer.example/api/federation",
+            "instance_id": "a" * 64,
+            "public_key": "pem",
+        }
+        body_str = json.dumps(body)
+        group = SimpleNamespace(id=5, invite_code="FED-ABCD1234", status="active")
+        fed_ws = SimpleNamespace(id=7, instance_id="a" * 64)
+        with (
+            patch.object(federation_api.federation, "validate_webhook_url", return_value=True),
+            patch.object(federation_api.federation, "federation_verify", return_value=True),
+            patch.object(federation_api.federation, "instance_id_matches_public_key", return_value=True),
+            patch.object(federation_api.federation, "get_or_create_federated_workspace", return_value=fed_ws),
+            patch.object(federation_api.federation, "get_or_create_instance_keypair", return_value=(None, "our-pem")),
+            patch.object(federation_api.federation, "get_instance_id", return_value="b" * 64),
+            patch.object(federation_api.DbManager, "find_records", side_effect=[[group], []]),
+            patch.object(federation_api.DbManager, "create_record"),
+            patch.object(federation_api, "invalidate_fed_ws_for_sync_cache") as inv,
+        ):
+            status, resp = federation_api.handle_pair(
+                body,
+                body_str,
+                {
+                    "X-Federation-Signature": "sig",
+                    "X-Federation-Timestamp": "1",
+                },
+            )
+        assert status == 200
+        assert resp.get("ok") is True
+        inv.assert_called_once_with()
+
+    def test_invalidate_helper_deletes_prefix(self):
+        from helpers.workspace import invalidate_fed_ws_for_sync_cache
+
+        with patch("helpers._cache._cache_delete_prefix") as delete_prefix:
+            invalidate_fed_ws_for_sync_cache()
+        delete_prefix.assert_called_once_with("fed_ws_for_sync:")

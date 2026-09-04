@@ -12,6 +12,7 @@ import builders
 import helpers
 from db import DbManager, schemas
 from helpers import export_import as ei
+from helpers.workspace import invalidate_fed_ws_for_sync_cache
 from slack import actions
 
 _logger = logging.getLogger(__name__)
@@ -377,6 +378,7 @@ def _do_restore(data: dict, client: WebClient, user_id: str) -> None:
     try:
         team_ids = ei.restore_full_backup(data, skip_hmac_check=True, skip_encryption_key_check=True)
         ei.invalidate_home_tab_caches_for_all_teams(team_ids)
+        invalidate_fed_ws_for_sync_cache()
     except Exception as e:
         _logger.exception("restore failed: %s", e)
         raise
