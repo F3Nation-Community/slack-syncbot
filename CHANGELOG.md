@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- version list -->
 
 
+## [1.5.2] - YYYY-MM-DD
+
+### Changed
+
+- Synced message #channel mentions become a code-ticked `#name (Workspace)`, not a dest twin or a deep link
+
+### Fixed
+
+- Federation pair, unpair, and restore invalidate the federated-sync cache
+- Block Kit rich_text user mentions follow the same mapping rules as mrkdwn
+- Source message permalinks keep a labeled source URL that opens in the Slack mobile app
+- Federation inbound mentions skip none-map stubs
+- Dest Block Kit posts are trimmed to Slack's 50-block and 3000-character section limits
+- Mentions beyond the first fifty no longer fail the dest post
+- Threaded file shares use the matching dest timestamp when Slack returns several shares
+- AWS update-stack fallback keeps previous secrets when a parameter is empty
+- GCP Terraform and deploy default the schema to `syncbot_${stage}`
+- GCP deploy passes Slack bot and user scopes from env
+
 ## [1.5.1] - 2026-09-03
 
 ### Changed

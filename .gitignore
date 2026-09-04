@@ -174,7 +174,7 @@ syncbot/.oauth-data/
 !.cursor/rules/
 !.cursor/rules/**
 
-# Local planning notes — never commit
+# Local planning notes — never commit. Agents write plans under .plans/ only (not docs/).
 docs/PLAN_*.md
 PLAN_*.md
 .plans/
