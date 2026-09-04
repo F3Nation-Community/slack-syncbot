@@ -131,7 +131,11 @@ for line in sys.stdin:
     if not line:
         continue
     k, _, v = line.partition('=')
-    result.append({'ParameterKey': k, 'ParameterValue': v})
+    # sam deploy omits empty overrides; update-stack must not wipe secrets with \"\".
+    if v == '':
+        result.append({'ParameterKey': k, 'UsePreviousValue': True})
+    else:
+        result.append({'ParameterKey': k, 'ParameterValue': v})
 print(json.dumps(result))
 "
 }
