@@ -6,7 +6,6 @@ Instance-wide fields stay in ``helpers.settings``.
 """
 
 import json
-import logging
 import os
 from datetime import UTC, datetime
 
@@ -14,8 +13,8 @@ import constants
 from db import DbManager, schemas
 from helpers._cache import _cache_delete, _cache_get, _cache_set
 from helpers.export_import import invalidate_home_tab_caches_for_team
-
-_logger = logging.getLogger(__name__)
+from helpers.workspace import get_bot_token
+from logger import log_info, log_warning
 
 _SENTINEL_MISSING = "\x00__missing__"
 
@@ -35,7 +34,7 @@ def _workspace_record_for_team(team_id: str | None) -> schemas.Workspace | None:
         ],
     )
     for workspace in rows:
-        if workspace.bot_token:
+        if get_bot_token(workspace):
             return workspace
     return rows[0] if rows else None
 
@@ -95,7 +94,7 @@ def set_workspace_setting(workspace_id: int, key: str, value: str | None, *, tea
     _cache_delete(_cache_key(workspace_id, key))
     if team_id:
         invalidate_home_tab_caches_for_team(team_id)
-    _logger.info("workspace_setting_saved", extra={"workspace_id": workspace_id, "setting_key": key})
+    log_info("workspace_setting_saved", workspace_id=workspace_id, setting_key=key)
 
 
 _ALLOW_PRIVATE_ENV_WARNED = False
@@ -109,10 +108,7 @@ def _warn_leftover_allow_private_env() -> None:
     if raw is None or raw.strip() == "":
         return
     _ALLOW_PRIVATE_ENV_WARNED = True
-    _logger.warning(
-        "%s is ignored; set Allow private Channels in the SyncBot Settings modal instead",
-        constants.ALLOW_PRIVATE_CHANNELS,
-    )
+    log_warning("legacy_env_ignored", env=constants.ALLOW_PRIVATE_CHANNELS)
 
 
 def allow_private_channels(team_id: str | None) -> bool:
@@ -132,9 +128,8 @@ def allow_private_channels(team_id: str | None) -> bool:
         return True
     if normalized in ("false", "0", "no", "off"):
         return False
-    _logger.warning(
-        "workspace_setting_unparseable",
-        extra={"workspace_id": workspace_id, "setting_key": constants.SETTING_ALLOW_PRIVATE_CHANNELS},
+    log_warning(
+        "workspace_setting_unparseable", workspace_id=workspace_id, setting_key=constants.SETTING_ALLOW_PRIVATE_CHANNELS
     )
     return constants.DEFAULT_ALLOW_PRIVATE_CHANNELS
 
@@ -150,9 +145,10 @@ def extra_manager_user_ids(team_id: str | None) -> list[str]:
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        _logger.warning(
+        log_warning(
             "workspace_setting_unparseable",
-            extra={"workspace_id": workspace_id, "setting_key": constants.SETTING_EXTRA_MANAGER_USER_IDS},
+            workspace_id=workspace_id,
+            setting_key=constants.SETTING_EXTRA_MANAGER_USER_IDS,
         )
         return []
     if not isinstance(parsed, list):
@@ -172,3 +168,51 @@ def set_extra_manager_user_ids(team_id: str, user_ids: list[str]) -> None:
         json.dumps(sorted(set(filtered))),
         team_id=team_id,
     )
+
+
+def _parse_user_id_list(raw: str | None) -> list[str]:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [user_id for user_id in parsed if isinstance(user_id, str) and user_id.startswith("U")]
+
+
+def remember_home_viewer(team_id: str | None, user_id: str | None) -> None:
+    """Remember *user_id* so post-deploy can ``views.publish`` their Home tab."""
+    if not team_id or not user_id or not str(user_id).startswith("U"):
+        return
+    workspace_id = _workspace_id_for_team(team_id)
+    if workspace_id is None:
+        return
+    remembered = _parse_user_id_list(get_raw_workspace_setting(workspace_id, constants.SETTING_HOME_VIEWER_USER_IDS))
+    uid = str(user_id)
+    if uid in remembered:
+        remembered.remove(uid)
+    remembered.append(uid)
+    cap = constants.HOME_VIEWER_USER_IDS_CAP
+    remembered = remembered[-cap:]
+    set_workspace_setting(
+        workspace_id,
+        constants.SETTING_HOME_VIEWER_USER_IDS,
+        json.dumps(remembered),
+        team_id=team_id,
+    )
+
+
+def home_viewer_user_ids(team_id: str | None) -> list[str]:
+    """Extra managers first, then remembered Home viewers, unique, capped."""
+    workspace_id = _workspace_id_for_team(team_id)
+    if workspace_id is None:
+        return []
+    extras = extra_manager_user_ids(team_id)
+    remembered = _parse_user_id_list(get_raw_workspace_setting(workspace_id, constants.SETTING_HOME_VIEWER_USER_IDS))
+    out: list[str] = []
+    for uid in extras + remembered:
+        if uid not in out:
+            out.append(uid)
+    return out[: constants.HOME_VIEWER_USER_IDS_CAP]

@@ -102,26 +102,6 @@ class TestTypedParsing:
         helpers.set_setting("t_int_bad", "many")
         assert helpers.get_int_setting("t_int_bad", 30) == 30
 
-    def test_list_splits_on_commas_and_strips(self, real_db):
-        import helpers
-
-        helpers.set_setting("t_list", " T1 , T2 ,, T3 ")
-        assert helpers.get_list_setting("t_list") == ["T1", "T2", "T3"]
-
-    def test_empty_list_means_any_workspace_may_broadcast(self, real_db):
-        import helpers
-
-        helpers.set_setting(constants.SETTING_BROADCAST_ALLOWED_WORKSPACES, "")
-        assert helpers.broadcast_allowed_workspaces() == []
-        assert helpers.may_publish_broadcast("T_ANYTHING") is True
-
-    def test_a_populated_allow_list_restricts_broadcast_publishers(self, real_db):
-        import helpers
-
-        helpers.set_setting(constants.SETTING_BROADCAST_ALLOWED_WORKSPACES, "T1,T2")
-        assert helpers.may_publish_broadcast("T1") is True
-        assert helpers.may_publish_broadcast("T3") is False
-
     def test_retention_days_reads_the_setting(self, real_db):
         import helpers
 
@@ -231,7 +211,6 @@ class TestSettingsHandlerGate:
             patch("handlers.settings.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.settings.helpers.allow_private_channels", return_value=False),
             patch("handlers.settings.helpers.federation_enabled", return_value=False),
-            patch("handlers.settings.helpers.broadcast_allowed_workspaces", return_value=[]),
             patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
             patch("handlers.settings.builders.refresh_home_tab_for_workspace"),
         ):
@@ -274,44 +253,37 @@ class TestSettingsFormRenders:
     element or bad field cannot slip through the way it would when the form is
     always mocked out."""
 
-    def _options(self):
-        from slack import orm
-
-        return [
-            orm.SelectorOption(name="Alpha", value="T_ALPHA"),
-            orm.SelectorOption(name="Bravo", value="T_BRAVO"),
-        ]
-
     def test_form_serializes_to_valid_slack_blocks(self):
         from handlers.settings import _build_settings_form
 
         with (
             patch.dict(os.environ, {constants.PRIMARY_WORKSPACE: "T_PRIMARY"}),
-            patch("handlers.settings._installed_workspace_options", return_value=self._options()),
             patch("handlers.settings.helpers.allow_private_channels", return_value=True),
             patch("handlers.settings.helpers.extra_manager_user_ids", return_value=["U_EXTRA"]),
             patch("handlers.settings.helpers.federation_enabled", return_value=False),
-            patch("handlers.settings.helpers.broadcast_allowed_workspaces", return_value=["T_ALPHA"]),
             patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
+            patch("handlers.settings.helpers.workspace_block_list", return_value=[]),
         ):
             blocks = _build_settings_form("T_PRIMARY").as_form_field()
 
         element_types = [b["element"]["type"] for b in blocks if b.get("type") == "input" and b.get("element")]
         assert "multi_users_select" in element_types
         assert "radio_buttons" in element_types
-        assert "multi_static_select" in element_types
         assert "number_input" in element_types
+        assert "plain_text_input" in element_types
+        assert "multi_static_select" not in element_types
+        from slack import actions
 
-        multi = next(b["element"] for b in blocks if b.get("element", {}).get("type") == "multi_static_select")
-        assert [o["value"] for o in multi["options"]] == ["T_ALPHA", "T_BRAVO"]
-        assert [o["value"] for o in multi["initial_options"]] == ["T_ALPHA"]
+        action_ids = [b["element"]["action_id"] for b in blocks if b.get("element", {}).get("action_id")]
+        assert actions.CONFIG_SETTINGS_WORKSPACE_BLOCK_LIST in action_ids
+        labels = [b.get("label", {}).get("text") for b in blocks if b.get("type") == "input"]
+        assert "Workspace Block List" in labels
 
     def test_non_primary_form_omits_instance_fields(self):
         from handlers.settings import _build_settings_form
 
         with (
             patch.dict(os.environ, {constants.PRIMARY_WORKSPACE: "T_PRIMARY"}),
-            patch("handlers.settings._installed_workspace_options", return_value=self._options()),
             patch("handlers.settings.helpers.allow_private_channels", return_value=False),
             patch("handlers.settings.helpers.extra_manager_user_ids", return_value=[]),
         ):
@@ -323,8 +295,44 @@ class TestSettingsFormRenders:
         assert actions.CONFIG_SETTINGS_EXTRA_MANAGERS in action_ids
         assert actions.CONFIG_SETTINGS_ALLOW_PRIVATE_CHANNELS in action_ids
         assert actions.CONFIG_SETTINGS_FEDERATION_ENABLED not in action_ids
-        assert actions.CONFIG_SETTINGS_BROADCAST_WORKSPACES not in action_ids
         assert actions.CONFIG_SETTINGS_RETENTION_DAYS not in action_ids
+        assert actions.CONFIG_SETTINGS_WORKSPACE_BLOCK_LIST not in action_ids
+
+    def test_information_is_last_for_primary_and_non_primary(self):
+        from handlers.settings import _build_settings_form
+
+        with (
+            patch.dict(
+                os.environ,
+                {constants.PRIMARY_WORKSPACE: "T_PRIMARY", "LOG_LEVEL": "DEBUG", "DATABASE_BACKEND": "sqlite"},
+            ),
+            patch("handlers.settings.helpers.allow_private_channels", return_value=False),
+            patch("handlers.settings.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.settings.helpers.federation_enabled", return_value=False),
+            patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
+            patch("handlers.settings.helpers.workspace_block_list", return_value=[]),
+            patch("handlers.settings._app_version", return_value="1.7.0"),
+            patch("handlers.settings._primary_workspace_label", return_value="Workspace A"),
+            patch("handlers.settings._instance_fingerprint", return_value="aabb" + "c" * 60),
+            patch("handlers.settings._public_url_label", return_value="https://ws-a.example"),
+        ):
+            primary = _build_settings_form("T_PRIMARY").as_form_field()
+            other = _build_settings_form("T_OTHER").as_form_field()
+        fingerprint = "aabb" + "c" * 60
+        assert primary[-1]["text"]["text"] == (
+            "Version: `1.7.0`\n"
+            "Primary Workspace: `Workspace A`\n"
+            "Log level: `DEBUG`\n"
+            f"Fingerprint: `{fingerprint}`\n"
+            "Public URL: `https://ws-a.example`\n"
+            "Database: `sqlite`"
+        )
+        assert other[-1]["text"]["text"] == "Version: `1.7.0`\nPrimary Workspace: `Workspace A`"
+        assert "Log level:" not in other[-1]["text"]["text"]
+        assert "Fingerprint:" not in other[-1]["text"]["text"]
+        assert "Public URL:" not in other[-1]["text"]["text"]
+        assert "Database:" not in other[-1]["text"]["text"]
+        assert [b["text"]["text"] for b in primary if b.get("type") == "header"][-1] == "Information"
 
     def test_open_posts_a_modal_for_a_workspace_admin(self):
         from handlers.settings import handle_open_settings
@@ -341,5 +349,5 @@ class TestSettingsFormRenders:
             build_form.return_value = mock_form
             handle_open_settings(body, client, MagicMock(), context={})
 
-        build_form.assert_called_once_with("T1")
+        build_form.assert_called_once_with("T1", {})
         mock_form.post_modal.assert_called_once()
