@@ -6,9 +6,12 @@ This repository is set up so coding agents (Cursor, GitHub Copilot, Codex, Claud
 
 | File | Purpose |
 |------|---------|
-| [AGENTS.md](../AGENTS.md) | Primary guardrails, commands, pitfalls, docs voice |
+| [AGENTS.md](../AGENTS.md) | Primary guardrails, commands, pitfalls, docs voice, example names |
 | [.github/copilot-instructions.md](../.github/copilot-instructions.md) | Short Copilot-specific checklist |
 | [.cursor/rules/](../.cursor/rules/) | Cursor rules (architecture, short commits/changelog, helpers imports, tests, infra) |
+| [.cursor/rules/75-target-pipeline.mdc](../.cursor/rules/75-target-pipeline.mdc) | Message Sync Flow `#L` links, same-instance / cross-instance |
+| [.cursor/rules/45-example-names.mdc](../.cursor/rules/45-example-names.mdc) | Generic fixtures (`Workspace A`, `Ada Lovelace`; `Partner Org` is a connection label) |
+| [.cursor/rules/90-slack-free-tier.mdc](../.cursor/rules/90-slack-free-tier.mdc) | Slack API research is Free-tier only |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Short Conventional Commits + workflow |
 
 ## Plan files (never commit)
@@ -19,7 +22,7 @@ Write working plans only under **`.plans/`** at the repo root. That folder is gi
 
 On pull requests, [.github/workflows/ci.yml](../.github/workflows/ci.yml) includes:
 
-- **`forbidden-edits`** — blocks removing the CHANGELOG `<!-- version list -->` marker, hand bumps of `version` in `pyproject.toml`, and `*requirements.txt` changes that are not paired with `poetry.lock` / `pyproject.toml`.
+- **`forbidden-edits`** — blocks removing the CHANGELOG `<!-- version list -->` marker, hand bumps of `version` in `pyproject.toml`, and `*requirements.txt` changes that are not paired with `poetry.lock` / `pyproject.toml`. `syncbot/constants.py` `__version__` stays in lockstep with `pyproject.toml` via the release job; a test fails if they drift.
 - **`forbidden-imports`** — blocks `boto3` / `google.cloud` imports under `syncbot/`.
 - **`ruff`** — `ruff check` and `ruff format --check`.
 - **`pip-audit`** — exports from `poetry.lock` and audits (runs when Python dependency files change).
@@ -42,6 +45,7 @@ Use **AI-eligible task** in GitHub’s issue templates. Include goal, acceptance
 - Changelog bullets stay **1.2.0** length (one short line). Reject paragraph dumps.
 - Look for forbidden-file edits; CI should fail them, but reviewers should still watch for secrets.
 - Ensure tests cover behavior changes; spot-check Slack/event flows when touching handlers.
+- Pytest must pass with no new warnings. Reject `pytest.skip` / `filterwarnings` used to hide SAWarning or DeprecationWarning. Fix the source.
 - Pytest `pythonpath` is `syncbot/` and `infra/aws/lambda` only. Import test helpers as `from tests.event_fixtures import …`; do not add `tests` to `pythonpath`.
 
 ## When changing Slack user scopes
@@ -59,7 +63,7 @@ The 1.3.2 list was built as follows; keep new rows on the same rails:
 
 ## Pitfalls live in AGENTS.md
 
-Do not restate OAuth install, routing, the target pipeline, Hybrid probe, `#channel` / permalinks, DB identity, or User Mapping here. See [AGENTS.md](../AGENTS.md) **Common pitfalls**. Inside `helpers/*.py`, import submodules only; callers outside the package may use `import helpers` / `helpers.X`.
+Do not restate OAuth install, routing, the target pipeline, Hybrid probe, `#channel` / permalinks, DB identity, or User Mapping here. See [AGENTS.md](../AGENTS.md) **Common pitfalls**. Inside `helpers/*.py`, import submodules only; callers outside the package may use `import helpers` / `helpers.X`. The **Message Sync Flow** in [ARCHITECTURE.md](ARCHITECTURE.md) is a `#L` walkthrough; keep those links and the Slack → SyncBot → Slack mermaid current when the pipeline moves.
 
 ## Fork compatibility
 
