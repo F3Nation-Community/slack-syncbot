@@ -6,8 +6,7 @@ from slack_sdk.web import WebClient
 
 import helpers
 from db.event_claims import run_claimed
-
-_logger = logging.getLogger(__name__)
+from logger import log_debug
 
 
 def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[tuple]) -> None:
@@ -25,6 +24,8 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
     post_meta, source_sync_channel, source_workspace = source_rows[0]
     user_name, user_profile_url = helpers.get_user_info(client, user_id) if user_id else (None, None)
     people = [helpers.build_people_entry(user_id, name=user_name, avatar_url=user_profile_url)] if user_id else None
+    raw_event_ts = event.get("event_ts") or event.get("event_time")
+    event_ts = helpers.slack_message_ts(raw_event_ts) if raw_event_ts else None
     envelope = helpers.build_envelope(
         kind=helpers.KIND_REACTION,
         action=action,
@@ -40,6 +41,7 @@ def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[
         user_avatar_url=user_profile_url,
         workspace_name=helpers.resolve_workspace_name(source_workspace),
         source_ts=item.get("ts"),
+        event_ts=event_ts,
     )
     helpers.run_sync_pipeline(
         envelope,
@@ -89,10 +91,7 @@ def handle_reaction(
 
         reacted_records = helpers.get_post_records(msg_ts)
         if not reacted_records:
-            _logger.debug(
-                "reaction_no_post_meta",
-                extra={"msg_ts": msg_ts, "channel_id": channel_id},
-            )
+            log_debug("reaction_no_post_meta", msg_ts=msg_ts, channel_id=channel_id)
             # Message PostMeta may still be in flight; do not complete the claim.
             return False
         _sync_reaction_records(body, client, reacted_records)

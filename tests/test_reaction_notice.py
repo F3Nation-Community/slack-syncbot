@@ -55,12 +55,11 @@ def test_same_channel_apply_skipped():
     from helpers.reaction import apply_reaction_to_target
 
     channel = SimpleNamespace(
-        reaction_direction=constants.REACTION_DIRECTION_BOTH,
         reaction_style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
         channel_id="C_SAME",
         id=1,
     )
-    workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc")
+    workspace = SimpleNamespace(id=1, team_id="T1")
     with patch("helpers.reaction.WebClient") as web_client:
         result, notice = apply_reaction_to_target(
             action="add",
@@ -71,7 +70,7 @@ def test_same_channel_apply_skipped():
             target_post_meta=SimpleNamespace(ts=1.0, post_id="p1"),
             target_sync_channel=channel,
             target_workspace=workspace,
-            display_name="Alice",
+            display_name="Ada Lovelace",
             icon_url=None,
             posted_from="(A)",
             author_is_mapped=True,
@@ -84,24 +83,24 @@ def test_same_channel_apply_skipped():
 def test_find_notices_for_unreact_matches_one_actor_only():
     from helpers.reaction_notice import get_notices_for_unreact
 
-    alice = SimpleNamespace(
+    notice_a = SimpleNamespace(
         source_workspace_id=1,
         source_user_id="U_A",
         post_id="rxn-a",
     )
-    bob = SimpleNamespace(
+    notice_b = SimpleNamespace(
         source_workspace_id=1,
         source_user_id="U_B",
         post_id="rxn-b",
     )
-    with patch("helpers.reaction_notice.DbManager.find_records", return_value=[alice, bob]):
+    with patch("helpers.reaction_notice.DbManager.find_records", return_value=[notice_a, notice_b]):
         matched = get_notices_for_unreact(
             parent_post_id="post-1",
             reaction="thumbsup",
             sync_channel_id=10,
             actor_pairs={(1, "U_A")},
         )
-    assert matched == [alice]
+    assert matched == [notice_a]
 
 
 def test_find_notices_for_unreact_matches_federation_null_workspace():
@@ -323,18 +322,16 @@ def test_same_workspace_hybrid_no_token_skips_probe():
     from helpers.reaction import apply_reaction_to_target
 
     source = SimpleNamespace(
-        reaction_direction=constants.REACTION_DIRECTION_BOTH,
         reaction_style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
         channel_id="C_SRC",
         id=1,
     )
     target = SimpleNamespace(
-        reaction_direction=constants.REACTION_DIRECTION_BOTH,
         reaction_style=constants.REACTION_STYLE_THREADED_AND_DIRECT,
         channel_id="C_TGT",
         id=2,
     )
-    workspace = SimpleNamespace(id=99, team_id="T1", bot_token="enc")
+    workspace = SimpleNamespace(id=99, team_id="T1")
     bot_client = MagicMock()
     bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
     bot_client.chat_postMessage.return_value = {"ts": "200.000001"}
@@ -342,7 +339,7 @@ def test_same_workspace_hybrid_no_token_skips_probe():
     with (
         patch("helpers.reaction.get_user_token", return_value=None),
         patch("helpers.reaction._mapped_user_for_target", return_value="U_MAPPED"),
-        patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
+        patch("helpers.reaction.get_bot_token", return_value="xoxb-bot"),
         patch("helpers.reaction.WebClient", return_value=bot_client),
         patch("helpers.reaction._target_reaction_name_is_invalid") as probe,
         patch("helpers.reaction.DbManager.create_records"),
@@ -356,7 +353,7 @@ def test_same_workspace_hybrid_no_token_skips_probe():
             target_post_meta=SimpleNamespace(ts=100.0, post_id="p1"),
             target_sync_channel=target,
             target_workspace=workspace,
-            display_name="Alice",
+            display_name="Ada Lovelace",
             icon_url=None,
             posted_from="(A)",
             author_is_mapped=True,
@@ -371,10 +368,11 @@ def test_migration_import_restores_notice_fields():
 
     data = {
         "workspace": {"team_id": "T1"},
-        "syncs": [{"title": "S1", "publisher_team_id": "T1", "target_team_id": "T2"}],
-        "sync_channels": [{"sync_title": "S1", "channel_id": "C1", "status": "active"}],
+        "groups": [{"uid": "group-uid", "name": "Group", "role": "owner"}],
+        "syncs": [{"uid": "sync-uid", "group_uid": "group-uid", "title": "S1"}],
+        "sync_channels": [{"sync_uid": "sync-uid", "channel_id": "C1", "status": "active"}],
         "post_meta": {
-            "S1:C1": [
+            "sync-uid:C1": [
                 {
                     "post_id": "rxn-abc",
                     "ts": 100.0,
@@ -382,7 +380,7 @@ def test_migration_import_restores_notice_fields():
                     "parent_post_id": "post-1",
                     "reaction": "heart",
                     "source_user_id": "U1",
-                    "source_workspace_id": 3,
+                    "source_team_id": "T2",
                 }
             ]
         },
@@ -396,7 +394,9 @@ def test_migration_import_restores_notice_fields():
 
     def _capture(record):
         name = type(record).__name__
-        if name == "Sync":
+        if name == "WorkspaceGroup":
+            record.id = 1
+        elif name == "Sync":
             sync_counter["n"] += 1
             record.id = sync_counter["n"]
         if name == "SyncChannel":
@@ -437,7 +437,7 @@ def test_target_notice_message_deleted_is_local_tombstone_only():
         ts=200.000001,
         id=1,
     )
-    workspace = SimpleNamespace(id=7, team_id="T1", bot_token="enc")
+    workspace = SimpleNamespace(id=7, team_id="T1")
     sync_channel = SimpleNamespace(id=5, channel_id="C1")
     logger = MagicMock()
     client = MagicMock()
@@ -471,7 +471,7 @@ def test_own_bot_delete_of_missing_notice_does_not_fan_out():
             "previous_message": {"ts": "200.000001", "bot_id": "B_SYNCBOT", "text": "synced post"},
         },
     }
-    workspace = SimpleNamespace(id=7, team_id="T1", bot_token="enc")
+    workspace = SimpleNamespace(id=7, team_id="T1")
     sync_channel = SimpleNamespace(id=5, channel_id="C1")
     logger = MagicMock()
     client = MagicMock()
