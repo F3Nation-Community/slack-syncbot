@@ -77,17 +77,21 @@ def _seed_group(conn, group_id, invite_code, members):
     """Insert one active group plus *members* as (id, workspace_id, role, status, deleted_at, joined_at)."""
     conn.execute(
         text(
-            "INSERT INTO workspace_groups (id, name, invite_code, status, created_at) "
-            "VALUES (:id, :name, :code, 'active', '2026-01-01 00:00:00')"
+            "INSERT INTO workspace_groups (id, name, invite_code, status, created_at, uid) "
+            "VALUES (:id, :name, :code, 'active', '2026-01-01 00:00:00', :uid)"
         ),
-        {"id": group_id, "name": f"Group {group_id}", "code": invite_code},
+        {"id": group_id, "name": f"Group {group_id}", "code": invite_code, "uid": f"group-{group_id}"},
     )
     for member_id, workspace_id, role, status, deleted_at, joined_at in members:
         # FKs are enforced in tests (conftest sets PRAGMA foreign_keys=ON), so the
         # referenced workspace has to exist.
         if workspace_id is not None:
             conn.execute(
-                text("INSERT OR IGNORE INTO workspaces (id, team_id, workspace_name) VALUES (:id, :team, :name)"),
+                text(
+                    "INSERT OR IGNORE INTO workspaces (id, team_id, workspace_name, instance_id) "
+                    "SELECT :id, :team, :name, instance_id FROM instances "
+                    "WHERE private_key_encrypted IS NOT NULL LIMIT 1"
+                ),
                 {"id": workspace_id, "team": f"T{workspace_id}", "name": f"WS {workspace_id}"},
             )
         conn.execute(

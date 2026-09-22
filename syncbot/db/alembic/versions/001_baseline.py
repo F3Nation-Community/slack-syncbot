@@ -4,6 +4,9 @@ Revision ID: 001_baseline
 Revises:
 Create Date: Baseline from ORM models + OAuth tables
 
+``create_all`` uses the *current* ORM. Later migrations must skip a foreign
+key when the column already has one (named or unnamed). A second named copy
+on SQLite duplicates ``FOREIGN KEY`` in ``sqlite_master``.
 """
 
 from collections.abc import Sequence

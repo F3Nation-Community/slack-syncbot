@@ -3,19 +3,21 @@
 Key design decisions:
 
 * **Connection pooling** — Uses :class:`~sqlalchemy.pool.QueuePool` with
-  ``pool_pre_ping=True`` so that warm Lambda containers reuse connections
+  ``pool_pre_ping=True`` so that warm processes reuse connections
   while stale ones are transparently replaced.
 * **Automatic retry** — The :func:`_with_retry` decorator retries transient
   :class:`~sqlalchemy.exc.OperationalError` (lost connection, deadlock) up to
   ``_MAX_RETRIES`` times. Schema and syntax errors (unknown column, 1064) are
-  not retried — those burned Slack's 3s ack window and the Lambda migrate
-  timeout when a migration had not applied.
+  not retried — those burned Slack's 3s ack window and migrate time
+  when a migration had not applied.
 """
 
-import logging
 import os
+import sqlite3
 import ssl
 import time
+from datetime import date, datetime
+from datetime import time as dt_time
 from pathlib import Path
 from typing import TypeVar
 from urllib.parse import quote_plus
@@ -26,8 +28,22 @@ from sqlalchemy.orm import sessionmaker
 
 import constants
 from db.schemas import BaseClass
+from logger import log_critical, log_error, log_info, log_warning
 
-_logger = logging.getLogger(__name__)
+
+def _register_sqlite3_datetime_adapters() -> None:
+    """Replace Python 3.12+'s deprecated default sqlite3 datetime adapters.
+
+    SQLAlchemy's SQLite DateTime bind processor already stringifies ORM values.
+    Raw ``text()`` binds still pass ``datetime`` objects, which sqlite3 otherwise
+    adapts with the deprecated default.
+    """
+    sqlite3.register_adapter(date, lambda value: value.isoformat())
+    sqlite3.register_adapter(datetime, lambda value: value.isoformat(sep=" "))
+    sqlite3.register_adapter(dt_time, lambda value: value.isoformat())
+
+
+_register_sqlite3_datetime_adapters()
 
 
 GLOBAL_ENGINE = None
@@ -51,6 +67,7 @@ _NON_RETRYABLE_DBAPI_ERRNOS = frozenset(
         1146,  # table doesn't exist
         1171,  # all parts of a PRIMARY KEY must be NOT NULL
         1215,  # cannot add foreign key
+        1828,  # cannot drop column needed in a foreign key (TiDB / MySQL)
     }
 )
 _NON_RETRYABLE_SQL_FRAGMENTS = (
@@ -63,8 +80,10 @@ _NON_RETRYABLE_SQL_FRAGMENTS = (
     "undefined table",
     "no such table",
     "no such column",
+    "cannot drop column",
+    "foreign key constraint",
 )
-# Migrations live next to this package so they are included in the Lambda bundle (SAM CodeUri: syncbot/).
+# Migrations live next to this package so they ship with the app.
 _ALEMBIC_SCRIPT_LOCATION = Path(__file__).resolve().parent / "alembic"
 
 # Repo root locally; Lambda deployment root (/var/task) in AWS — used for relative SQLite paths.
@@ -228,7 +247,7 @@ def _is_retryable_db_error(exc: BaseException) -> bool:
 
     pymysql maps unknown-column (1054) to :class:`~sqlalchemy.exc.OperationalError`,
     so a blanket OperationalError retry would spin Slack's 3s ack budget and
-    Lambda's migrate timeout on a migration that never applied. Alembic may wrap
+    migrate time on a migration that never applied. Alembic may wrap
     the driver error, so the whole exception chain is inspected.
     """
     chain = _exception_chain(exc)
@@ -244,6 +263,25 @@ def _is_retryable_db_error(exc: BaseException) -> bool:
     return any(isinstance(item, OperationalError) for item in chain)
 
 
+def _init_failure_message(exc: BaseException) -> str:
+    """One-line reason for migrate/startup failure payloads (includes the driver error)."""
+    detail = None
+    for item in _exception_chain(exc):
+        args = getattr(item, "args", ())
+        if args and isinstance(args[0], int) and len(args) >= 2:
+            detail = f"({args[0]}, {args[1]})"
+            break
+    if not detail:
+        detail = str(exc)
+    detail = " ".join(str(detail).split())
+    if len(detail) > 400:
+        detail = detail[:397] + "..."
+    return (
+        f"Database init failed: {detail}. "
+        "If this is a first deploy, create the database and app user first (see docs/DEPLOY.md)."
+    )
+
+
 def initialize_database() -> None:
     """Apply Alembic migrations. Does not ``CREATE DATABASE``.
 
@@ -257,24 +295,11 @@ def initialize_database() -> None:
         except Exception as exc:
             retryable = _is_retryable_db_error(exc)
             if not retryable or attempt >= _DB_INIT_MAX_ATTEMPTS:
-                _logger.error(
-                    "db_init_failed",
-                    extra={
-                        "attempts": attempt,
-                        "retryable": retryable,
-                        "error": str(exc),
-                    },
-                )
+                log_error("db_init_failed", attempts=attempt, retryable=retryable, error=str(exc))
                 if _is_network_sql_backend():
-                    raise RuntimeError(
-                        "Database init failed. Create the database and app user first "
-                        "(see docs/DEPLOY.md), then retry migrate."
-                    ) from exc
+                    raise RuntimeError(_init_failure_message(exc)) from exc
                 raise
-            _logger.warning(
-                "db_init_retrying",
-                extra={"attempt": attempt, "max_attempts": _DB_INIT_MAX_ATTEMPTS, "error": str(exc)},
-            )
+            log_warning("db_init_retrying", attempt=attempt, max_attempts=_DB_INIT_MAX_ATTEMPTS, error=str(exc))
             time.sleep(_DB_INIT_RETRY_SECONDS)
 
 
@@ -314,7 +339,7 @@ def drop_and_init_db() -> None:
     """
     global GLOBAL_ENGINE, GLOBAL_SESSION, GLOBAL_SCHEMA
 
-    _logger.critical("DB RESET: emptying schema and reinitializing via Alembic. All data will be lost.")
+    log_critical("db_reset_started")
 
     db_url, connect_args = _get_database_url_and_args()
     engine = create_engine(
@@ -333,7 +358,7 @@ def drop_and_init_db() -> None:
     GLOBAL_SCHEMA = None
     # Recreate schema via Alembic upgrade head.
     initialize_database()
-    _logger.info("drop_and_init_db: schema emptied and reinitialized via Alembic")
+    log_info("drop_and_init_db", reason="schema emptied and reinitialized via Alembic")
 
 
 def get_engine(echo: bool = False, schema: str = None):
@@ -408,14 +433,19 @@ def _with_retry(fn):
             except OperationalError as exc:
                 retryable = _is_retryable_db_error(exc)
                 if retryable and attempt < _MAX_RETRIES:
-                    _logger.warning(f"DB operation {fn.__name__} failed (attempt {attempt + 1}), retrying: {exc}")
+                    log_warning(
+                        "db_operation_retry",
+                        fn=fn.__name__,
+                        attempt=attempt + 1,
+                        error=str(exc),
+                    )
                     continue
                 if retryable:
-                    _logger.error(f"DB operation {fn.__name__} failed after {_MAX_RETRIES + 1} attempts")
+                    log_error("db_operation_failed", fn=fn.__name__, attempts=_MAX_RETRIES + 1)
                     if GLOBAL_ENGINE is not None:
                         GLOBAL_ENGINE.dispose()
                 else:
-                    _logger.error(f"DB operation {fn.__name__} failed (not retryable): {exc}")
+                    log_error("db_operation_failed", fn=fn.__name__, error=str(exc))
                 raise
 
     wrapper.__name__ = fn.__name__

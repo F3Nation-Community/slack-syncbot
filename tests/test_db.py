@@ -2,6 +2,8 @@
 
 import contextlib
 import os
+import warnings
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -101,6 +103,25 @@ class TestWithRetry:
         outer = RuntimeError("alembic upgrade failed")
         outer.__cause__ = inner
         assert _is_retryable_db_error(outer) is True
+
+    def test_tidb_cannot_drop_fk_column_is_not_retryable(self):
+        class _FkDrop(Exception):
+            args = (1828, "Cannot drop column 'federated_workspace_id': needed in a foreign key constraint 'fk_3'")
+
+        assert _is_retryable_db_error(OperationalError("ALTER TABLE …", {}, _FkDrop())) is False
+
+    @patch.dict(os.environ, {"DATABASE_BACKEND": "mysql"}, clear=False)
+    def test_init_failure_includes_driver_error(self):
+        import db as db_mod
+
+        class _FkDrop(Exception):
+            args = (1828, "Cannot drop column 'federated_workspace_id': needed in a foreign key constraint 'fk_3'")
+
+        with (
+            patch.object(db_mod, "_run_alembic_upgrade", side_effect=OperationalError("ALTER TABLE …", {}, _FkDrop())),
+            pytest.raises(RuntimeError, match="Cannot drop column"),
+        ):
+            db_mod.initialize_database()
 
 
 # -----------------------------------------------------------------------
@@ -234,6 +255,72 @@ class TestBackendParity:
             if "DATABASE_URL" in os.environ and "test_bootstrap" in os.environ["DATABASE_URL"]:
                 with contextlib.suppress(Exception):
                     (__import__("pathlib").Path("test_bootstrap.db")).unlink(missing_ok=True)
+
+    def test_sqlite_initialize_does_not_duplicate_foreign_keys(self, tmp_path):
+        """001 create_all already has FKs; later migrations must not add a second copy."""
+        import db as db_mod
+        from db import get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'fk_dedupe.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    initialize_database()
+                    engine = get_engine()
+                    insp = inspect(engine)
+                    insp.get_foreign_keys("workspaces")
+                    insp.get_foreign_keys("federation_pairing_requests")
+                    insp.get_foreign_keys("post_meta")
+                pragma_warnings = [w for w in caught if "PRAGMA foreign_keys" in str(w.message)]
+                assert pragma_warnings == []
+                with engine.connect() as conn:
+                    for table, column in (
+                        ("workspaces", "instance_id"),
+                        ("federation_pairing_requests", "pairing_code_id"),
+                        ("post_meta", "source_workspace_id"),
+                    ):
+                        sql = conn.execute(
+                            text("SELECT sql FROM sqlite_master WHERE name = :table"),
+                            {"table": table},
+                        ).scalar()
+                        assert sql is not None
+                        assert sql.count(f"FOREIGN KEY({column})") == 1
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
+
+    def test_sqlite_datetime_binds_do_not_use_deprecated_adapter(self, tmp_path):
+        import db as db_mod
+        from db import get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'datetime_adapter.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                now = datetime.now(UTC).replace(tzinfo=None)
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    engine = get_engine()
+                    with engine.begin() as conn:
+                        conn.execute(text("UPDATE instances SET updated_at = :now"), {"now": now})
+                adapter_warnings = [w for w in caught if "datetime adapter" in str(w.message)]
+                assert adapter_warnings == []
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
 
     def test_alembic_002_creates_processed_events_when_missing(self, tmp_path):
         """Existing 001 installs do not get the table from create_all; 002 must create it."""
@@ -397,44 +484,6 @@ class TestAlembic011MapMethod:
                 db_mod.GLOBAL_SCHEMA = old_schema
 
 
-class TestAlembic012FederationEndpoint:
-    def test_appends_mount_path_to_bare_origin(self, tmp_path):
-        from alembic import command
-
-        import db as db_mod
-        from db import _alembic_config, get_engine, initialize_database
-
-        url = f"sqlite:///{tmp_path / 'alembic012.db'}"
-        old_engine = db_mod.GLOBAL_ENGINE
-        old_schema = db_mod.GLOBAL_SCHEMA
-        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
-            try:
-                db_mod.GLOBAL_ENGINE = None
-                db_mod.GLOBAL_SCHEMA = None
-                initialize_database()
-                engine = get_engine()
-                with engine.begin() as conn:
-                    conn.execute(
-                        text(
-                            "INSERT INTO federated_workspaces "
-                            "(instance_id, webhook_url, public_key, status, created_at) VALUES "
-                            "('bare', 'https://peer.example', 'PEM', 'active', '2026-01-01'),"
-                            "('full', 'https://other.example/api/federation', 'PEM', 'active', '2026-01-01')"
-                        )
-                    )
-                    conn.execute(text("UPDATE alembic_version SET version_num = '011_user_mapping_map_method'"))
-                command.upgrade(_alembic_config(), "head")
-                with engine.begin() as conn:
-                    rows = dict(conn.execute(text("SELECT instance_id, webhook_url FROM federated_workspaces")).all())
-                assert rows["bare"] == "https://peer.example/api/federation"
-                assert rows["full"] == "https://other.example/api/federation"
-            finally:
-                if db_mod.GLOBAL_ENGINE:
-                    db_mod.GLOBAL_ENGINE.dispose()
-                db_mod.GLOBAL_ENGINE = old_engine
-                db_mod.GLOBAL_SCHEMA = old_schema
-
-
 class TestAlembic013MappedAt:
     def test_renames_matched_at_when_rewound_to_012(self, tmp_path):
         from alembic import command
@@ -541,6 +590,59 @@ class TestAlembic009WidenTokens:
                 types = {c["name"]: str(c["type"]).lower() for c in inspect(engine).get_columns("slack_bots")}
                 assert "text" in types["bot_token"]
                 assert "text" in types["bot_refresh_token"]
+            finally:
+                if db_mod.GLOBAL_ENGINE:
+                    db_mod.GLOBAL_ENGINE.dispose()
+                db_mod.GLOBAL_ENGINE = old_engine
+                db_mod.GLOBAL_SCHEMA = old_schema
+
+
+class TestAlembic015016InstanceStubs:
+    def test_head_schema_uses_instances_and_drops_leftover_columns(self, tmp_path):
+        import db as db_mod
+        from db import get_engine, initialize_database
+
+        url = f"sqlite:///{tmp_path / 'alembic015016.db'}"
+        old_engine = db_mod.GLOBAL_ENGINE
+        old_schema = db_mod.GLOBAL_SCHEMA
+        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+            try:
+                db_mod.GLOBAL_ENGINE = None
+                db_mod.GLOBAL_SCHEMA = None
+                initialize_database()
+                engine = get_engine()
+                tables = set(inspect(engine).get_table_names())
+                assert "instances" in tables
+                assert "federated_workspaces" not in tables
+                assert "instance_keys" not in tables
+                ws_cols = {c["name"] for c in inspect(engine).get_columns("workspaces")}
+                assert "instance_id" in ws_cols
+                assert "bot_token" not in ws_cols
+                assert "federated_workspace_id" not in ws_cols
+                sync_cols = {c["name"] for c in inspect(engine).get_columns("syncs")}
+                assert "uid" in sync_cols
+                assert "publisher_workspace_id" not in sync_cols
+                assert "target_workspace_id" not in sync_cols
+                sc_cols = {c["name"] for c in inspect(engine).get_columns("sync_channels")}
+                assert "reaction_direction" not in sc_cols
+                group_cols = {c["name"] for c in inspect(engine).get_columns("workspace_groups")}
+                assert "uid" in group_cols
+                assert "federation_uid" not in group_cols
+                ws_col = next(c for c in inspect(engine).get_columns("workspaces") if c["name"] == "instance_id")
+                assert ws_col["nullable"] is False
+                group_uid = next(c for c in inspect(engine).get_columns("workspace_groups") if c["name"] == "uid")
+                assert group_uid["nullable"] is False
+                sync_uid = next(c for c in inspect(engine).get_columns("syncs") if c["name"] == "uid")
+                assert sync_uid["nullable"] is False
+                pair_cols = {c["name"] for c in inspect(engine).get_columns("federation_pairing_codes")}
+                assert "allowed_workspace_ids" in pair_cols
+                code_fks = [
+                    fk
+                    for fk in inspect(engine).get_foreign_keys("federation_pairing_requests")
+                    if "pairing_code_id" in (fk.get("constrained_columns") or [])
+                ]
+                assert code_fks
+                assert {(fk.get("options") or {}).get("ondelete") for fk in code_fks} == {"SET NULL"}
             finally:
                 if db_mod.GLOBAL_ENGINE:
                     db_mod.GLOBAL_ENGINE.dispose()

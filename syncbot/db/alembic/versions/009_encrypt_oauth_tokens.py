@@ -54,6 +54,10 @@ def _encrypt_plaintext_tokens(table: str, column: str) -> None:
         return
 
     bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    cols = {c["name"] for c in inspector.get_columns(table)} if table in inspector.get_table_names() else set()
+    if column not in cols:
+        return
     rows = bind.execute(sa.text(f"SELECT id, {column} FROM {table} WHERE {column} IS NOT NULL")).fetchall()
     for row_id, value in rows:
         if not value or not isinstance(value, str):
