@@ -1,7 +1,6 @@
 """User event handlers — team join, profile changes, user mapping management."""
 
 import contextlib
-import logging
 from datetime import UTC, datetime
 from logging import Logger
 
@@ -21,9 +20,8 @@ from helpers.user_map import (
     auto_map_running_key,
     set_last_auto_map,
 )
+from logger import log_info, log_warning
 from slack import actions
-
-_logger = logging.getLogger(__name__)
 
 
 def handle_team_join(
@@ -49,13 +47,10 @@ def handle_team_join(
 
     workspace_record = DbManager.get_record(schemas.Workspace, id=team_id)
     if not workspace_record:
-        _logger.warning(f"team_join: unknown team_id {team_id}")
+        log_warning("team_join", team_id=team_id)
         return
 
-    _logger.info(
-        "team_join_received",
-        extra={"team_id": team_id, "user_id": user_data.get("id")},
-    )
+    log_info("team_join_received", team_id=team_id, user_id=user_data.get("id"))
 
     helpers._upsert_single_user_to_directory(user_data, workspace_record.id)
     # ``user_auto_map_complete`` is the single INFO summary (do not also log team_join mapping).
@@ -100,10 +95,7 @@ def handle_user_profile_changed(
                     builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
                     notified_ws.add(member.workspace_id)
 
-    _logger.info(
-        "user_profile_updated",
-        extra={"team_id": team_id, "user_id": user_data.get("id")},
-    )
+    log_info("user_profile_updated", team_id=team_id, user_id=user_data.get("id"))
 
 
 def _mapping_modal_view_id(body: dict) -> str | None:
@@ -212,10 +204,7 @@ def handle_user_mapping_auto_map(
         helpers._cache_delete_prefix(f"home_tab_hash:{workspace_record.team_id}")
         helpers._cache_delete_prefix(f"home_tab_blocks:{workspace_record.team_id}")
     except Exception as exc:
-        _logger.warning(
-            "user_mapping_auto_map_failed",
-            extra={"workspace_id": workspace_record.id, "error": str(exc)},
-        )
+        log_warning("user_mapping_auto_map_failed", workspace_id=workspace_record.id, error=str(exc))
     finally:
         helpers._cache_delete(running_key)
 
@@ -267,7 +256,7 @@ def handle_user_mapping_edit_submit(
     parent_view_id = meta.get("parent_view_id")
 
     if not mapping_id:
-        _logger.warning("user_mapping_edit_submit: missing mapping_id")
+        log_warning("user_mapping_edit_submit", reason="missing mapping_id")
         return
 
     mapping = DbManager.get_record(schemas.UserMapping, id=mapping_id)
@@ -299,7 +288,7 @@ def handle_user_mapping_edit_submit(
                 schemas.UserMapping.mapped_at: now,
             },
         )
-        _logger.info("user_mapping_removed", extra={"mapping_id": mapping.id})
+        log_info("user_mapping_removed", mapping_id=mapping.id)
     elif selected:
         existing = DbManager.find_records(
             schemas.UserMapping,
@@ -321,7 +310,7 @@ def handle_user_mapping_edit_submit(
                     ),
                 )
             except Exception as exc:
-                _logger.warning("user_mapping_duplicate_dm_failed", extra={"error": str(exc)})
+                log_warning("user_mapping_duplicate_dm_failed", error=str(exc))
             return
 
         DbManager.update_records(
@@ -333,7 +322,7 @@ def handle_user_mapping_edit_submit(
                 schemas.UserMapping.mapped_at: now,
             },
         )
-        _logger.info("user_mapping_updated", extra={"mapping_id": mapping.id, "target_user_id": selected})
+        log_info("user_mapping_updated", mapping_id=mapping.id, target_user_id=selected)
 
     if parent_view_id:
         update_user_mapping_modal(

@@ -18,7 +18,7 @@ class TestResolveMentionsForFederated:
         m = MagicMock()
         m.source_user_id = "UREMOTE"
         m.target_user_id = "ULOCAL"
-        m.source_display_name = "Alice"
+        m.source_display_name = "Ada Lovelace"
         m.map_method = "email"
 
         def fake_find(model, _filters):
@@ -27,14 +27,14 @@ class TestResolveMentionsForFederated:
             return []
 
         with patch.object(federation_api.DbManager, "find_records", side_effect=fake_find):
-            out = federation_api._resolve_mentions_for_federated("hi <@UREMOTE>", 10, "Partner WS")
+            out = federation_api._resolve_mentions_for_federated("hi <@UREMOTE>", 10, "Workspace B")
         assert out == "hi <@ULOCAL>"
 
     def test_fallback_stub_mapping_display_name(self):
         m = MagicMock()
         m.source_user_id = "UREMOTE"
         m.target_user_id = None
-        m.source_display_name = "Bob"
+        m.source_display_name = "Ada Lovelace"
         m.map_method = "none"
 
         def fake_find(model, _filters):
@@ -43,13 +43,13 @@ class TestResolveMentionsForFederated:
             return []
 
         with patch.object(federation_api.DbManager, "find_records", side_effect=fake_find):
-            out = federation_api._resolve_mentions_for_federated("hi <@UREMOTE>", 10, "Partner WS")
-        assert out == "hi `Bob (Partner WS)`"
+            out = federation_api._resolve_mentions_for_federated("hi <@UREMOTE>", 10, "Workspace B")
+        assert out == "hi `Ada Lovelace (Workspace B)`"
 
     def test_fallback_user_directory_display_name(self):
         entry = MagicMock()
         entry.slack_user_id = "UX"
-        entry.display_name = "Carol"
+        entry.display_name = "Ada Lovelace"
         entry.real_name = None
 
         def fake_find(model, _filters):
@@ -60,8 +60,8 @@ class TestResolveMentionsForFederated:
             return []
 
         with patch.object(federation_api.DbManager, "find_records", side_effect=fake_find):
-            out = federation_api._resolve_mentions_for_federated("hey <@UX>", 10, "Remote")
-        assert out == "hey `Carol (Remote)`"
+            out = federation_api._resolve_mentions_for_federated("hey <@UX>", 10, "Workspace B")
+        assert out == "hey `Ada Lovelace (Workspace B)`"
 
     def test_prefers_mapping_with_target_user_id(self):
         good = MagicMock()
@@ -88,7 +88,7 @@ class TestResolveMentionsForFederated:
         m = MagicMock()
         m.source_user_id = "USTUB"
         m.target_user_id = "USHouldNotUse"
-        m.source_display_name = "Stub"
+        m.source_display_name = "Ada Lovelace"
         m.map_method = "none"
 
         def fake_find(model, _filters):
@@ -97,6 +97,16 @@ class TestResolveMentionsForFederated:
             return []
 
         with patch.object(federation_api.DbManager, "find_records", side_effect=fake_find):
-            out = federation_api._resolve_mentions_for_federated("hi <@USTUB>", 10, "Partner WS")
-        assert out == "hi `Stub (Partner WS)`"
+            out = federation_api._resolve_mentions_for_federated("hi <@USTUB>", 10, "Workspace B")
+        assert out == "hi `Ada Lovelace (Workspace B)`"
         assert "USHouldNotUse" not in out
+
+    def test_fallback_envelope_people_name(self):
+        with patch.object(federation_api.DbManager, "find_records", return_value=[]):
+            out = federation_api._resolve_mentions_for_federated(
+                "hi <@UREMOTE>",
+                10,
+                "Workspace B",
+                {"UREMOTE": {"name": "Ada Lovelace"}},
+            )
+        assert out == "hi `Ada Lovelace (Workspace B)`"

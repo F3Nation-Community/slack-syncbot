@@ -167,11 +167,15 @@ class TestGetPublicBaseUrl:
         remember = oauth_mod.remember_public_base
         remember("https://from-host.example")
 
-        with caplog.at_level("WARNING", logger="helpers.oauth"):
+        with caplog.at_level("WARNING", logger="syncbot"):
             assert oauth_mod.get_public_base_url() == "https://from-host.example"
             assert oauth_mod.get_public_base_url() == "https://from-host.example"
 
-        warnings = [r.message for r in caplog.records if "SYNCBOT_PUBLIC_URL is ignored" in r.message]
+        warnings = [
+            r
+            for r in caplog.records
+            if r.message == "legacy_env_ignored" and getattr(r, "env", None) == "SYNCBOT_PUBLIC_URL"
+        ]
         assert len(warnings) == 1
 
     def test_falls_back_to_persisted_instance_setting(self):
@@ -220,7 +224,7 @@ class TestRefreshHomeAfterOauthInstall:
         from helpers.oauth import refresh_home_after_oauth_install
 
         with patch("builders.build_home_tab") as build:
-            refresh_home_after_oauth_install(SimpleNamespace(team_id="T1", user_id=None, bot_token="xoxb"))
+            refresh_home_after_oauth_install(SimpleNamespace(team_id="T1", user_id=None))
 
         build.assert_not_called()
 
@@ -233,7 +237,7 @@ class TestSkipEmptyUserInstallations:
         from helpers.oauth import _skip_empty_user_installations
 
         store = MagicMock()
-        store.find_installation.return_value = SimpleNamespace(bot_token=None, user_token=None)
+        store.find_installation.return_value = SimpleNamespace(user_token=None)
         _skip_empty_user_installations(store)
 
         assert store.find_installation(enterprise_id=None, team_id="T1", user_id="U9") is None
@@ -246,7 +250,7 @@ class TestSkipEmptyUserInstallations:
         from helpers.oauth import _skip_empty_user_installations
 
         store = MagicMock()
-        store.find_installation.return_value = SimpleNamespace(bot_token="xoxb-copied", user_token=None)
+        store.find_installation.return_value = SimpleNamespace(user_token=None)
         _skip_empty_user_installations(store)
 
         assert store.find_installation(enterprise_id=None, team_id="T1", user_id="U9") is None
@@ -257,7 +261,7 @@ class TestSkipEmptyUserInstallations:
 
         from helpers.oauth import _skip_empty_user_installations
 
-        row = SimpleNamespace(bot_token=None, user_token="xoxp-1")
+        row = SimpleNamespace(user_token="xoxp-1")
         store = MagicMock()
         store.find_installation.return_value = row
         _skip_empty_user_installations(store)
@@ -270,7 +274,7 @@ class TestSkipEmptyUserInstallations:
 
         from helpers.oauth import _skip_empty_user_installations
 
-        row = SimpleNamespace(bot_token=None, user_token=None)
+        row = SimpleNamespace(user_token=None)
         store = MagicMock()
         store.find_installation.return_value = row
         _skip_empty_user_installations(store)
@@ -285,7 +289,7 @@ class TestOauthSuccessCallback:
 
         from helpers.oauth import _oauth_success
 
-        installation = SimpleNamespace(team_id="T1", user_id="U1", bot_token="xoxb")
+        installation = SimpleNamespace(team_id="T1", user_id="U1")
         default = SimpleNamespace(success=MagicMock(return_value="ok-page"))
         args = SimpleNamespace(installation=installation, default=default)
         with patch("helpers.oauth.refresh_home_after_oauth_install") as refresh:

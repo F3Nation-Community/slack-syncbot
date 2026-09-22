@@ -6,6 +6,7 @@ import constants
 from db import DbManager, schemas
 from helpers.sync_participation import channel_publishes
 from helpers.user_action_echo import post_meta_ts
+from logger import log_debug
 
 
 def _dedupe_post_records(
@@ -179,51 +180,52 @@ def complete_copy_ts_from_pending_share(
     ts: str | None,
     file_ids: list[str],
 ) -> bool | None:
-    """Write copy PostMeta when extract missed the share ts.
+    """Commit copy PostMeta for an in-flight file apply once Slack emits the share ts.
 
-    ``True`` wrote a row. ``False`` means retry (origin PostMeta not stored yet).
-    ``None`` means this event is not a pending share.
+    ``True`` wrote a row. ``False`` means retry (SyncChannel row not visible yet).
+    ``None`` means this event is not that apply, or the ts was already stored.
+
+    The pending row is the apply that already ran: envelope ``post_id``,
+    ``sync_channel_id``, and source fields. A different ts already stored
+    on this SyncChannel is not this share and must not block it.
     """
     if not team_id or not channel_id or not ts or not file_ids:
         return None
     from helpers.user_action_echo import find_pending_file_share, take_pending_file_share
 
+    pending = None
     pending_file_id = None
-    post_id = None
     for file_id in file_ids:
-        post_id = find_pending_file_share(team_id, channel_id, file_id)
-        if post_id:
+        pending = find_pending_file_share(team_id, channel_id, file_id)
+        if pending:
             pending_file_id = file_id
             break
-    if not post_id or pending_file_id is None:
+    if not pending or pending_file_id is None:
         return None
     if post_meta_exists_for_channel_ts(channel_id, ts):
         take_pending_file_share(team_id, channel_id, pending_file_id)
         return None
-    records = get_post_records_for_post_id(post_id)
-    if not records:
+    sync_channel = DbManager.get_record(schemas.SyncChannel, pending.sync_channel_id)
+    if not sync_channel or sync_channel.channel_id != channel_id:
+        log_debug(
+            "pending_share_copy",
+            reason="sync_channel_missing",
+            channel_id=channel_id,
+            post_id=pending.post_id,
+            sync_channel_id=pending.sync_channel_id,
+        )
         return False
-    sync_ids = {sync_channel.sync_id for _pm, sync_channel, _ws in records}
-    existing_ids = {sync_channel.id for _pm, sync_channel, _ws in records}
-    from helpers.sync_participation import get_channel_memberships
-
-    origin = records[0][0]
-    created: list[schemas.PostMeta] = []
-    for sync_channel, _workspace in get_channel_memberships(channel_id):
-        if sync_channel.sync_id not in sync_ids or sync_channel.id in existing_ids:
-            continue
-        created.append(
+    DbManager.create_records(
+        [
             schemas.PostMeta(
-                post_id=post_id,
+                post_id=pending.post_id,
                 sync_channel_id=sync_channel.id,
                 ts=post_meta_ts(ts),
-                source_user_id=origin.source_user_id,
-                source_workspace_id=origin.source_workspace_id,
+                posted_as_user_id=pending.posted_as_user_id,
+                source_user_id=pending.source_user_id,
+                source_workspace_id=pending.source_workspace_id,
             )
-        )
-    if not created:
-        take_pending_file_share(team_id, channel_id, pending_file_id)
-        return None
-    DbManager.create_records(created)
+        ]
+    )
     take_pending_file_share(team_id, channel_id, pending_file_id)
     return True

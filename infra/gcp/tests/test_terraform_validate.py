@@ -110,9 +110,31 @@ def test_deploy_script_sqlite_skips_required_password() -> None:
     assert "GCP_DATABASE_MODE" in script
     assert "DATABASE_ENGINE" in script
     assert "GCP_CLOUD_RUN_MIN_INSTANCES" in script
+    assert "GCP_USE_SECRET_MANAGER" in script
     assert "ENABLE_KEEP_WARM" in script
+    assert "wait_for_cloud_run_ready" in script
+    assert "/health" in script
+    assert "use_secret_manager" in script
+    assert "ensure_gcp_data_encryption_key" in script
+    assert "roles/artifactregistry.reader" in (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    assert "cloud_run_agent_reader" not in (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    assert "serverless-robot" not in (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
+    assert "audience              = google_cloud_run_v2_service.syncbot.uri" in (INFRA_GCP / "main.tf").read_text(
+        encoding="utf-8"
+    )
+    assert "SYNCBOT_CLOUD_USE" not in script
+    assert "SYNCBOT_CLOUD_USE" not in (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
     assert "GCP_CLOUD_RUN_IMAGE" in script
     assert "-var=database_backend=" in script
+    assert "push_cloud_run_syncbot_image" in script
+    assert "docker build --progress=plain -f" in script
+    assert "--progress=plain" in script
+    assert "terraform init -input=false" in script
+    assert "Looking up DATA_ENCRYPTION_KEY in Secret Manager" in script
+    assert "Using DATA_ENCRYPTION_KEY from the deploy env file." in script
+    assert "gcloud run services update" in script
+    assert "prereqs_require_cmd docker" in script
+    assert "Blank uses the public hello placeholder" not in script
     assert "-var=database_mode=" not in script
     assert "DATABASE_PORT:-3306" not in script
     assert "Database TCP port is required" not in script
@@ -122,6 +144,11 @@ def test_deploy_script_sqlite_skips_required_password() -> None:
     assert 'variable "existing_db_schema"' in vars_tf
     assert 'variable "existing_db_user"' in vars_tf
     assert '"sqlite"' in vars_tf
+    min_block = vars_tf.split('variable "cloud_run_min_instances"', 1)[1].split("variable ", 1)[0]
+    assert "default     = 1" in min_block
+    assert 'variable "use_secret_manager"' in vars_tf
+    sm_block = vars_tf.split('variable "use_secret_manager"', 1)[1].split("variable ", 1)[0]
+    assert "default     = false" in sm_block
     mode_block = vars_tf.split('variable "database_mode"', 1)[1].split("variable ", 1)[0]
     backend_block = vars_tf.split('variable "database_backend"', 1)[1].split("variable ", 1)[0]
     port_block = vars_tf.split('variable "database_port"', 1)[1].split("variable ", 1)[0]
@@ -131,6 +158,7 @@ def test_deploy_script_sqlite_skips_required_password() -> None:
     outputs_tf = (INFRA_GCP / "outputs.tf").read_text(encoding="utf-8")
     assert 'output "database_mode"' in outputs_tf
     assert 'output "database_backend"' in outputs_tf
+    assert 'output "use_secret_manager"' in outputs_tf
     main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
     assert "syncbot_database_backend" in main_tf
     assert "syncbot_database_mode" in main_tf
@@ -151,14 +179,32 @@ def test_deploy_gcp_workflow_is_gated_and_not_a_stub() -> None:
     assert "gh variable set SLACK_CLIENT_ID" not in gcp_deploy
     assert "docker build -f infra/gcp/Dockerfile" in workflow
     assert "gcloud run services update" in workflow
+    assert 'echo "=== Waiting for GET /health ==="' in workflow
+    assert "${BASE_URL}/health" in workflow
+    assert "${BASE_URL}/ready" in workflow
+    assert "Warning: GET /ready failed; Home tabs may stay stale until opened." in workflow
     assert "GCP deploy is not implemented" not in workflow
     assert "placeholder until" not in workflow.lower()
 
 
 def test_main_tf_has_no_leftover_syncbot_env() -> None:
     main_tf = (INFRA_GCP / "main.tf").read_text(encoding="utf-8")
-    for name in ("SYNCBOT_INSTANCE_ID", "SYNCBOT_PUBLIC_URL", "REQUIRE_ADMIN"):
+    for name in (
+        "SYNCBOT_INSTANCE_ID",
+        "SYNCBOT_PUBLIC_URL",
+        "REQUIRE_ADMIN",
+        "SYNCBOT_CLOUD_USE",
+        "FILE_CHUNK_MB",
+    ):
         assert name not in main_tf
+    deploy = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "SYNCBOT_CLOUD_USE" not in deploy
+    assert "FILE_CHUNK_MB" not in deploy
+    assert 'FEDERATION_HTTP_MAX_MB = "30"' in main_tf
+    assert "GCP_USE_SECRET_MANAGER" in deploy
+    assert main_tf.count("SLACK_BOT_SCOPES") == 2
+    secret_block = main_tf.split("runtime_secret_env", 1)[1].split("sm_secret_ids", 1)[0]
+    assert "SLACK_BOT_SCOPES" not in secret_block
 
 
 def test_existing_db_schema_defaults_to_stage() -> None:
@@ -170,6 +216,25 @@ def test_existing_db_schema_defaults_to_stage() -> None:
     assert 'name_prefix = "syncbot-${var.stage}"' in main_tf
     assert '"syncbot_${var.stage}"' in main_tf
     deploy = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    assert "resolve_gcp_database_schema" in deploy
     assert "syncbot_${STAGE}" in deploy
+    assert "-var=database_schema=${DATABASE_SCHEMA:-syncbot_${STAGE}}" not in deploy
     assert "slack_bot_scopes" in deploy
     assert "slack_user_scopes" in deploy
+
+
+def test_deploy_script_requires_gcloud_session_during_prereqs() -> None:
+    script = (INFRA_GCP / "scripts" / "deploy.sh").read_text(encoding="utf-8")
+    matrix_at = script.index('prereqs_print_cli_status_matrix "GCP"')
+    session_at = script.index("ensure_gcloud_authenticated", matrix_at)
+    split_at = script.index("Non-interactive fast path", matrix_at)
+    assert session_at < split_at
+    assert "gcloud auth print-access-token" in script
+    assert "application-default print-access-token" in script
+    assert "gcloud auth login" in script
+    assert "gcloud auth application-default login" in script
+    assert "ensure_gcloud_project_access" in script
+    assert 'gcloud config set project "$PROJECT_ID" >/dev/null 2>&1 || true' not in script
+    ni = script.split("Non-interactive fast path", 1)[1]
+    assert "ensure_gcloud_authenticated" in ni
+    assert "ensure_gcloud_project_access" in ni

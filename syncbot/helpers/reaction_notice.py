@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from collections.abc import Iterable
 
 from slack_sdk import WebClient
@@ -13,8 +12,8 @@ import constants
 from db import DbManager, schemas
 from helpers.slack_api import slack_error_code
 from helpers.user_action_echo import post_meta_ts, slack_message_ts
+from logger import log_debug, log_warning
 
-_logger = logging.getLogger(__name__)
 _slack_error_code = slack_error_code
 
 
@@ -109,10 +108,7 @@ def _delete_notice_subtree(
     depth: int = 0,
 ) -> None:
     if depth >= constants.NOTICE_TREE_MAX_DEPTH:
-        _logger.warning(
-            "reaction_notice_delete_depth_cap",
-            extra={"post_id": notice.post_id, "depth": depth},
-        )
+        log_warning("reaction_notice_delete_depth_cap", post_id=notice.post_id, depth=depth)
         return
 
     children = _child_notices_on_channel(notice.post_id, sync_channel.id)
@@ -221,10 +217,7 @@ def _delete_leftover_thread_notices(
     try:
         resp = client.conversations_replies(channel=channel_id, ts=parent_ts, limit=200)
     except SlackApiError as exc:
-        _logger.debug(
-            "leftover_notice_thread_scan_failed",
-            extra={"channel_id": channel_id, "error": _slack_error_code(exc) or str(exc)},
-        )
+        log_debug("leftover_notice_thread_scan_failed", channel_id=channel_id, error=_slack_error_code(exc) or str(exc))
         return
 
     messages = resp.get("messages") or []

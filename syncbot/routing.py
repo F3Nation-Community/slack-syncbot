@@ -51,13 +51,23 @@ ACTION_MAPPER = {
     actions.CONFIG_BACKUP_RESTORE_PROCEED: handlers.handle_backup_restore_proceed,
     actions.CONFIG_DATA_MIGRATION: handlers.handle_data_migration,
     actions.CONFIG_DATA_MIGRATION_EXPORT: handlers.handle_data_migration_export,
+    actions.CONFIG_DATA_MIGRATION_REQUEST: handlers.handle_data_migration_request,
     actions.CONFIG_DATA_MIGRATION_PROCEED: handlers.handle_data_migration_proceed,
+    actions.CONFIG_PAIRING_REQUEST_APPROVE: handlers.handle_pairing_request_approve,
+    actions.CONFIG_PAIRING_REQUEST_DECLINE: handlers.handle_pairing_request_decline,
     actions.CONFIG_OPEN_SETTINGS: handlers.handle_open_settings,
     actions.CONFIG_DB_RESET: handlers.handle_db_reset,
     actions.CONFIG_DB_RESET_PROCEED: handlers.handle_db_reset_proceed,
-    actions.CONFIG_GENERATE_FEDERATION_CODE: handlers.handle_generate_federation_code,
-    actions.CONFIG_ENTER_FEDERATION_CODE: handlers.handle_enter_federation_code,
-    actions.CONFIG_REMOVE_FEDERATION_CONNECTION: handlers.handle_remove_federation_connection,
+    actions.CONFIG_CREATE_EXTERNAL_CONNECTION: handlers.handle_create_external_connection,
+    actions.CONFIG_SHOW_EXTERNAL_CONNECTION_CODE: handlers.handle_show_external_connection_code,
+    actions.CONFIG_EDIT_PENDING_EXTERNAL_CONNECTION: handlers.handle_edit_pending_external_connection,
+    actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION: handlers.handle_cancel_pending_external_connection,
+    actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION_CONFIRM: handlers.handle_cancel_pending_external_connection_confirm,
+    actions.CONFIG_JOIN_EXTERNAL_CONNECTION: handlers.handle_join_external_connection,
+    actions.CONFIG_EDIT_EXTERNAL_CONNECTION: handlers.handle_edit_external_connection,
+    actions.CONFIG_VERIFY_EXTERNAL_CONNECTION: handlers.handle_verify_external_connection,
+    actions.CONFIG_LEAVE_EXTERNAL_CONNECTION: handlers.handle_leave_external_connection,
+    actions.CONFIG_LEAVE_EXTERNAL_CONNECTION_CONFIRM: handlers.handle_leave_external_connection_confirm,
 }
 """Block-action ``action_id`` -> handler."""
 
@@ -82,20 +92,28 @@ VIEW_MAPPER = {
     actions.CONFIG_SETTINGS_SUBMIT: handlers.handle_settings_submit,
     actions.CONFIG_CREATE_SYNC_SUBMIT: handlers.handle_create_sync_submit_work,
     actions.CONFIG_JOIN_SYNC_SUBMIT: handlers.handle_join_sync_submit,
-    actions.CONFIG_FEDERATION_CODE_SUBMIT: handlers.handle_federation_code_submit,
-    actions.CONFIG_FEDERATION_LABEL_SUBMIT: handlers.handle_federation_label_submit,
+    actions.CONFIG_CREATE_EXTERNAL_CONNECTION_SUBMIT: handlers.handle_create_external_connection_submit,
+    actions.CONFIG_JOIN_EXTERNAL_CONNECTION_REVIEW: handlers.handle_join_external_connection_review,
+    actions.CONFIG_EDIT_EXTERNAL_CONNECTION_SUBMIT: handlers.handle_edit_external_connection_submit,
+    actions.CONFIG_VERIFY_EXTERNAL_CONNECTION_SUBMIT: handlers.handle_verify_external_connection_submit,
     actions.CONFIG_BACKUP_RESTORE_SUBMIT: handlers.handle_backup_restore_submit_work,
-    actions.CONFIG_DATA_MIGRATION_SUBMIT: handlers.handle_data_migration_submit_work,
+    actions.CONFIG_DATA_MIGRATION_REVIEW: handlers.handle_data_migration_review,
     actions.CONFIG_EDIT_SYNC_SUBMIT: handlers.handle_edit_sync_submit,
 }
 """View submission ``callback_id`` -> lazy work handler (after HTTP ack)."""
 
 VIEW_ACK_MAPPER = {
+    actions.CONFIG_SETTINGS_SUBMIT: handlers.handle_settings_submit_ack,
     actions.CONFIG_CREATE_SYNC_SUBMIT: handlers.handle_create_sync_submit_ack,
     actions.CONFIG_JOIN_SYNC_SUBMIT: handlers.handle_join_sync_submit_ack,
     actions.CONFIG_EDIT_SYNC_SUBMIT: handlers.handle_edit_sync_submit_ack,
     actions.CONFIG_BACKUP_RESTORE_SUBMIT: handlers.handle_backup_restore_submit_ack,
     actions.CONFIG_DATA_MIGRATION_SUBMIT: handlers.handle_data_migration_submit_ack,
+    actions.CONFIG_DATA_MIGRATION_REVIEW: handlers.handle_data_migration_review_ack,
+    actions.CONFIG_CREATE_EXTERNAL_CONNECTION_SUBMIT: handlers.handle_create_external_connection_submit_ack,
+    actions.CONFIG_JOIN_EXTERNAL_CONNECTION_SUBMIT: handlers.handle_join_external_connection_submit_ack,
+    actions.CONFIG_JOIN_EXTERNAL_CONNECTION_REVIEW: handlers.handle_join_external_connection_review_ack,
+    actions.CONFIG_EDIT_EXTERNAL_CONNECTION_SUBMIT: handlers.handle_edit_external_connection_submit_ack,
 }
 """Deferred-ack view submissions: fast ack handler (``dict`` or ``None`` for Slack ``ack()``)."""
 

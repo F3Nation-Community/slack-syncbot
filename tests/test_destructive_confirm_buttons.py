@@ -25,6 +25,8 @@ _CONFIRM_ACTIONS = (
     actions.CONFIG_LEAVE_GROUP_CONFIRM,
     actions.CONFIG_DISBAND_GROUP_CONFIRM,
     actions.CONFIG_LEAVE_SYNC_CONFIRM,
+    actions.CONFIG_LEAVE_EXTERNAL_CONNECTION_CONFIRM,
+    actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION_CONFIRM,
 )
 
 
@@ -69,7 +71,7 @@ class TestLeaveSyncConfirmModal:
             patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
             patch("handlers.channel_sync.DbManager.get_record", return_value=SimpleNamespace(id=42, group_id=5)),
             patch("handlers.channel_sync.DbManager.find_records", return_value=channels),
-            patch("handlers.channel_sync._group_name", return_value="HQ"),
+            patch("handlers.channel_sync._group_name", return_value="Shared"),
             patch("handlers.channel_sync._format_channel_ref", return_value="#c"),
         ):
             handle_leave_sync(body, client, MagicMock(), context={})
@@ -121,7 +123,7 @@ class TestLeaveGroupConfirmModal:
             "trigger_id": "tr",
         }
         group = SimpleNamespace(id=5, name="G")
-        workspace = SimpleNamespace(id=2, team_id="T1", bot_token=None, deleted_at=None)
+        workspace = SimpleNamespace(id=2, team_id="T1", deleted_at=None)
         with (
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
             patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
@@ -154,7 +156,7 @@ class TestSoleOwnerBlockedModal:
             "trigger_id": "tr",
         }
         group = SimpleNamespace(id=5, name="G")
-        workspace = SimpleNamespace(id=2, team_id="T1", bot_token=None, deleted_at=None)
+        workspace = SimpleNamespace(id=2, team_id="T1", deleted_at=None)
         with (
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
             patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
@@ -184,7 +186,7 @@ class TestDisbandGroupConfirmModal:
             "trigger_id": "tr",
         }
         group = SimpleNamespace(id=5, name="G")
-        workspace = SimpleNamespace(id=2, team_id="T1", bot_token=None, deleted_at=None)
+        workspace = SimpleNamespace(id=2, team_id="T1", deleted_at=None)
         with (
             patch("handlers._common._get_authorized_workspace", return_value=("U1", workspace)),
             patch("handlers.group_manage.DbManager.find_records", return_value=[group]),
@@ -202,7 +204,33 @@ class TestDisbandGroupConfirmModal:
         assert buttons[0]["action_id"] == actions.CONFIG_DISBAND_GROUP_CONFIRM
 
 
-class TestCloseModalDone:
+class TestCancelPendingConnectionConfirmModal:
+    def _view(self):
+        from handlers.federation_cmds import handle_cancel_pending_external_connection
+
+        client = MagicMock()
+        pairing = SimpleNamespace(id=3, subject_team_id=None, label="Partner Org", created_at=None)
+        body = {
+            "user": {"id": "U_ADMIN"},
+            "team": {"id": "T1"},
+            "trigger_id": "tr",
+            "actions": [{"action_id": f"{actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION}_3", "value": "3"}],
+        }
+        with (
+            patch("handlers.federation_cmds._require_primary_admin", return_value=SimpleNamespace(id=1)),
+            patch("handlers.federation_cmds.DbManager.get_record", return_value=pairing),
+        ):
+            handle_cancel_pending_external_connection(body, client, MagicMock(), {})
+        return client.views_open.call_args.kwargs["view"]
+
+    def test_has_a_red_button_and_no_submit_button(self):
+        view = self._view()
+        assert "submit" not in view
+        assert view["close"]["text"] == "Keep"
+        buttons = _danger_buttons(view)
+        assert len(buttons) == 1
+        assert buttons[0]["action_id"] == actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION_CONFIRM
+
     def test_updates_the_view_when_a_view_id_is_present(self):
         from handlers._common import _close_modal_done
 

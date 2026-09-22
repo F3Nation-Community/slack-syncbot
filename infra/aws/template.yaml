@@ -116,10 +116,12 @@ Parameters:
 
   DatabaseSchema:
     Description: >
-      Database/schema name for MySQL or PostgreSQL when DatabaseBackend is not sqlite.
-      Each app sharing a DB instance should use a different schema name. Unused for sqlite.
+      Database name (DATABASE_SCHEMA). A non-empty value wins. Empty becomes
+      syncbot_test or syncbot_prod in the Lambda env. Deploy scripts pass the
+      live stack value when the env file is empty. Create this database before
+      first migrate. Unused for sqlite.
     Type: String
-    Default: "syncbot"
+    Default: ""
 
   # --- App settings ---
 
@@ -196,6 +198,7 @@ Conditions:
   HasDatabaseSslCaPath: !And
     - !Condition UseRemoteDatabase
     - !Not [!Equals [!Ref DatabaseSslCaPath, ""]]
+  HasDatabaseSchema: !Not [!Equals [!Ref DatabaseSchema, ""]]
   XRayEnabled: !Equals [!Ref EnableXRay, "true"]
 
 Rules:
@@ -270,6 +273,8 @@ Resources:
         - x86_64
       Timeout: 120
       MemorySize: 256
+      EphemeralStorage:
+        Size: 2048
       ReservedConcurrentExecutions: !If [IsSqlite, 1, !Ref AWS::NoValue]
       Events:
         SyncBotKeepWarm:
@@ -305,9 +310,16 @@ Resources:
           DATABASE_HOST: !If [UseRemoteDatabase, !Ref DatabaseHost, !Ref AWS::NoValue]
           DATABASE_USER: !If [UseRemoteDatabase, !Ref DatabaseUser, !Ref AWS::NoValue]
           DATABASE_PASSWORD: !If [UseRemoteDatabase, !Ref DatabasePassword, !Ref AWS::NoValue]
-          DATABASE_SCHEMA: !If [UseRemoteDatabase, !Ref DatabaseSchema, !Ref AWS::NoValue]
+          DATABASE_SCHEMA: !If
+            - UseRemoteDatabase
+            - !If
+              - HasDatabaseSchema
+              - !Ref DatabaseSchema
+              - !Sub "syncbot_${Stage}"
+            - !Ref AWS::NoValue
           DATA_ENCRYPTION_KEY: !Ref DataEncryptionKey
           LOG_LEVEL: !Ref LogLevel
+          FEDERATION_HTTP_MAX_MB: "4"
           PRIMARY_WORKSPACE: !If
             - HasPrimaryWorkspace
             - !Ref PrimaryWorkspace

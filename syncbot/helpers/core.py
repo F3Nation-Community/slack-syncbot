@@ -1,16 +1,13 @@
 """Core utility functions used throughout SyncBot."""
 
-import logging
 import os
 from typing import Any
 
 from slack_sdk.errors import SlackApiError
 
 import constants
+from logger import log_debug, log_warning
 from slack import actions
-
-_logger = logging.getLogger(__name__)
-
 
 _ERROR_DM_VALUE_MAX = 240
 
@@ -47,11 +44,6 @@ def format_synced_from_line(display_name: str | None, workspace_name: str | None
 def code_ticked_display_name(display_name: str | None, workspace_name: str | None = None) -> str:
     """Name in code ticks, optionally with (Workspace). From-line, unmapped people, source #channel."""
     return f"`{format_synced_from_line(display_name, workspace_name)}`"
-
-
-def format_file_share_notice(display_name: str | None, workspace_name: str | None = None) -> str:
-    """Bot notice for who shared a file. Never tags; from-line name in code ticks."""
-    return f"{code_ticked_display_name(display_name, workspace_name)} shared a file"
 
 
 def safe_get(data: Any, *keys: Any) -> Any:
@@ -120,10 +112,7 @@ def _warn_require_admin_leftover() -> None:
     if raw is None or raw.strip() == "":
         return
     _REQUIRE_ADMIN_WARNED = True
-    _logger.warning(
-        "%s is ignored; Slack admins and owners configure Settings, and managers come from Settings extra managers",
-        constants.REQUIRE_ADMIN,
-    )
+    log_warning("legacy_env_ignored", env=constants.REQUIRE_ADMIN)
 
 
 def is_workspace_admin(client, user_id: str) -> bool:
@@ -134,7 +123,7 @@ def is_workspace_admin(client, user_id: str) -> bool:
     try:
         res = _users_info(client, user_id)
     except SlackApiError:
-        _logger.warning(f"Could not verify admin status for user {user_id} — denying access")
+        log_warning("could_not_verify_admin_status_for_user_denying_access", user_id=user_id)
         return False
 
     user = safe_get(res, "user") or {}
@@ -167,30 +156,27 @@ def is_backup_visible_for_workspace(team_id: str | None) -> bool:
     """
     primary = (os.environ.get(constants.PRIMARY_WORKSPACE) or "").strip()
     if not primary:
-        _logger.debug("backup/restore hidden: PRIMARY_WORKSPACE not set")
+        log_debug("backup_restore_hidden_primary_workspace_not_set")
         return False
     visible = (team_id or "") == primary
     if not visible:
-        _logger.debug(
-            "backup/restore hidden: team_id %r does not match PRIMARY_WORKSPACE",
-            team_id,
-        )
+        log_debug("backup_restore_hidden_team_id_r_does_not_match_primary_works", team_id=team_id)
     return visible
 
 
 def is_db_reset_visible_for_workspace(team_id: str | None) -> bool:
     """Return True if the DB reset button/action is allowed for this workspace.
 
-    Requires PRIMARY_WORKSPACE to match *team_id* and ENABLE_DB_RESET to be a truthy
-    boolean string (``true``, ``1``, ``yes``). Reads env at call time.
+    Requires PRIMARY_WORKSPACE to match *team_id* and ENABLE_DB_RESET to be a
+    truthy boolean string (``true``, ``1``, ``yes``). Reads env at call time.
     """
     primary = (os.environ.get(constants.PRIMARY_WORKSPACE) or "").strip()
     if not primary or (team_id or "") != primary:
-        _logger.debug("DB reset button hidden: PRIMARY_WORKSPACE unset or team_id mismatch")
+        log_debug("db_reset_button_hidden_primary_workspace_unset_or_team_id_mi")
         return False
     enabled = (os.environ.get(constants.ENABLE_DB_RESET) or "").strip().lower()
     if enabled not in ("true", "1", "yes"):
-        _logger.debug("DB reset button hidden: ENABLE_DB_RESET not true")
+        log_debug("db_reset_button_hidden_enable_db_reset_not_true")
         return False
     return True
 
@@ -219,7 +205,14 @@ def format_admin_label(client, user_id: str, workspace) -> tuple[str, str]:
 
 
 _PREFIXED_ACTIONS = (
-    actions.CONFIG_REMOVE_FEDERATION_CONNECTION,
+    actions.CONFIG_PAIRING_REQUEST_APPROVE,
+    actions.CONFIG_PAIRING_REQUEST_DECLINE,
+    actions.CONFIG_LEAVE_EXTERNAL_CONNECTION,
+    actions.CONFIG_EDIT_EXTERNAL_CONNECTION,
+    actions.CONFIG_VERIFY_EXTERNAL_CONNECTION,
+    actions.CONFIG_SHOW_EXTERNAL_CONNECTION_CODE,
+    actions.CONFIG_EDIT_PENDING_EXTERNAL_CONNECTION,
+    actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION,
     actions.CONFIG_LEAVE_GROUP,
     actions.CONFIG_ACCEPT_GROUP_INVITE,
     actions.CONFIG_DECLINE_GROUP_INVITE,

@@ -1,4 +1,4 @@
-"""Tests for editing channel participation without changing legacy sync mode."""
+"""Tests for editing channel participation."""
 
 import os
 from types import SimpleNamespace
@@ -68,8 +68,6 @@ class TestHandleEditSync:
         id=42,
         group_id=5,
         sync_mode="direct",
-        target_workspace_id=2,
-        publisher_workspace_id=1,
     )
 
     def test_publisher_edits_participation_without_mode_picker(self):
@@ -81,7 +79,6 @@ class TestHandleEditSync:
             deleted_at=None,
             publishes=True,
             subscribes=False,
-            reaction_direction=constants.REACTION_DIRECTION_SEND,
             reaction_style=None,
         )
         captured = {}
@@ -94,7 +91,7 @@ class TestHandleEditSync:
             from db import schemas
 
             if model is schemas.WorkspaceGroup:
-                return SimpleNamespace(id=5, name="HQ")
+                return SimpleNamespace(id=5, name="Shared")
             return self.SYNC
 
         with (
@@ -114,7 +111,7 @@ class TestHandleEditSync:
         texts = [getattr(getattr(block, "element", None), "initial_value", None) for block in captured["blocks"]]
         assert actions.CONFIG_SYNC_PARTICIPATION in action_ids
         assert actions.CONFIG_SYNC_REACTION_STYLE in action_ids
-        assert any(text and "<#C_LOCAL>" in text and "HQ" in text for text in texts)
+        assert any(text and "<#C_LOCAL>" in text and "Shared" in text for text in texts)
         assert captured["kwargs"]["title_text"] == "Edit Sync"
         assert self.SYNC.sync_mode == "direct"
 
@@ -128,7 +125,6 @@ class TestHandleEditSync:
             deleted_at=None,
             publishes=False,
             subscribes=True,
-            reaction_direction=constants.REACTION_DIRECTION_RECEIVE,
             reaction_style=constants.REACTION_STYLE_DIRECT_ONLY,
         )
         captured = {}
@@ -199,7 +195,6 @@ class TestHandleEditSync:
             deleted_at=None,
             publishes=True,
             subscribes=False,
-            reaction_direction=constants.REACTION_DIRECTION_SEND,
             reaction_style=None,
         )
         body = _submit_body(

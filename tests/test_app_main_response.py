@@ -153,18 +153,37 @@ class TestLambdaHandler:
         assert json.loads(result["body"]) == {"status": "ok", "action": "migrate"}
 
     def test_handler_warmup_scheduler_returns_ok(self):
-        with patch.object(app_module, "SlackRequestHandler") as mock_srh:
+        with (
+            patch.object(app_module, "SlackRequestHandler") as mock_srh,
+            patch.object(app_module, "complete_instance_ready") as ready,
+        ):
             result = app_module.handler({"source": "aws.scheduler"}, {})
         mock_srh.assert_not_called()
+        ready.assert_called_once_with(republish_home=False)
         assert result["statusCode"] == 200
         assert json.loads(result["body"]) == {"status": "ok", "action": "warmup"}
 
     def test_handler_warmup_events_returns_ok(self):
-        with patch.object(app_module, "SlackRequestHandler") as mock_srh:
+        with (
+            patch.object(app_module, "SlackRequestHandler") as mock_srh,
+            patch.object(app_module, "complete_instance_ready") as ready,
+        ):
             result = app_module.handler({"source": "aws.events"}, {})
         mock_srh.assert_not_called()
+        ready.assert_called_once_with(republish_home=False)
         assert result["statusCode"] == 200
         assert json.loads(result["body"])["action"] == "warmup"
+
+    def test_handler_ready_republishes_home(self):
+        with (
+            patch.object(app_module, "SlackRequestHandler") as mock_srh,
+            patch.object(app_module, "complete_instance_ready") as ready,
+        ):
+            result = app_module.handler({"action": "ready"}, {})
+        mock_srh.assert_not_called()
+        ready.assert_called_once_with(republish_home=True)
+        assert result["statusCode"] == 200
+        assert json.loads(result["body"]) == {"status": "ok", "action": "ready"}
 
     def test_handler_slack_event_delegates_to_bolt(self):
         mock_handle = MagicMock(return_value={"statusCode": 200, "body": "{}"})
@@ -189,6 +208,17 @@ class TestLambdaHandler:
             )
         mock_srh.assert_not_called()
         assert result["statusCode"] == 404
+
+    def test_get_health_and_ready_are_404_on_lambda(self):
+        """Function URL GETs here 404; Cloud Run serves GET /health and /ready."""
+        with patch.object(app_module, "SlackRequestHandler") as mock_srh:
+            for path in ("/health", "/ready"):
+                result = app_module.handler(
+                    {"requestContext": {"http": {"method": "GET"}}, "rawPath": path},
+                    {},
+                )
+                assert result["statusCode"] == 404
+        mock_srh.assert_not_called()
 
     def test_get_install_is_delegated_to_bolt(self):
         mock_handle = MagicMock(

@@ -1,79 +1,76 @@
-"""Tests for federated reaction payload and fallback behavior."""
+"""Tests for federated reaction envelopes and inbound apply."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from federation import api as federation_api
-from federation import core as federation_core
+from helpers.sync_apply import ApplyOutcome
 
 
 class TestFederationReactionPayload:
-    def test_build_reaction_payload_includes_user_fields(self):
-        payload = federation_core.build_reaction_payload(
-            post_id="post-1",
-            channel_id="C123",
-            reaction="custom_emoji",
-            action="add",
-            user_name="Alice",
-            user_avatar_url="https://avatar.example/alice.png",
-            workspace_name="Workspace A",
-            timestamp="100.000001",
+    def test_remote_envelope_keeps_reaction_fields_and_drops_tokens(self):
+        from federation.deliver import build_remote_envelope
+
+        payload = build_remote_envelope(
+            {
+                "kind": "reaction",
+                "action": "add",
+                "post_id": "post-1",
+                "reaction": "custom_emoji",
+                "source_user_id": "U_REMOTE",
+                "user_name": "Ada Lovelace",
+                "user_avatar_url": "https://avatar.example/ada.png",
+                "workspace_name": "Workspace A",
+                "source_workspace_id": 7,
+                "mapped_user_id": "ULOCAL",
+            },
+            "C123",
         )
 
         assert payload["post_id"] == "post-1"
         assert payload["channel_id"] == "C123"
         assert payload["reaction"] == "custom_emoji"
         assert payload["action"] == "add"
-        assert payload["user_name"] == "Alice"
-        assert payload["user_avatar_url"] == "https://avatar.example/alice.png"
-        assert payload["workspace_name"] == "Workspace A"
-        assert payload["timestamp"] == "100.000001"
-        assert "user_id" not in payload
+        assert payload["source_user_id"] == "U_REMOTE"
+        assert payload["user_name"] == "Ada Lovelace"
+        assert "mapped_user_id" not in payload
+        assert "source_workspace_id" not in payload
         assert "user_token" not in payload
         assert not any(str(v).startswith("xox") for v in payload.values() if v is not None)
-
-    def test_build_reaction_payload_includes_user_id_when_set(self):
-        payload = federation_core.build_reaction_payload(
-            post_id="post-1",
-            channel_id="C123",
-            reaction="thumbsup",
-            action="add",
-            user_name="Alice",
-            timestamp="1.0",
-            user_id="U_REMOTE",
-        )
-        assert payload["user_id"] == "U_REMOTE"
 
 
 class TestFederationMessageInbound:
     def test_mapped_author_suppresses_workspace_suffix(self):
         body = {
+            "kind": "message",
+            "action": "create",
             "channel_id": "C123",
             "text": "hi",
-            "post_id": "",
-            "user": {
-                "display_name": "Alice Remote",
-                "avatar_url": "https://remote.example/a.png",
-                "workspace_name": "Partner WS",
-                "user_id": "U_REMOTE",
-            },
+            "post_id": "p1",
+            "source_user_id": "U_REMOTE",
+            "user_name": "Ada Lovelace",
+            "user_avatar_url": "https://remote.example/a.png",
+            "workspace_name": "Workspace B",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(id=101, channel_id="C123", publishes=False, subscribes=True)
-        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        workspace = SimpleNamespace(id=55, team_id="T_TGT")
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
+            patch.object(federation_api, "_get_post_records", return_value=[]),
             patch.object(federation_api, "_ensure_federated_author_mapped", return_value="ULOCAL"),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
             patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-test"),
             patch.object(federation_api, "WebClient", MagicMock()),
             patch.object(
-                federation_api.helpers, "get_user_info", return_value=("Local Nacho", "https://local.example/n.png")
+                federation_api.helpers, "get_user_info", return_value=("Ada Lovelace", "https://local.example/n.png")
             ),
             patch.object(federation_api, "_resolve_mentions_for_federated", side_effect=lambda t, *_: t),
             patch.object(federation_api.helpers, "resolve_channel_references", side_effect=lambda t, *a, **k: t),
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb-test"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb-test"),
             patch("helpers.slack_write.get_user_token", return_value=None),
+            patch("helpers.workspace.get_workspace_by_id", return_value=None),
             patch("helpers.slack_write.post_message", return_value={"ts": "99.000001"}) as post_message_mock,
             patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
             patch("helpers.sync_apply.DbManager.create_records"),
@@ -86,8 +83,8 @@ class TestFederationMessageInbound:
             bot_token="xoxb-test",
             channel_id="C123",
             msg_text="hi",
-            user_name="Local Nacho",
-            user_profile_url="https://local.example/n.png",
+            user_name="Ada Lovelace",
+            user_profile_url="https://remote.example/a.png",
             workspace_name=None,
             blocks=None,
             thread_ts=None,
@@ -96,8 +93,8 @@ class TestFederationMessageInbound:
 
 
 class TestFederationReactionFallback:
-    def _react(self, body, *, apply_result=("direct", None)):
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+    def _react(self, body, *, reaction_applied=True):
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
@@ -105,67 +102,72 @@ class TestFederationReactionFallback:
             publishes=False,
             subscribes=True,
         )
-        workspace = SimpleNamespace(id=55, bot_token="enc-token")
+        workspace = SimpleNamespace(id=55)
         post_meta = SimpleNamespace(ts=123.456)
+
+        def _apply(envelope, *_args, **_kwargs):
+            return ApplyOutcome(reaction_applied=reaction_applied)
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
-            patch("helpers.reaction.apply_reaction_to_target", return_value=apply_result) as apply_mock,
-            patch.object(federation_api.DbManager, "create_records"),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
+            patch("federation.api.apply_target", side_effect=_apply) as apply_mock,
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
         return status, resp, apply_mock
 
     def test_hybrid_thread_result_counts_as_applied(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "missing_custom",
             "action": "add",
-            "user_name": "Alice",
+            "user_name": "Ada Lovelace",
         }
-        status, resp, apply_mock = self._react(body, apply_result=("thread", SimpleNamespace()))
+        status, resp, apply_mock = self._react(body, reaction_applied=True)
         assert status == 200
         assert resp["applied"] == 1
         apply_mock.assert_called_once()
+        assert apply_mock.call_args.kwargs["source_sync_channel"].channel_id.startswith("fed:")
 
     def test_successful_direct_apply(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "add",
-            "user_name": "Alice",
+            "user_name": "Ada Lovelace",
         }
-        status, resp, apply_mock = self._react(
-            body,
-            apply_result=("direct", None),
-        )
+        status, resp, apply_mock = self._react(body, reaction_applied=True)
         assert status == 200
         assert resp["applied"] == 1
         apply_mock.assert_called_once()
 
     def test_skipped_apply_is_not_counted(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "missing_custom",
             "action": "add",
         }
-        status, resp, apply_mock = self._react(body, apply_result=("skipped", None))
+        status, resp, apply_mock = self._react(body, reaction_applied=False)
         assert status == 200
         assert resp["applied"] == 0
         apply_mock.assert_called_once()
 
     def test_not_subscribed_skips_without_calling_apply(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "add",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
@@ -173,12 +175,12 @@ class TestFederationReactionFallback:
             publishes=True,
             subscribes=False,
         )
-        workspace = SimpleNamespace(id=55, bot_token="enc-token")
+        workspace = SimpleNamespace(id=55)
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[SimpleNamespace(ts=1.0)]),
-            patch("helpers.reaction.apply_reaction_to_target") as apply_mock,
+            patch("federation.api.apply_target") as apply_mock,
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
 
@@ -190,103 +192,113 @@ class TestFederationReactionFallback:
 class TestFederationInboundTokenLookup:
     def test_maps_remote_user_then_looks_up_local_token(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "add",
-            "user_id": "U_REMOTE",
-            "user_name": "Remote Alice",
+            "source_user_id": "U_REMOTE",
+            "user_name": "Ada Lovelace",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
             reaction_style="direct_only",
             publishes=False,
             subscribes=True,
+            workspace_id=55,
         )
-        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        workspace = SimpleNamespace(id=55, team_id="T_TGT")
         post_meta = SimpleNamespace(ts=123.456)
         user_client = MagicMock()
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_ensure_federated_author_mapped", return_value="U_LOCAL"),
-            patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-bot"),
-            patch.object(federation_api.helpers, "get_user_info", return_value=("Local Alice", None)),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
+            patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+            patch("helpers.reaction._mapped_user_for_target", return_value="U_LOCAL"),
             patch("helpers.reaction.get_user_token", return_value="xoxp-local") as get_token,
-            patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reaction.get_bot_token", return_value="xoxb-bot"),
             patch("helpers.reaction.WebClient", return_value=user_client),
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
 
         assert status == 200
         assert resp["applied"] == 1
-        get_token.assert_called_once_with("T_DEST", "U_LOCAL")
+        get_token.assert_called_once_with("T_TGT", "U_LOCAL")
         user_client.reactions_add.assert_called_once()
         user_client.reactions_remove.assert_not_called()
         assert all("xoxp" not in str(v) for v in body.values())
 
     def test_direct_inbound_without_token_does_not_probe(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "add",
-            "user_name": "Remote Alice",
+            "user_name": "Ada Lovelace",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
             reaction_style="direct_only",
             publishes=False,
             subscribes=True,
+            workspace_id=55,
         )
-        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        workspace = SimpleNamespace(id=55, team_id="T_TGT")
         post_meta = SimpleNamespace(ts=123.456)
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
+            patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+            patch("helpers.reaction._mapped_user_for_target", return_value=None),
             patch("helpers.reaction.get_user_token", return_value=None),
-            patch("helpers.reaction.decrypt_bot_token") as decrypt,
+            patch("helpers.reaction.get_bot_token") as get_bot_token,
             patch("helpers.reaction.WebClient") as web_client,
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
 
         assert status == 200
         assert resp["applied"] == 0
-        decrypt.assert_not_called()
+        get_bot_token.assert_not_called()
         web_client.assert_not_called()
 
     def test_off_inbound_unreact_does_not_delete_notices(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "remove",
-            "user_id": "U_REMOTE",
-            "user_name": "Remote Alice",
+            "source_user_id": "U_REMOTE",
+            "user_name": "Ada Lovelace",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
             reaction_style="off",
             publishes=False,
             subscribes=True,
+            workspace_id=55,
         )
-        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        workspace = SimpleNamespace(id=55, team_id="T_TGT")
         post_meta = SimpleNamespace(ts=123.456, post_id="post-1")
 
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
+            patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
             patch("helpers.reaction.get_user_token") as get_token,
-            patch("helpers.reaction.decrypt_bot_token") as decrypt,
+            patch("helpers.reaction.get_bot_token") as get_bot_token,
             patch("helpers.reaction.WebClient") as web_client,
             patch("helpers.reaction.delete_notices_for_unreact") as leftover,
         ):
@@ -295,28 +307,30 @@ class TestFederationInboundTokenLookup:
         assert status == 200
         assert resp["applied"] == 0
         get_token.assert_not_called()
-        decrypt.assert_not_called()
+        get_bot_token.assert_not_called()
         web_client.assert_not_called()
         leftover.assert_not_called()
 
     def test_hybrid_inbound_without_token_probes_then_threads(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "add",
-            "user_id": "U_REMOTE",
-            "user_name": "Remote Alice",
+            "source_user_id": "U_REMOTE",
+            "user_name": "Ada Lovelace",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
             reaction_style="threaded_and_direct",
             publishes=False,
             subscribes=True,
+            workspace_id=55,
         )
-        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        workspace = SimpleNamespace(id=55, team_id="T_TGT")
         post_meta = SimpleNamespace(ts=123.456, post_id="post-1")
         bot_client = MagicMock()
         bot_client.chat_getPermalink.return_value = {"permalink": "https://example/msg"}
@@ -325,11 +339,13 @@ class TestFederationInboundTokenLookup:
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
+            patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+            patch("helpers.reaction._mapped_user_for_target", return_value=None),
             patch("helpers.reaction.get_user_token", return_value=None),
-            patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reaction.get_bot_token", return_value="xoxb-bot"),
             patch("helpers.reaction.WebClient", return_value=bot_client),
-            patch.object(federation_api.DbManager, "create_records"),
+            patch("helpers.sync_apply.DbManager.create_records"),
         ):
             status, resp = federation_api.handle_message_react(body, fed_ws)
 
@@ -342,22 +358,24 @@ class TestFederationInboundTokenLookup:
 
     def test_hybrid_inbound_unreact_deletes_local_notice(self):
         body = {
+            "kind": "reaction",
             "post_id": "post-1",
             "channel_id": "C123",
             "reaction": "thumbsup",
             "action": "remove",
-            "user_id": "U_REMOTE",
-            "user_name": "Remote Alice",
+            "source_user_id": "U_REMOTE",
+            "user_name": "Ada Lovelace",
         }
-        fed_ws = SimpleNamespace(instance_id="remote-instance")
+        fed_ws = SimpleNamespace(id=7, instance_id="remote-instance")
         sync_channel = SimpleNamespace(
             id=101,
             channel_id="C123",
             reaction_style="threaded_and_direct",
             publishes=False,
             subscribes=True,
+            workspace_id=55,
         )
-        workspace = SimpleNamespace(id=55, team_id="T_DEST", bot_token="enc-token")
+        workspace = SimpleNamespace(id=55, team_id="T_TGT")
         post_meta = SimpleNamespace(ts=123.456, post_id="post-1")
         notice = SimpleNamespace(
             id=9,
@@ -384,9 +402,11 @@ class TestFederationInboundTokenLookup:
         with (
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sync_channel, workspace)),
             patch.object(federation_api, "_get_post_records", return_value=[post_meta]),
-            patch.object(federation_api, "_ensure_federated_author_mapped", return_value=None),
+            patch.object(federation_api, "_source_stub_id", return_value=99),
+            patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+            patch("helpers.reaction._mapped_user_for_target", return_value=None),
             patch("helpers.reaction.get_user_token", return_value=None),
-            patch("helpers.reaction.decrypt_bot_token", return_value="xoxb-bot"),
+            patch("helpers.reaction.get_bot_token", return_value="xoxb-bot"),
             patch("helpers.reaction.WebClient", return_value=bot_client),
             patch("helpers.reaction_notice.equivalent_actor_pairs", return_value={(55, "U_REMOTE")}),
             patch("helpers.reaction_notice.DbManager.find_records", side_effect=_find_records),

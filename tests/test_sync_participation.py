@@ -4,11 +4,13 @@ import os
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
 from db import DbManager, schemas
 from helpers.post_meta import get_post_records, get_publishing_post_records, post_meta_exists_for_channel_ts
+from helpers.sync_apply import ApplyOutcome
 from helpers.sync_participation import (
     already_subscribed_to_source,
     channel_has_membership,
@@ -56,6 +58,12 @@ def real_db(tmp_path):
             db_mod.GLOBAL_SESSION = None
             db_mod.GLOBAL_SCHEMA = None
             initialize_database()
+            from federation import core as federation_core
+
+            federation_core._INSTANCE_ID = None
+            federation_core._cached_private_key = None
+            federation_core._cached_public_pem = None
+            federation_core.get_or_create_instance_keypair()
             clear_all_caches()
             yield
         finally:
@@ -72,13 +80,25 @@ def _now():
 
 
 def _workspace(team_id: str):
+    from federation.core import get_instance_id
+
     return DbManager.create_record(
-        schemas.Workspace(team_id=team_id, workspace_name=team_id, bot_token=f"token-{team_id}")
+        schemas.Workspace(
+            team_id=team_id,
+            workspace_name=team_id,
+            instance_id=get_instance_id(),
+        )
     )
 
 
 def _sync(publisher, title: str):
-    return DbManager.create_record(schemas.Sync(title=title, sync_mode="group", publisher_workspace_id=publisher.id))
+    return DbManager.create_record(
+        schemas.Sync(
+            title=title,
+            sync_mode="group",
+            uid=str(uuid4()),
+        )
+    )
 
 
 def _channel(sync, workspace, channel_id: str, *, publishes: bool, subscribes: bool, status="active"):
@@ -90,7 +110,6 @@ def _channel(sync, workspace, channel_id: str, *, publishes: bool, subscribes: b
             status=status,
             publishes=publishes,
             subscribes=subscribes,
-            reaction_direction="both",
             created_at=_now(),
         )
     )
@@ -170,7 +189,7 @@ def test_apply_target_skips_paused_membership_even_with_stale_cache(real_db):
             stale,
             workspace,
         )
-    assert created == []
+    assert created.created == []
     write.assert_not_called()
 
 
@@ -259,10 +278,7 @@ def test_pipeline_does_not_hop_from_target_into_its_other_sync(real_db, kind, ac
         DbManager.create_record(schemas.PostMeta(post_id="P1", sync_channel_id=source.id, ts=1.0))
         DbManager.create_record(schemas.PostMeta(post_id="P1", sync_channel_id=b_first.id, ts=2.0))
 
-    with (
-        patch("helpers.sync_pipeline.get_federated_workspace_for_sync", return_value=None),
-        patch("helpers.sync_pipeline.apply_target", return_value=[]) as apply,
-    ):
+    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply:
         run_sync_pipeline(
             envelope,
             source_channel_id="C_A",
@@ -274,39 +290,197 @@ def test_pipeline_does_not_hop_from_target_into_its_other_sync(real_db, kind, ac
 
 def test_thread_reply_stays_on_original_post_records_not_sibling_sync(real_db):
     """A reply on a copy in a Channel that also publishes elsewhere must not unthread."""
-    hub, ao, blackops = _workspace("T_HUB"), _workspace("T_AO"), _workspace("T_BLACK")
-    sync_a, sync_b = _sync(hub, "hub to ao"), _sync(blackops, "blackops to hub")
-    hub_a = _channel(sync_a, hub, "C_HUB", publishes=True, subscribes=True)
-    _channel(sync_a, ao, "C_AO", publishes=True, subscribes=True)
-    hub_b = _channel(sync_b, hub, "C_HUB", publishes=True, subscribes=True)
-    black = _channel(sync_b, blackops, "C_BLACK", publishes=True, subscribes=True)
-    DbManager.create_record(schemas.PostMeta(post_id="PARENT", sync_channel_id=black.id, ts=10.0))
-    DbManager.create_record(schemas.PostMeta(post_id="PARENT", sync_channel_id=hub_b.id, ts=20.0))
+    ws_a, ws_b, ws_c = _workspace("T_A"), _workspace("T_B"), _workspace("T_C")
+    sync_a, sync_b = _sync(ws_a, "a to b"), _sync(ws_c, "c to a")
+    _ch_a1 = _channel(sync_a, ws_a, "C_A", publishes=True, subscribes=True)
+    _channel(sync_a, ws_b, "C_B", publishes=True, subscribes=True)
+    ch_a2 = _channel(sync_b, ws_a, "C_A", publishes=True, subscribes=True)
+    ch_c = _channel(sync_b, ws_c, "C_C", publishes=True, subscribes=True)
+    DbManager.create_record(schemas.PostMeta(post_id="PARENT", sync_channel_id=ch_c.id, ts=post_meta_ts("10.000000")))
+    DbManager.create_record(schemas.PostMeta(post_id="PARENT", sync_channel_id=ch_a2.id, ts=post_meta_ts("20.000000")))
 
     envelope = {
         "kind": "message",
         "action": "create",
         "post_id": "REPLY",
-        "source_workspace_id": hub.id,
-        "source_sync_channel_id": hub_b.id,
+        "source_workspace_id": ws_a.id,
+        "source_sync_channel_id": ch_a2.id,
         "thread_post_id": "PARENT",
         "text": "reply in the copy thread",
     }
 
-    with (
-        patch("helpers.sync_pipeline.get_federated_workspace_for_sync", return_value=None),
-        patch("helpers.sync_pipeline.apply_target", return_value=[]) as apply,
-    ):
+    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply:
         run_sync_pipeline(
             envelope,
-            source_channel_id="C_HUB",
-            source_sync_channel=hub_b,
+            source_channel_id="C_A",
+            source_sync_channel=ch_a2,
         )
 
-    assert [call.args[1].channel_id for call in apply.call_args_list] == ["C_BLACK"]
+    assert [call.args[1].channel_id for call in apply.call_args_list] == ["C_C"]
     assert apply.call_args.kwargs["thread_ts"] == "10.000000"
-    assert "C_AO" not in [call.args[1].channel_id for call in apply.call_args_list]
-    assert hub_a.id != hub_b.id
+    assert "C_B" not in [call.args[1].channel_id for call in apply.call_args_list]
+    assert _ch_a1.id != ch_a2.id
+
+
+def _federated_announcements():
+    local = _workspace("T_LOCAL")
+    now = _now()
+    peer = DbManager.create_record(
+        schemas.Instance(
+            instance_id="a" * 64,
+            webhook_url="https://peer.example/api/federation",
+            public_key="pem",
+            private_key_encrypted=None,
+            status="active",
+            trust_status="trusted",
+            name="Partner Org",
+            created_at=now,
+        )
+    )
+    stub = DbManager.create_record(
+        schemas.Workspace(team_id="T_STUB", workspace_name="Workspace B", instance_id=peer.instance_id)
+    )
+    sync = _sync(local, "Announcements")
+    local_sc = _channel(sync, local, "C_LOCAL", publishes=True, subscribes=True)
+    remote_sc = _channel(sync, stub, "C_REMOTE", publishes=True, subscribes=True)
+    return local, local_sc, remote_sc
+
+
+def test_thread_reply_delivers_to_stub_without_parent_post_meta(real_db):
+    """Peer looks up the parent; inbound 409s if that PostMeta is missing."""
+    _local, local_sc, remote_sc = _federated_announcements()
+    DbManager.create_record(
+        schemas.PostMeta(post_id="PARENT", sync_channel_id=local_sc.id, ts=post_meta_ts("10.000000"))
+    )
+
+    envelope = {
+        "kind": "message",
+        "action": "create",
+        "post_id": "REPLY",
+        "source_channel_id": "C_LOCAL",
+        "source_workspace_id": local_sc.workspace_id,
+        "source_sync_channel_id": local_sc.id,
+        "thread_post_id": "PARENT",
+        "text": "reply",
+    }
+    with (
+        patch("federation.deliver.deliver_remote", return_value=[]) as deliver,
+        patch("helpers.sync_pipeline.apply_target") as apply,
+    ):
+        run_sync_pipeline(envelope, source_channel_id="C_LOCAL", source_sync_channel=local_sc)
+
+    deliver.assert_called_once()
+    assert deliver.call_args.args[2].channel_id == "C_REMOTE"
+    assert deliver.call_args.args[0]["thread_post_id"] == "PARENT"
+    assert deliver.call_args.args[0].get("target_ts") is None
+    apply.assert_not_called()
+    assert remote_sc.channel_id == "C_REMOTE"
+
+
+def test_thread_reply_delivers_to_stub_with_parent_post_meta(real_db):
+    _local, local_sc, remote_sc = _federated_announcements()
+    DbManager.create_record(
+        schemas.PostMeta(post_id="PARENT", sync_channel_id=local_sc.id, ts=post_meta_ts("10.000000"))
+    )
+    DbManager.create_record(
+        schemas.PostMeta(post_id="PARENT", sync_channel_id=remote_sc.id, ts=post_meta_ts("20.000000"))
+    )
+
+    envelope = {
+        "kind": "message",
+        "action": "create",
+        "post_id": "REPLY",
+        "source_channel_id": "C_LOCAL",
+        "source_workspace_id": local_sc.workspace_id,
+        "source_sync_channel_id": local_sc.id,
+        "thread_post_id": "PARENT",
+        "text": "reply",
+    }
+    with (
+        patch("federation.deliver.deliver_remote", return_value=[]) as deliver,
+        patch("helpers.sync_pipeline.apply_target") as apply,
+    ):
+        run_sync_pipeline(envelope, source_channel_id="C_LOCAL", source_sync_channel=local_sc)
+
+    deliver.assert_called_once()
+    assert deliver.call_args.args[2].channel_id == "C_REMOTE"
+    assert deliver.call_args.args[0]["thread_post_id"] == "PARENT"
+    assert deliver.call_args.args[0].get("target_ts") == "20.000000"
+    apply.assert_not_called()
+
+
+def test_edit_and_reaction_deliver_to_stub_without_copy_post_meta(real_db):
+    """Edits and reactions still push; inbound 409s if the peer has no PostMeta."""
+    _local, local_sc, remote_sc = _federated_announcements()
+    DbManager.create_record(
+        schemas.PostMeta(post_id="PARENT", sync_channel_id=local_sc.id, ts=post_meta_ts("10.000000"))
+    )
+
+    edit = {
+        "kind": "message",
+        "action": "edit",
+        "post_id": "PARENT",
+        "source_channel_id": "C_LOCAL",
+        "text": "edited",
+    }
+    reaction = {
+        "kind": "reaction",
+        "action": "add",
+        "post_id": "PARENT",
+        "source_channel_id": "C_LOCAL",
+        "reaction": "eyes",
+    }
+    with (
+        patch("federation.deliver.deliver_remote", return_value=[]) as deliver,
+        patch("helpers.sync_pipeline.apply_target") as apply,
+    ):
+        run_sync_pipeline(edit, source_channel_id="C_LOCAL", source_sync_channel=local_sc)
+        run_sync_pipeline(reaction, source_channel_id="C_LOCAL", source_sync_channel=local_sc)
+
+    assert deliver.call_count == 2
+    assert {call.args[0]["action"] for call in deliver.call_args_list} == {"edit", "add"}
+    assert all(call.args[2].channel_id == "C_REMOTE" for call in deliver.call_args_list)
+    assert all(call.args[0].get("target_ts") is None for call in deliver.call_args_list)
+    assert all("thread_post_id" not in call.args[0] for call in deliver.call_args_list)
+    apply.assert_not_called()
+    assert remote_sc.channel_id == "C_REMOTE"
+
+
+def test_edit_and_reaction_deliver_to_stub_with_parent_post_meta(real_db):
+    _local, local_sc, remote_sc = _federated_announcements()
+    DbManager.create_record(
+        schemas.PostMeta(post_id="PARENT", sync_channel_id=local_sc.id, ts=post_meta_ts("10.000000"))
+    )
+    DbManager.create_record(
+        schemas.PostMeta(post_id="PARENT", sync_channel_id=remote_sc.id, ts=post_meta_ts("20.000000"))
+    )
+
+    edit = {
+        "kind": "message",
+        "action": "edit",
+        "post_id": "PARENT",
+        "source_channel_id": "C_LOCAL",
+        "text": "edited",
+    }
+    reaction = {
+        "kind": "reaction",
+        "action": "add",
+        "post_id": "PARENT",
+        "source_channel_id": "C_LOCAL",
+        "reaction": "eyes",
+    }
+    with (
+        patch("federation.deliver.deliver_remote", return_value=[]) as deliver,
+        patch("helpers.sync_pipeline.apply_target") as apply,
+    ):
+        run_sync_pipeline(edit, source_channel_id="C_LOCAL", source_sync_channel=local_sc)
+        run_sync_pipeline(reaction, source_channel_id="C_LOCAL", source_sync_channel=local_sc)
+
+    assert deliver.call_count == 2
+    assert {call.args[0]["action"] for call in deliver.call_args_list} == {"edit", "add"}
+    assert deliver.call_args_list[0].args[0].get("target_ts") == "20.000000"
+    assert all("thread_post_id" not in call.args[0] for call in deliver.call_args_list)
+    apply.assert_not_called()
 
 
 def test_synced_copy_is_detected_and_does_not_need_to_originate(real_db):
@@ -447,10 +621,7 @@ def test_duplicate_target_across_syncs_is_written_once(real_db):
         _channel(sync, a, "C_A", publishes=True, subscribes=False)
         _channel(sync, b, "C_B", publishes=False, subscribes=True)
 
-    with (
-        patch("helpers.sync_pipeline.get_federated_workspace_for_sync", return_value=None),
-        patch("helpers.sync_pipeline.apply_target", return_value=[]) as apply,
-    ):
+    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply:
         run_sync_pipeline(
             {"kind": "message", "action": "create", "post_id": "P1", "source_workspace_id": a.id},
             source_channel_id="C_A",
@@ -475,18 +646,18 @@ def test_membership_survives_stop_pause_and_one_way_modes(real_db):
     assert paused.status == "paused"
 
 
-def test_direct_sync_does_not_fan_out_to_extra_group_members(real_db):
+def test_all_subscribers_receive_when_listed_on_the_sync(real_db):
+    """Participation (publishes/subscribes) owns fan-out; leftover direct mode does not."""
     a, b, c = _workspace("T_A"), _workspace("T_B"), _workspace("T_C")
     sync = DbManager.create_record(
         schemas.Sync(
-            title="direct",
-            sync_mode="direct",
-            publisher_workspace_id=a.id,
-            target_workspace_id=b.id,
+            title="group",
+            sync_mode="group",
+            uid=str(uuid4()),
         )
     )
     _channel(sync, a, "C_A", publishes=True, subscribes=False)
     _channel(sync, b, "C_B", publishes=False, subscribes=True)
     _channel(sync, c, "C_C", publishes=False, subscribes=True)
 
-    assert _target_ids("C_A") == ["C_B"]
+    assert sorted(_target_ids("C_A")) == ["C_B", "C_C"]

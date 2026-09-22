@@ -16,9 +16,8 @@ from slack_sdk.oauth.state_store.sqlalchemy import SQLAlchemyOAuthStateStore
 import constants
 from helpers._cache import _cache_get, _cache_set
 from helpers.encryption_installation_store import EncryptedSQLAlchemyInstallationStore
+from logger import log_debug, log_error, log_info, log_warning
 from slack_manifest_scopes import USER_SCOPES
-
-_logger = logging.getLogger(__name__)
 
 _OAUTH_STATE_EXPIRATION_SECONDS = 600
 _PUBLIC_BASE_CACHE_KEY = "public_base_url"
@@ -29,7 +28,7 @@ def get_oauth_flow():
     """Build the Slack OAuth flow using SQLAlchemy-backed stores.
 
     Uses the same database engine as the rest of the app. Works for both
-    local development and production (Lambda). If OAuth credentials are not
+    local development and production. If OAuth credentials are not
     set and LOCAL_DEVELOPMENT is true, returns None (single-workspace mode).
     """
     client_id = os.environ.get(constants.SLACK_CLIENT_ID, "").strip()
@@ -38,7 +37,7 @@ def get_oauth_flow():
     user_scopes_raw = os.environ.get(constants.SLACK_USER_SCOPES, "").strip()
 
     if constants.LOCAL_DEVELOPMENT and not (client_id and client_secret and scopes_raw):
-        _logger.info("OAuth credentials not set — running in single-workspace mode")
+        log_info("oauth_single_workspace_mode")
         return None
 
     from db import get_engine
@@ -104,7 +103,7 @@ def _origin_from_host(host: str | None, headers: dict | None) -> str | None:
 
 
 def public_base_from_headers(headers: dict | None) -> str | None:
-    """Return this request's public origin (Function URL / Cloud Run Host).
+    """Return this request's public origin from the Host header.
 
     Slack's Event and Interactivity URL is this same origin, so Authorize and
     federation both use it instead of a separate ``SYNCBOT_PUBLIC_URL``.
@@ -165,7 +164,7 @@ def get_public_base_url(context: dict | None = None) -> str | None:
     """Return this instance's public HTTPS origin (no trailing slash).
 
     Prefers the current Slack request (``context["public_base_url"]``), then
-    the origin remembered from an earlier request on this warm container, then
+    the origin remembered from an earlier request on this warm process, then
     the last Host persisted in ``instance_settings``. ``SYNCBOT_PUBLIC_URL`` is
     ignored leftover deploy config.
     """
@@ -193,7 +192,7 @@ def _persist_public_base(base: str) -> None:
             return
         set_setting(constants.SETTING_PUBLIC_BASE_URL, base)
     except Exception:
-        _logger.debug("public_base_persist_failed", exc_info=True)
+        log_debug("public_base_persist_failed", exc_info=True)
 
 
 def _load_persisted_public_base() -> str | None:
@@ -217,10 +216,7 @@ def _warn_legacy_public_url_env() -> None:
     if raw is None or raw.strip() == "":
         return
     _LEGACY_PUBLIC_URL_WARNED = True
-    _logger.warning(
-        "%s is ignored; SyncBot uses the Host of incoming Slack requests for /slack/install and federation instead",
-        constants.SYNCBOT_PUBLIC_URL,
-    )
+    log_warning("legacy_env_ignored", env=constants.SYNCBOT_PUBLIC_URL)
 
 
 def _oauth_success(args: SuccessArgs):
@@ -228,11 +224,32 @@ def _oauth_success(args: SuccessArgs):
     try:
         refresh_home_after_oauth_install(args.installation)
     except Exception:
-        _logger.exception("oauth_home_refresh_failed")
+        log_error("oauth_home_refresh_failed", exc_info=True)
     return args.default.success(args)
 
 
 def _oauth_failure(args: FailureArgs):
+    from slack_bolt.response import BoltResponse
+
+    from helpers.encryption_installation_store import WorkspaceBlockedError
+
+    reason = getattr(args, "reason", None)
+    error = getattr(args, "error", None)
+    blocked = isinstance(reason, WorkspaceBlockedError) or isinstance(error, WorkspaceBlockedError)
+    if not blocked:
+        blocked = "workspace_blocked" in f"{reason or ''} {error or ''}"
+    if blocked:
+        html = (
+            "<html><body><h1>This Workspace cannot install SyncBot</h1>"
+            "<p>This Workspace is on the instance block list. "
+            "Ask the primary Workspace admin to remove the Team ID in Settings, "
+            "then try again.</p></body></html>"
+        )
+        return BoltResponse(
+            status=403,
+            body=html,
+            headers={"Content-Type": ["text/html; charset=utf-8"]},
+        )
     return args.default.failure(args)
 
 
@@ -269,9 +286,8 @@ def refresh_home_after_oauth_install(installation) -> None:
     user_id = getattr(installation, "user_id", None)
     bot_token = getattr(installation, "bot_token", None)
     if not team_id or not user_id or not bot_token:
-        _logger.warning(
-            "oauth_home_refresh_skipped",
-            extra={"has_team": bool(team_id), "has_user": bool(user_id), "has_bot_token": bool(bot_token)},
+        log_warning(
+            "oauth_home_refresh_skipped", has_team=bool(team_id), has_user=bool(user_id), has_bot_token=bool(bot_token)
         )
         return
 
@@ -281,4 +297,4 @@ def refresh_home_after_oauth_install(installation) -> None:
 
     client = WebClient(token=bot_token)
     body = {"team": {"id": team_id}, "user": {"id": user_id}}
-    builders.build_home_tab(body, client, _logger, {}, user_id=user_id)
+    builders.build_home_tab(body, client, logging.getLogger("syncbot"), {}, user_id=user_id)

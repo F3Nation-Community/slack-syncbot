@@ -2,6 +2,7 @@
 
 import os
 from unittest.mock import MagicMock, patch
+from uuid import uuid4
 
 import pytest
 
@@ -31,6 +32,12 @@ def real_db(tmp_path):
             db_mod.GLOBAL_ENGINE = None
             db_mod.GLOBAL_SCHEMA = None
             initialize_database()
+            from federation import core as federation_core
+
+            federation_core._INSTANCE_ID = None
+            federation_core._cached_private_key = None
+            federation_core._cached_public_pem = None
+            federation_core.get_or_create_instance_keypair()
             clear_all_caches()
             yield
         finally:
@@ -42,11 +49,13 @@ def real_db(tmp_path):
 
 
 def _create_workspace(team_id: str = "T1") -> schemas.Workspace:
+    from federation.core import get_instance_id
+
     return DbManager.create_record(
         schemas.Workspace(
             team_id=team_id,
             workspace_name="Test",
-            bot_token="enc:xoxb-test",
+            instance_id=get_instance_id(),
         )
     )
 
@@ -164,6 +173,20 @@ class TestExtraManagers:
             assert helpers.is_workspace_manager(client, "U_ADMIN", "T1") is True
 
 
+class TestHomeViewers:
+    def test_remembered_and_extra_managers_capped(self, real_db):
+        from helpers.workspace_settings import home_viewer_user_ids, remember_home_viewer, set_extra_manager_user_ids
+
+        _create_workspace("T1")
+        set_extra_manager_user_ids("T1", ["U_EXTRA"])
+        remember_home_viewer("T1", "U_VIEW")
+        remember_home_viewer("T1", "U_VIEW")
+        ids = home_viewer_user_ids("T1")
+        assert ids[0] == "U_EXTRA"
+        assert "U_VIEW" in ids
+        assert ids.count("U_VIEW") == 1
+
+
 class TestMigration006:
     def test_existing_rows_get_hybrid_style(self, real_db):
         from datetime import UTC, datetime
@@ -173,7 +196,13 @@ class TestMigration006:
         from db import _alembic_config, get_engine
 
         ws = _create_workspace("T_REACT")
-        sync = DbManager.create_record(schemas.Sync(title="S", sync_mode="group", publisher_workspace_id=ws.id))
+        sync = DbManager.create_record(
+            schemas.Sync(
+                title="S",
+                sync_mode="group",
+                uid=str(uuid4()),
+            )
+        )
         channel = DbManager.create_record(
             schemas.SyncChannel(
                 sync_id=sync.id,
@@ -194,5 +223,4 @@ class TestMigration006:
         command.upgrade(_alembic_config(), "head")
 
         rows = DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.id == channel.id])
-        assert rows[0].reaction_direction == "both"
         assert rows[0].reaction_style == "threaded_and_direct"

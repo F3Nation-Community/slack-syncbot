@@ -1,6 +1,5 @@
 """Sync management handlers — Home tab, auth, membership leave, DB reset."""
 
-import logging
 import time
 from logging import Logger
 
@@ -10,9 +9,15 @@ import builders
 import constants
 import helpers
 from db import DbManager, schemas
+from logger import log_critical, log_info, log_warning
 from slack import actions, orm
 
-_logger = logging.getLogger(__name__)
+
+def _pulse_after_home() -> None:
+    """Federation allowlist/snapshot after Home is already published."""
+    from federation.core import refresh_instance
+
+    refresh_instance()
 
 
 def handle_app_home_opened(
@@ -44,6 +49,7 @@ def handle_app_home_opened(
                 cached_blocks = helpers._cache_get(blocks_key)
                 if cached_blocks is not None:
                     client.views_publish(user_id=user_id, view={"type": "home", "blocks": cached_blocks})
+                    helpers.remember_home_viewer(team_id, user_id)
                     return
             builders.build_home_tab(
                 body,
@@ -71,12 +77,10 @@ def handle_authorize_syncbot(
     the ``no_handler`` error log. The Home tab drops the section on the next
     ``app_home_opened`` once the install writes a user token.
     """
-    _logger.info(
+    log_info(
         "authorize_syncbot_clicked",
-        extra={
-            "team_id": helpers.get_team_id_from_body(body),
-            "user_id": helpers.get_user_id_from_body(body),
-        },
+        team_id=helpers.get_team_id_from_body(body),
+        user_id=helpers.get_user_id_from_body(body),
     )
 
 
@@ -93,7 +97,8 @@ def handle_refresh_home(
     when data changed. When hash matches and within 60s cooldown, re-publishes
     with a cooldown message. Rebuilds this user's Home from the DB; workspace
     names refresh at most daily when a workspace is loaded, not via an
-    instance-wide ``team_info`` sweep.
+    instance-wide ``team_info`` sweep. After Home is published, pulses External
+    Connections (allowlist/snapshot) so Refresh is not Home-only.
     """
     team_id = helpers.get_team_id_from_body(body)
     user_id = helpers.get_user_id_from_body(body)
@@ -127,10 +132,14 @@ def handle_refresh_home(
         refresh_idx = helpers.index_of_block_with_action(cached_blocks, actions.CONFIG_REFRESH_HOME)
         blocks_with_message = helpers.inject_cooldown_message(cached_blocks, refresh_idx, remaining)
         client.views_publish(user_id=user_id, view={"type": "home", "blocks": blocks_with_message})
+        helpers.remember_home_viewer(team_id, user_id)
+        _pulse_after_home()
         return
     if action == "cached" and cached_blocks is not None:
         client.views_publish(user_id=user_id, view={"type": "home", "blocks": cached_blocks})
+        helpers.remember_home_viewer(team_id, user_id)
         helpers._cache_set(refresh_at_key, time.monotonic(), ttl=cooldown_sec * 2)
+        _pulse_after_home()
         return
 
     # Names refresh at most daily in get_workspace_record / _maybe_refresh_workspace_name.
@@ -149,6 +158,7 @@ def handle_refresh_home(
         return
     client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})
     helpers.refresh_after_full(hash_key, blocks_key, refresh_at_key, current_hash, block_dicts)
+    _pulse_after_home()
 
 
 def handle_member_joined_channel(
@@ -189,7 +199,7 @@ def handle_member_joined_channel(
         )
         client.conversations_leave(channel=channel_id)
     except Exception as e:
-        _logger.warning(f"Failed to notify and leave untracked channel {channel_id}: {e}")
+        log_warning("failed_to_notify_and_leave_untracked_channel", channel_id=channel_id, error=str(e))
 
 
 # ---------------------------------------------------------------------------
@@ -298,12 +308,9 @@ def handle_db_reset_proceed(
                 },
             )
         except Exception as e:
-            _logger.warning("Failed to update modal after DB reset: %s", e)
+            log_warning("db_reset_modal_update_failed", error=str(e))
 
-    _logger.critical(
-        "DB_RESET triggered by user %s — dropping database and reinitializing via Alembic",
-        user_id,
-    )
+    log_critical("db_reset_triggered", user_id=user_id)
 
     from db import drop_and_init_db
 
@@ -329,4 +336,4 @@ def handle_db_reset_proceed(
                 },
             )
         except Exception as e:
-            _logger.warning("Failed to publish post-reset Home tab: %s", e)
+            log_warning("db_reset_home_publish_failed", error=str(e))

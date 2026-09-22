@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import logging
 import time as _time
 from functools import wraps
 
@@ -12,8 +11,7 @@ from slack_sdk.errors import SlackApiError
 from helpers._cache import _USER_INFO_CACHE_TTL, _cache_get, _cache_set
 from helpers.core import format_synced_from_line, safe_get
 from helpers.message_blocks import blocks_include_body, get_event_layout_blocks
-
-_logger = logging.getLogger(__name__)
+from logger import log_debug, log_warning
 
 _SLACK_MAX_RETRIES = 3
 _SLACK_INITIAL_BACKOFF = 1.0  # seconds
@@ -36,12 +34,21 @@ def slack_retry(fn):
 
                 if status == 429:
                     retry_after = float(exc.response.headers.get("Retry-After", backoff))
-                    _logger.warning(f"{fn.__name__} rate-limited (attempt {attempt + 1}), sleeping {retry_after:.1f}s")
+                    log_warning(
+                        "slack_rate_limited",
+                        fn=fn.__name__,
+                        attempt=attempt + 1,
+                        retry_after=retry_after,
+                    )
                     _time.sleep(retry_after)
                     backoff = min(backoff * 2, 30)
                 elif 500 <= status < 600:
-                    _logger.warning(
-                        f"{fn.__name__} server error {status} (attempt {attempt + 1}), retrying in {backoff:.1f}s"
+                    log_warning(
+                        "slack_server_error_retry",
+                        fn=fn.__name__,
+                        status=status,
+                        attempt=attempt + 1,
+                        backoff=backoff,
                     )
                     _time.sleep(backoff)
                     backoff = min(backoff * 2, 30)
@@ -95,7 +102,7 @@ def _get_auth_info(client: WebClient, *, bypass_cache: bool = False) -> dict | N
             _cache_set(cache_key, info, ttl=3600)
         return info
     except Exception:
-        _logger.warning("Could not determine own identity via auth.test")
+        log_warning("could_not_determine_own_identity_via_auth_test")
         return None
 
 
@@ -117,7 +124,7 @@ def get_own_bot_user_id(
     """Return SyncBot's own *user* ID (``U…``) for the current workspace.
 
     Prefer Bolt's request-scoped ``bot_user_id`` when present. ``auth.test`` is
-    cached per bot token so a warm Lambda cannot hand workspace A's identity
+    cached per bot token so a warm process cannot hand workspace A's identity
     to workspace B.
     """
     if not bypass_cache and context:
@@ -171,7 +178,7 @@ def get_user_info(client: WebClient, user_id: str) -> tuple[str | None, str | No
     try:
         res = _users_info(client, user_id)
     except SlackApiError as exc:
-        _logger.debug(f"get_user_info: failed to look up user {user_id}: {exc}")
+        log_debug("get_user_info", user_id=user_id, error=str(exc))
         return None, None
 
     user_name = (
@@ -185,9 +192,9 @@ def get_user_info(client: WebClient, user_id: str) -> tuple[str | None, str | No
 
 
 @slack_retry
-def _conversations_history(client: WebClient, **kwargs) -> dict:
+def _conversations_replies(client: WebClient, **kwargs) -> dict:
     """Low-level wrapper so the retry decorator can catch SlackApiError."""
-    return client.conversations_history(**kwargs)
+    return client.conversations_replies(**kwargs)
 
 
 def _conversation_messages(res) -> list[dict] | None:
@@ -203,12 +210,31 @@ def _conversation_messages(res) -> list[dict] | None:
     return messages
 
 
+def get_thread_root_ts(client: WebClient, channel_id: str, message_ts: str) -> str:
+    """Return the Slack thread root ts for *message_ts*, or *message_ts* if it is the root.
+
+    ``conversations.replies`` accepts a parent or an in-thread ts. Channel
+    history does not return replies and can resolve the wrong top-level message.
+    """
+    if not channel_id or not message_ts:
+        return message_ts
+    try:
+        res = _conversations_replies(client, channel=channel_id, ts=str(message_ts), limit=1)
+    except SlackApiError:
+        return message_ts
+    messages = _conversation_messages(res)
+    if not messages or not isinstance(messages[0], dict):
+        return message_ts
+    thread_ts = messages[0].get("thread_ts") or messages[0].get("ts")
+    return str(thread_ts) if thread_ts else message_ts
+
+
 def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
-    """Load Block Kit from ``conversations.history`` when the Events payload omitted it.
+    """Load Block Kit from ``conversations.replies`` when the Events payload omitted it.
 
     Bot posts sometimes arrive with flattened ``text`` and no ``blocks``. The
-    client ``Show more`` control is not a second payload; history is the full
-    message Slack stored.
+    client ``Show more`` control is not a second payload; replies is the stored
+    message, including thread replies that channel history omits.
     """
     if not event:
         return []
@@ -219,9 +245,9 @@ def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
     if not channel or not ts:
         return []
     try:
-        res = _conversations_history(client, channel=channel, latest=str(ts), inclusive=True, limit=1)
+        res = _conversations_replies(client, channel=channel, ts=str(ts), limit=1)
     except SlackApiError as exc:
-        _logger.debug("fetch_message_layout_blocks failed: %s", exc)
+        log_debug("fetch_message_layout_blocks_failed_s", error=str(exc))
         return []
     messages = _conversation_messages(res)
     if not messages or not isinstance(messages[0], dict):
@@ -252,7 +278,7 @@ def post_message(
             all_blocks = blocks
     else:
         all_blocks = []
-    fallback_text = msg_text if msg_text.strip() else "Shared a file"
+    fallback_text = msg_text.strip() or (" " if all_blocks else "")
     if update_ts:
         update_kwargs: dict = {
             "channel": channel_id,

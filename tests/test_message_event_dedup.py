@@ -166,6 +166,20 @@ class TestRespondToMessageEventDedup:
 
         mock_new.assert_called_once()
 
+    def test_copy_exists_skips_inbound_create(self):
+        with (
+            patch("helpers.post_meta_exists_for_channel_ts", return_value=True),
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(_message_body(event_id=""), MagicMock(), MagicMock(), {})
+
+        mock_new.assert_not_called()
+        mock_reply.assert_not_called()
+        build_fc.assert_not_called()
+
     def test_no_subtype_with_files_skips_without_building_file_context(self):
         body = _message_body(event_id="")
         body["event"]["files"] = [{"id": "F1", "mimetype": "image/jpeg"}]
@@ -373,6 +387,49 @@ class TestRespondToMessageEventDedup:
         mock_reply.assert_called_once()
         mock_new.assert_not_called()
 
+    def test_file_share_download_empty_dms_and_skips(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["text"] = ""
+        body["event"]["files"] = [{"id": "F1"}]
+        client = MagicMock()
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message.helpers.notify_source_user_error") as notify,
+        ):
+            respond_to_message_event(body, client, MagicMock(), {})
+
+        mock_new.assert_not_called()
+        mock_reply.assert_not_called()
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["source_client"] is client
+
+    def test_thread_file_only_without_subtype_keeps_files(self):
+        body = _message_body(event_id="")
+        body["event"]["text"] = ""
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [{"id": "F_NEW"}]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ) as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_called_once()
+        mock_new.assert_not_called()
+        assert build_fc.call_args.args[0]["event"]["files"] == [{"id": "F_NEW"}]
+
     def test_thread_file_share_still_syncs_with_files(self):
         body = _message_body(event_id="")
         body["event"]["subtype"] = "file_share"
@@ -395,27 +452,37 @@ class TestRespondToMessageEventDedup:
         mock_new.assert_not_called()
         assert build_fc.call_args.args[0]["event"]["files"] == [{"id": "F_NEW"}]
 
-    def test_thread_file_share_upload_false_is_text_reply(self):
+    def test_thread_file_share_upload_false_keeps_files(self):
         body = _message_body(event_id="")
         body["event"]["subtype"] = "file_share"
         body["event"]["upload"] = False
+        body["event"]["text"] = "Hello from Workspace A"
         body["event"]["ts"] = "1234567890.000002"
         body["event"]["thread_ts"] = "1234567890.000001"
-        body["event"]["files"] = [{"id": "F99"}]
+        body["event"]["files"] = [
+            {
+                "id": "F99",
+                "mode": "hosted",
+                "url_private": "https://files.slack.com/F99",
+            }
+        ]
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_thread_reply") as mock_reply,
-            patch("handlers.message._build_file_context", return_value=([], [])) as build_fc,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ) as build_fc,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
         mock_reply.assert_called_once()
         mock_new.assert_not_called()
-        assert "files" not in build_fc.call_args.args[0]["event"]
+        assert build_fc.call_args.args[0]["event"]["files"][0]["id"] == "F99"
 
-    def test_thread_file_share_upload_false_not_skipped_as_file_echo(self):
+    def test_thread_file_share_upload_false_file_echo_skips(self):
         body = _message_body(event_id="")
         body["event"]["subtype"] = "file_share"
         body["event"]["upload"] = False
@@ -428,12 +495,167 @@ class TestRespondToMessageEventDedup:
             patch("handlers.message.helpers.has_user_action_echo", side_effect=lambda *_a, **_k: _a[2] == "file"),
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_reply.assert_not_called()
+        mock_new.assert_not_called()
+        build_fc.assert_not_called()
+
+    def test_top_level_plain_message_with_url_is_not_pending(self):
+        body = _message_body(event_id="")
+        body["event"]["files"] = [
+            {
+                "id": "F1",
+                "mode": "hosted",
+                "url_private": "https://files.slack.com/F1",
+            }
+        ]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ) as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_new.assert_called_once()
+        mock_reply.assert_not_called()
+        assert build_fc.call_args.args[0]["event"]["files"][0]["id"] == "F1"
+
+    def test_top_level_file_share_upload_false_with_caption_keeps_files(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["upload"] = False
+        body["event"]["text"] = "Hello from Workspace A"
+        body["event"]["files"] = [
+            {
+                "id": "F1",
+                "mode": "hosted",
+                "url_private": "https://files.slack.com/F1",
+            }
+        ]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ) as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_new.assert_called_once()
+        mock_reply.assert_not_called()
+        assert build_fc.call_args.args[0]["event"]["files"][0]["id"] == "F1"
+
+    def test_hidden_by_limit_file_share_dms_and_skips(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["text"] = ""
+        body["event"]["files"] = [{"id": "F1", "mode": "hidden_by_limit"}]
+        client = MagicMock()
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
             patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message.helpers.notify_source_user_error") as notify,
+        ):
+            respond_to_message_event(body, client, MagicMock(), {})
+
+        mock_new.assert_not_called()
+        mock_reply.assert_not_called()
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["source_client"] is client
+
+    def test_top_level_slack_hosted_video_block_waits_for_file_share(self):
+        body = _message_body(event_id="")
+        body["event"]["files"] = []
+        body["event"]["blocks"] = [
+            {
+                "type": "video",
+                "video_url": "https://files.slack.com/files-pri/clip.mp4",
+                "title": {"type": "plain_text", "text": "clip.mp4"},
+            }
+        ]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._build_file_context") as build_fc,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_new.assert_not_called()
+        build_fc.assert_not_called()
+
+    def test_thread_broadcast_with_caption_keeps_files(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "thread_broadcast"
+        body["event"]["text"] = "also sent to channel"
+        body["event"]["ts"] = "1234567890.000002"
+        body["event"]["thread_ts"] = "1234567890.000001"
+        body["event"]["files"] = [
+            {
+                "id": "F1",
+                "mode": "hosted",
+                "url_private": "https://files.slack.com/F1",
+            }
+        ]
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([], [{"path": "/tmp/x", "name": "x.jpg"}]),
+            ) as build_fc,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
         mock_reply.assert_called_once()
         mock_new.assert_not_called()
+        assert build_fc.call_args.args[0]["event"]["files"][0]["id"] == "F1"
+
+    def test_hosted_file_download_shortfall_dms_even_with_image_block(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["text"] = "caption"
+        body["event"]["files"] = [
+            {
+                "id": "F1",
+                "mode": "hosted",
+                "url_private": "https://files.slack.com/F1",
+            }
+        ]
+        client = MagicMock()
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._handle_thread_reply") as mock_reply,
+            patch(
+                "handlers.message._build_file_context",
+                return_value=([{"type": "image", "image_url": "https://gif.example/a.gif"}], []),
+            ),
+            patch("handlers.message.helpers.notify_source_user_error") as notify,
+        ):
+            respond_to_message_event(body, client, MagicMock(), {})
+
+        mock_new.assert_not_called()
+        mock_reply.assert_not_called()
+        notify.assert_called_once()
+        assert notify.call_args.kwargs["source_client"] is client
 
     def test_thread_reply_without_parent_releases_claim(self, event_db):
         body = _message_body()
@@ -456,6 +678,77 @@ class TestRespondToMessageEventDedup:
 
         assert lookups["n"] == 2
         mock_new.assert_not_called()
+
+    def test_edit_without_post_meta_releases_claim(self, event_db):
+        body = _message_body()
+        body["event"]["subtype"] = "message_changed"
+        body["event"]["message"] = {"ts": "1234567890.000001", "text": "edited"}
+        lookups = {"n": 0}
+
+        def _no_meta(*_a, **_k):
+            lookups["n"] += 1
+            return []
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._parse_event_fields_light") as parse,
+            patch("handlers.message.helpers.get_post_records", side_effect=_no_meta),
+            patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
+        ):
+            parse.return_value = {
+                "event_subtype": "message_changed",
+                "thread_ts": None,
+                "msg_text": "edited",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
+            }
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        assert lookups["n"] == 2
+        pipeline.assert_not_called()
+
+    def test_delete_without_post_meta_releases_claim(self, event_db):
+        body = _message_body()
+        body["event"]["subtype"] = "message_deleted"
+        body["event"]["previous_message"] = {"ts": "1234567890.000001"}
+        lookups = {"n": 0}
+
+        def _no_meta(*_a, **_k):
+            lookups["n"] += 1
+            return []
+
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._parse_event_fields_light") as parse,
+            patch("handlers.message._try_handle_reaction_notice_delete", return_value=False),
+            patch("handlers.message.helpers.get_post_records", side_effect=_no_meta),
+            patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
+        ):
+            parse.return_value = {
+                "event_subtype": "message_deleted",
+                "thread_ts": None,
+                "msg_text": "",
+                "channel_id": "C001",
+                "user_id": "U001",
+                "team_id": "T001",
+                "ts": "1234567890.000001",
+                "mentioned_users": [],
+                "content_blocks": [],
+                "reply_broadcast": False,
+            }
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        assert lookups["n"] == 2
+        pipeline.assert_not_called()
 
     def test_duplicate_event_id_syncs_once(self, event_db):
         body = _message_body()
@@ -743,10 +1036,10 @@ class TestHandleReactionEchoSkip:
 
 
 class TestEventIsNewFileShare:
-    def test_upload_false_is_later_share(self):
+    def test_upload_false_is_still_file_share(self):
         from helpers.files import event_is_new_file_share
 
-        assert event_is_new_file_share({"subtype": "file_share", "upload": False}) is False
+        assert event_is_new_file_share({"subtype": "file_share", "upload": False}) is True
 
     def test_omitted_upload_is_new(self):
         from helpers.files import event_is_new_file_share

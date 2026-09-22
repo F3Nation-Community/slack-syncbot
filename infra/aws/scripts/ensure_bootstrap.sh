@@ -12,7 +12,7 @@
 # Env:
 #   AWS_BOOTSTRAP_STACK_NAME   default syncbot-bootstrap (alias: BOOTSTRAP_STACK_NAME)
 #   AWS_REGION                 default us-east-1
-#   GITHUB_REPO                owner/repo; required to create a missing stack
+#   GITHUB_REPO                owner/repo; optional. Empty skips GitHub OIDC.
 #   AWS_CREATE_OIDC_PROVIDER   create only (default true; alias: CREATE_OIDC_PROVIDER)
 #   AWS_DEPLOY_BUCKET_PREFIX   create only (default syncbot-deploy; alias: DEPLOY_BUCKET_PREFIX)
 #
@@ -29,7 +29,7 @@ usage() {
   cat <<EOF
 Usage: ensure_bootstrap.sh [--force] [--create] [--skip-sync]
 
-  --create     Create the stack if it does not exist (needs GITHUB_REPO).
+  --create     Create the stack if it does not exist (GitHub repo optional).
   --force      Deploy even when the template hash already matches.
   --skip-sync  Do not update an existing stack (create-if-missing still runs
                with --create).
@@ -71,9 +71,8 @@ resolve_github_repo_for_create() {
     echo "$parsed"
     return 0
   fi
-  echo "Error: GITHUB_REPO is unset and origin is not a github.com remote." >&2
-  echo "Set GITHUB_REPO=owner/repo in .env.deploy.<stage> to create the bootstrap stack." >&2
-  return 1
+  echo ""
+  return 0
 }
 
 # GitHub issues an immutable OIDC subject claim, repo:owner@owner-id/repo@repo-id,
@@ -131,20 +130,28 @@ deploy_bootstrap() {
   local bucket_prefix="$3"
   local file_sha="$4"
   local immutable_repo="$5"
+  local -a overrides
 
   if [[ -n "$immutable_repo" ]]; then
     echo "OIDC trust also allows immutable subject 'repo:${immutable_repo}:*'."
+  fi
+  overrides=(
+    "CreateOIDCProvider=$create_oidc"
+    "DeploymentBucketPrefix=$bucket_prefix"
+    "${SHA_PARAM_KEY}=${file_sha}"
+  )
+  if [[ -n "$github_repo" ]]; then
+    overrides+=("GitHubRepository=$github_repo")
+  fi
+  if [[ -n "$immutable_repo" ]]; then
+    overrides+=("GitHubImmutableRepository=$immutable_repo")
   fi
   echo "Deploying bootstrap stack '$STACK' in $REGION ..."
   aws cloudformation deploy \
     --template-file "$BOOTSTRAP_TEMPLATE" \
     --stack-name "$STACK" \
     --parameter-overrides \
-      "GitHubRepository=$github_repo" \
-      "GitHubImmutableRepository=$immutable_repo" \
-      "CreateOIDCProvider=$create_oidc" \
-      "DeploymentBucketPrefix=$bucket_prefix" \
-      "${SHA_PARAM_KEY}=${file_sha}" \
+      "${overrides[@]}" \
     --capabilities CAPABILITY_NAMED_IAM \
     --no-fail-on-empty-changeset \
     --region "$REGION"
@@ -200,7 +207,7 @@ if ! stack_exists; then
   CREATE_OIDC="${AWS_CREATE_OIDC_PROVIDER:-true}"
   BUCKET_PREFIX="${AWS_DEPLOY_BUCKET_PREFIX:-syncbot-deploy}"
   IMMUTABLE_REPO="$(resolve_immutable_repository "$GH_REPO")"
-  echo "Bootstrap stack '$STACK' not found; creating (GitHubRepository=$GH_REPO)."
+  echo "Bootstrap stack '$STACK' not found; creating (GitHubRepository=${GH_REPO:-empty, local deploy only})."
   deploy_bootstrap "$GH_REPO" "$CREATE_OIDC" "$BUCKET_PREFIX" "$FILE_SHA" "$IMMUTABLE_REPO"
   exit 0
 fi
@@ -230,8 +237,7 @@ STACK_IMMUTABLE_REPO="${STACK_IMMUTABLE_REPO//$'\r'/}"
 [[ "$STACK_IMMUTABLE_REPO" == "None" ]] && STACK_IMMUTABLE_REPO=""
 
 if [[ -z "$GH_REPO" ]]; then
-  echo "Error: bootstrap stack has no GitHubRepository parameter; cannot sync." >&2
-  exit 1
+  echo "Bootstrap stack has no GitHubRepository; syncing SAM bucket only (GitHub OIDC skipped)."
 fi
 
 # GitHub can switch a repository to immutable subject claims without the template

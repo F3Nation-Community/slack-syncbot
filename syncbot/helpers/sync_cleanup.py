@@ -17,15 +17,12 @@ This module imports **submodules only** (``db``, ``db.schemas``,
 ``helpers._cache``) and never the ``helpers`` package, because
 ``helpers/__init__`` imports ``helpers.notifications`` (which calls
 :func:`purge_workspace`) before ``helpers.workspace``. Importing the package
-here would be a circular import at Lambda cold start.
+here would be a circular import at process start.
 """
-
-import logging
 
 from db import DbManager, schemas
 from helpers._cache import _cache_delete_prefix
-
-_logger = logging.getLogger(__name__)
+from logger import log_info
 
 
 def _invalidate_channel_memberships(channel_ids) -> None:
@@ -68,10 +65,7 @@ def purge_sync(sync_id: int) -> None:
 
     _invalidate_channel_memberships(channel.channel_id for channel in channels)
 
-    _logger.info(
-        "sync_purged",
-        extra={"sync_id": sync_id, "sync_channels": len(channels)},
-    )
+    log_info("sync_purged", sync_id=sync_id, sync_channels=len(channels))
 
 
 def purge_sync_channels(channels) -> None:
@@ -118,16 +112,8 @@ def purge_workspace(workspace_id: int) -> None:
     if not workspace_id:
         return
 
-    # Syncs this workspace originally created are removed outright, along with every
-    # subscriber's copy — the same authority the last publisher's Leave Sync uses.
-    published = DbManager.find_records(
-        schemas.Sync,
-        [schemas.Sync.publisher_workspace_id == workspace_id],
-    )
-    for sync in published:
-        purge_sync(sync.id)
-
-    # Channels this workspace contributed to syncs owned by someone else.
+    # Purge only this workspace's SyncChannels — participation owns publishing.
+    # Do not delete whole Syncs because a leftover publisher_workspace_id matched.
     own_channels = DbManager.find_records(
         schemas.SyncChannel,
         [schemas.SyncChannel.workspace_id == workspace_id],
@@ -167,30 +153,16 @@ def purge_workspace(workspace_id: int) -> None:
         {schemas.WorkspaceGroupMember.invited_by_workspace_id: None},
     )
 
-    # Direct syncs aimed at this workspace: the column is nullable, and the
-    # sync itself may still belong to a publisher that still exists.
-    DbManager.update_records(
-        schemas.Sync,
-        [schemas.Sync.target_workspace_id == workspace_id],
-        {schemas.Sync.target_workspace_id: None},
-    )
-
     # delete_record(Workspace, ...) would filter on team_id, not id.
     DbManager.delete_records(schemas.Workspace, [schemas.Workspace.id == workspace_id])
 
-    # The retention purge is the only involuntary loss of ownership, because it
-    # is permanent. Imported here rather than at module scope to keep this
-    # module free of helpers-package imports.
+    # The retention purge is the only involuntary loss of ownership. It promotes
+    # the earliest-joined remaining local member or disbands. Imported here
+    # rather than at module scope to keep this module free of helpers-package
+    # imports.
     from helpers.group_roles import succeed_ownership
 
     for group_id in owned_group_ids:
         succeed_ownership(group_id, departing_workspace_id=workspace_id)
 
-    _logger.info(
-        "workspace_purged",
-        extra={
-            "workspace_id": workspace_id,
-            "published_syncs": len(published),
-            "sync_channels": len(own_channels),
-        },
-    )
+    log_info("workspace_purged", workspace_id=workspace_id, sync_channels=len(own_channels))

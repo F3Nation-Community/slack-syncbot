@@ -8,10 +8,9 @@ It also provides :func:`validate_config` to fail fast on missing
 configuration at startup.
 """
 
-import logging
 import os
 
-_logger = logging.getLogger(__name__)
+from logger import log_critical, log_warning
 
 # ---------------------------------------------------------------------------
 # Environment-variable name constants
@@ -61,36 +60,30 @@ ENABLE_DB_RESET = "ENABLE_DB_RESET"
 # Setting keys as stored in the instance_settings table.
 SETTING_ALLOW_PRIVATE_CHANNELS = "allow_private_channels"
 SETTING_EXTRA_MANAGER_USER_IDS = "extra_manager_user_ids"
-SETTING_BROADCAST_ALLOWED_WORKSPACES = "broadcast_allowed_workspaces"
+# Internal: last Home viewers for post-deploy views.publish. Not a Settings field.
+SETTING_HOME_VIEWER_USER_IDS = "home_viewer_user_ids"
+HOME_VIEWER_USER_IDS_CAP = 20
 SETTING_SOFT_DELETE_RETENTION_DAYS = "soft_delete_retention_days"
 SETTING_FEDERATION_ENABLED = "federation_enabled"
+SETTING_WORKSPACE_BLOCK_LIST = "workspace_block_list"
 # Internal: last public origin from an incoming request Host. Not a Settings field.
 SETTING_PUBLIC_BASE_URL = "public_base_url"
 
 # Names that used to be env vars. Kept so leftover deploy config can be warned
 # about, not so they are read.
 ALLOW_PRIVATE_CHANNELS = "ALLOW_PRIVATE_CHANNELS"
-BROADCAST_ALLOWED_WORKSPACES = "BROADCAST_ALLOWED_WORKSPACES"
 SOFT_DELETE_RETENTION_DAYS_VAR = "SOFT_DELETE_RETENTION_DAYS"
 SYNCBOT_FEDERATION_ENABLED = "SYNCBOT_FEDERATION_ENABLED"
 
 DEFAULT_ALLOW_PRIVATE_CHANNELS = False
-DEFAULT_BROADCAST_ALLOWED_WORKSPACES: list[str] = []
 DEFAULT_SOFT_DELETE_RETENTION_DAYS = 30
 DEFAULT_FEDERATION_ENABLED = False
-
-# Leftover column on sync_channels.reaction_direction. Runtime ignores it;
-# export/import still round-trips values for database restores.
-REACTION_DIRECTION_BOTH = "both"
-REACTION_DIRECTION_SEND = "send"
-REACTION_DIRECTION_RECEIVE = "receive"
 
 # Per-channel reaction type while the channel subscribes.
 REACTION_STYLE_DIRECT_ONLY = "direct_only"
 REACTION_STYLE_THREADED_AND_DIRECT = "threaded_and_direct"
 REACTION_STYLE_OFF = "off"
 
-DEFAULT_REACTION_DIRECTION = REACTION_DIRECTION_BOTH
 DEFAULT_REACTION_STYLE_EXISTING = REACTION_STYLE_THREADED_AND_DIRECT
 DEFAULT_REACTION_STYLE_NEW_RECEIVE = REACTION_STYLE_THREADED_AND_DIRECT
 
@@ -141,12 +134,72 @@ SYNCBOT_INSTANCE_ID = "SYNCBOT_INSTANCE_ID"
 # Leftover: ignored. Public origin comes from incoming Slack request Host.
 SYNCBOT_PUBLIC_URL = "SYNCBOT_PUBLIC_URL"
 
-# This instance's federation HTTP mount point. The connection code advertises
+# This instance's federation HTTP mount point. The connection code includes
 # <public origin> + this path as the peer's webhook_url; peers append resource
 # subpaths (for example /message, /pair) to whatever URL the code carried. Only
 # this instance's own routing and code generation reference the mount path — the
 # outbound client never assumes it, so a future instance can serve elsewhere.
 FEDERATION_API_BASE_PATH = "/api/federation"
+
+# Leftover: ignored. Infra injects FEDERATION_HTTP_MAX_MB instead.
+FILE_CHUNK_MB = "FILE_CHUNK_MB"
+# Infra-injected hop HTTP receive cap in MiB (SAM/Terraform). Unset or 0: no app split.
+FEDERATION_HTTP_MAX_MB = "FEDERATION_HTTP_MAX_MB"
+# Mixed-version peers still enforce the old 1 MB app JSON cap.
+LEGACY_FEDERATION_JSON_CHUNK_MB = 1
+
+_FILE_CHUNK_MB_WARNED = False
+
+
+def _warn_file_chunk_mb_leftover() -> None:
+    """Warn once per process when leftover FILE_CHUNK_MB env is set."""
+    global _FILE_CHUNK_MB_WARNED
+    if _FILE_CHUNK_MB_WARNED:
+        return
+    raw = os.environ.get(FILE_CHUNK_MB)
+    if raw is None or str(raw).strip() == "":
+        return
+    _FILE_CHUNK_MB_WARNED = True
+    log_warning("legacy_env_ignored", env=FILE_CHUNK_MB)
+
+
+def get_file_chunk_mb() -> int:
+    """This hop's inbound federation HTTP cap in MiB.
+
+    Reads ``FEDERATION_HTTP_MAX_MB`` from infra. ``0`` or unset means this
+    process does not split. Slack files stay 1 GB. Leftover ``FILE_CHUNK_MB``
+    is ignored.
+    """
+    _warn_file_chunk_mb_leftover()
+    raw = os.environ.get(FEDERATION_HTTP_MAX_MB)
+    if raw is None or str(raw).strip() == "":
+        return 0
+    try:
+        mb = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    return mb if mb > 0 else 0
+
+
+def file_chunk_bytes() -> int | None:
+    """Return max part size in bytes, or ``None`` when unlimited."""
+    mb = get_file_chunk_mb()
+    if mb == 0:
+        return None
+    return mb * 1024 * 1024
+
+
+def json_chunk_mb() -> int:
+    """Advertise this hop's JSON receive split. ``0`` means no app split."""
+    return get_file_chunk_mb()
+
+
+def federation_json_max_bytes() -> int | None:
+    """Max federation JSON body this process will accept, or ``None`` when unlimited."""
+    mb = get_file_chunk_mb()
+    if mb <= 0:
+        return None
+    return mb * 1024 * 1024
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +216,15 @@ def get_database_backend() -> str:
     Defaults to ``mysql`` when unset.
     """
     return os.environ.get(DATABASE_BACKEND, "mysql").lower().strip() or "mysql"
+
+
+# Keep in lockstep with [tool.poetry] version. python-semantic-release updates both.
+__version__ = "1.6.2"
+
+
+def app_version() -> str:
+    """Package version from this module (deployed copies of source do not install the wheel)."""
+    return __version__
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -249,12 +311,7 @@ def _warn_token_encryption_key_leftover() -> None:
     if raw is None or str(raw).strip() == "":
         return
     _TOKEN_ENCRYPTION_KEY_WARNED = True
-    _logger.warning(
-        "%s is deprecated; set %s instead (still used when %s is unset)",
-        _DATA_ENCRYPTION_KEY_LEGACY,
-        DATA_ENCRYPTION_KEY,
-        DATA_ENCRYPTION_KEY,
-    )
+    log_warning("legacy_env_ignored", env=_DATA_ENCRYPTION_KEY_LEGACY, use=DATA_ENCRYPTION_KEY)
 
 
 def _encryption_active() -> bool:
@@ -274,11 +331,12 @@ def _encryption_active() -> bool:
 def validate_config() -> None:
     """Check that required environment variables are present.
 
-    In production this raises immediately so the Lambda fails on cold-start
+    In production this raises immediately so the process fails at start
     rather than silently misbehaving.  In local development it only warns.
     DB requirements depend on DATABASE_BACKEND (postgresql, mysql, or sqlite).
     """
     _warn_token_encryption_key_leftover()
+    _warn_file_chunk_mb_leftover()
     required = list(_REQUIRED_ALWAYS_NON_DB) + list(get_required_db_vars())
     if not LOCAL_DEVELOPMENT:
         required.extend(_REQUIRED_PRODUCTION)
@@ -288,9 +346,9 @@ def validate_config() -> None:
     if missing:
         msg = "Missing required environment variable(s): " + ", ".join(missing)
         if LOCAL_DEVELOPMENT:
-            _logger.warning(msg + " (continuing in local-dev mode)")
+            log_warning("config_missing_env", missing=", ".join(missing))
         else:
-            _logger.critical(msg)
+            log_critical("config_missing_env", missing=", ".join(missing))
             raise OSError(msg)
 
     if not LOCAL_DEVELOPMENT and not _encryption_active():
@@ -300,5 +358,5 @@ def validate_config() -> None:
             "Use your provider's secret manager; the deploy script auto-generates it. "
             "Back up the key after first deploy. In local dev you may set it manually or leave unset."
         )
-        _logger.critical(msg)
+        log_critical("config_encryption_required")
         raise OSError(msg)

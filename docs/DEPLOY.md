@@ -10,13 +10,15 @@ Runtime environment variables are listed in [INFRA_CONTRACT.md](INFRA_CONTRACT.m
 flowchart LR
   subgraph awsCI [AWS GitHub]
     Sam["sam deploy"]
-    Mig["Lambda invoke migrate"]
+    Mig["Lambda invoke migrate then ready"]
     Sam --> Mig
   end
   subgraph gcpCI [GCP GitHub]
     Img["build and push image"]
     Run["gcloud run services update"]
+    Health["GET /health and /ready"]
     Img --> Run
+    Run --> Health
   end
   subgraph gcpLocal [GCP local]
     Tf["terraform apply"]
@@ -34,13 +36,13 @@ From the **repository root**:
   - On **macOS / Linux**, run `./deploy.sh`.
   - On **Windows**, run `.\deploy.ps1`.
 
-**Interactive:** `./deploy.sh` with no `--env` flag prompts for stage (`test` or `prod`), loads that env file, then shows the provider task menu (build, CI/CD, Slack API). On AWS, the script creates or syncs the bootstrap stack before that menu.
+**Interactive:** `./deploy.sh` with no `--env` flag prompts for stage (`test` or `prod`), loads that env file, then shows the provider task menu. Default is Build/Deploy only. CI/CD (GitHub Actions) and Slack API are optional. On AWS, the script creates or syncs the bootstrap stack before that menu. GitHub is never required for a local deploy.
 
 **Non-interactive:** `./deploy.sh --env test` or `./deploy.sh --env prod`. Copy values from `.env.deploy.example`. The launcher reads `.env.deploy.test` or `.env.deploy.prod` and runs `infra/<CLOUD_PROVIDER>/scripts/deploy.sh`. Set **`CLOUD_PROVIDER=aws`** or **`gcp`** in that file. There is no `aws` or `gcp` argument on the command line.
 
 **Bootstrap (AWS):** The first `./deploy.sh --env test` creates the bootstrap CloudFormation stack if it is missing. Later deploys skip CloudFormation when `template.bootstrap.yaml` is unchanged (the hash is stored as stack parameter `TemplateContentSha256`). Pass `--bootstrap` to force a sync even when the hash matches. GCP has no separate bootstrap stack (`terraform apply` is the whole stack), so `--bootstrap` is ignored there.
 
-**GitHub setup:** Add `--setup-github` after a local deploy to copy config into GitHub (`./deploy.sh --env test --setup-github`). On AWS, it pushes uncommented non-empty env-file keys that AWS CI actually reads (including `PRIMARY_WORKSPACE`, federation, TLS, and `ENABLE_DB_RESET` when you set them). On GCP, it only writes repo Workload Identity Federation vars and `GITHUB_DEPLOY_TARGET`. You still **redeploy** (local `./deploy.sh` or a push to `test`/`prod`) for Lambda to pick up new app settings. GitHub cannot create the first AWS bootstrap stack and never runs GCP `terraform apply`.
+**GitHub setup:** Add `--setup-github` after a local deploy to copy config into GitHub (`./deploy.sh --env test --setup-github`). On AWS, it pushes uncommented non-empty env-file keys that AWS CI actually reads (including `PRIMARY_WORKSPACE`, federation, TLS, and `ENABLE_DB_RESET` when you set them). On GCP, it only writes repo Workload Identity Federation vars and `GITHUB_DEPLOY_TARGET`. You still **redeploy** (local `./deploy.sh` or a push to `test`/`prod`) for Lambda to pick up new app settings. GitHub cannot create the first AWS bootstrap stack and never runs GCP `terraform apply`. Local deploys still use your AWS or gcloud credentials even if GitHub Actions is already configured.
 
 Set **`GITHUB_REPO=YOUR_GITHUB_OWNER/YOUR_REPO`** in `.env.deploy.test` or `.env.deploy.prod` (or export it) to skip the prompt when both a fork and upstream remote exist. That value stays local; the script does not push it as a GitHub variable.
 
@@ -57,7 +59,7 @@ Set **`GITHUB_REPO=YOUR_GITHUB_OWNER/YOUR_REPO`** in `.env.deploy.test` or `.env
 **Prerequisites** (short list in the root [README](../README.md); more detail below):
 
 - **AWS:** AWS CLI v2, SAM CLI, Python 3 (`python3`), **`curl`** (for the Slack manifest API), and an **active AWS CLI session**. Docker is no longer needed: the Lambda build runs on your machine and asks pip for the runtime's wheels, so the artifact is the same whether you build on macOS, Linux, arm64, or x86_64. **Optional:** `gh` for GitHub Actions setup. The script prints a status line per tool (✓ / !) and Slack doc links. If `gh` is missing, it asks whether to continue. A missing cloud login fails immediately; the script does not open a login prompt.
-- **GCP:** Terraform, `gcloud`, Python 3, **`curl`**, an **active `gcloud` login**, and Application Default Credentials. **Optional:** `gh`, with the same behavior as AWS.
+- **GCP:** Terraform, `gcloud`, Docker, Python 3, **`curl`**, an **active `gcloud` login**, and Application Default Credentials. **Optional:** `gh`, with the same behavior as AWS.
 
 **Slack install error `invalid_scope` / “Invalid permissions requested”:** The OAuth authorize URL is built from **`SLACK_BOT_SCOPES`** and **`SLACK_USER_SCOPES`** in your deployed app (Lambda / Cloud Run). They must **exactly match** the scopes on your Slack app (`slack-manifest.json` → **OAuth & Permissions** after manifest update) and `BOT_SCOPES` / `USER_SCOPES` in `syncbot/slack_manifest_scopes.py`. SAM and GCP Terraform defaults include both bot and user scope strings; if your environment has **stale** overrides, redeploy with parameters matching the manifest or update the Slack app to match. On GCP, `slack_user_scopes` must stay aligned with `oauth_config.scopes.user`. **Renames (older stacks):** `SLACK_SCOPES` → `SLACK_BOT_SCOPES`; SAM `SlackOauthScopes` → `SlackOauthBotScopes`; SAM `SlackUserOauthScopes` → `SlackOauthUserScopes` (`SLACK_USER_SCOPES` unchanged).
 
@@ -78,7 +80,7 @@ Runs from repo root (or `./deploy.sh --env test` with `CLOUD_PROVIDER=aws`). It:
 1. **Prerequisites** — Verifies `aws`, `sam`, `python3`, `curl` are on `PATH` (with install hints). Prints a status matrix; if optional `gh` is missing, shows install hints and asks whether to continue. Prints Slack app / API token / manifest API links. **Fails immediately** if there is no active AWS CLI session (`aws sts get-caller-identity`); log in with `aws login`, `aws sso login`, or `aws configure` and rerun. The script does not open a login prompt.
 2. **Bootstrap** — Creates the bootstrap stack if it is missing, and syncs it when `template.bootstrap.yaml` has changed (or when you passed `--bootstrap`). Set `SYNCBOT_SKIP_BOOTSTRAP_SYNC=1` to create-if-missing only.
 3. **App stack identity** — Prompts for stage (`test`/`prod`) and stack name; detects an existing CloudFormation stack for update.
-4. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Build/Deploy** (full config + SAM), **CI/CD** (`gh` / GitHub Actions), **Slack API**. Omitting **Build/Deploy** requires an existing stack for tasks that need live outputs.
+4. **Deploy Tasks** — Multi-select menu (comma-separated, default **1** Build/Deploy). **CI/CD** (`gh` / GitHub Actions) and **Slack API** are optional. Omitting **Build/Deploy** requires an existing stack for tasks that need live outputs.
 5. **Configuration** (if Build/Deploy selected) — then **SAM build** (`--build-in-source`) and `sam deploy`. If the live stack still has stack-managed RDS, deploy **aborts** (see [Upgrading AWS](#upgrading-aws-stack-managed-rds-removal)).
 
    | Knob | Behavior |
@@ -95,11 +97,11 @@ Runs from repo root (or `./deploy.sh --env test` with `CLOUD_PROVIDER=aws`). It:
 
 Runs from repo root (or `./deploy.sh --env test` with `CLOUD_PROVIDER=gcp`). It:
 
-1. **Prerequisites** — Verifies **Terraform**, **gcloud**, **python3**, **curl**; optional **gh** handling (same as AWS). **Fails immediately** if there is no active `gcloud` user login or Application Default Credentials; run `gcloud auth login` and `gcloud auth application-default login`, then rerun. The script does not open a login prompt.
+1. **Prerequisites** — Verifies **Terraform**, **gcloud**, **Docker**, **python3**, **curl**; optional **gh** handling (same as AWS). **Fails immediately** unless both the gcloud user login and Application Default Credentials can mint a token (Terraform uses ADC). Run `gcloud auth login` and `gcloud auth application-default login`, then rerun. After the project id is known, the script also checks that this account can see that project. The script does not open a login prompt.
 2. **Project / stage / existing service** — Prompts for project, region, stage; can detect existing Cloud Run for defaults.
-3. **Deploy Tasks** — Multi-select menu (comma-separated, default all): **Build/Deploy** (full Terraform flow), **CI/CD**, **Slack API**. Skipping **Build/Deploy** requires existing Terraform state/outputs for tasks that need them.
-4. **Secrets** (if Build/Deploy is selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `DATA_ENCRYPTION_KEY`. `DATABASE_PASSWORD` and `DATABASE_USER` only when `DATABASE_BACKEND` is mysql or postgresql. Passed as sensitive Terraform variables. Image-only GitHub Actions does not need these in GitHub secrets.
-5. **Terraform** (if Build/Deploy is selected) — Choose **SQLite + Litestream** (default) or a MySQL/PostgreSQL host, Cloud Run warmth (`GCP_CLOUD_RUN_MIN_INSTANCES` default **0**, keep-warm default on), optional `GCP_CLOUD_RUN_IMAGE` (blank uses the hello placeholder; CI replaces it), and log level. Then `terraform init` / `plan` / `apply` in `infra/gcp`. Confirm the plan does **not** create Cloud SQL.
+3. **Deploy Tasks** — Multi-select menu (comma-separated, default **1** Build/Deploy). **CI/CD** and **Slack API** are optional. Skipping **Build/Deploy** requires existing Terraform state/outputs for tasks that need them.
+4. **Secrets** (if Build/Deploy is selected) — Prompts for `SLACK_SIGNING_SECRET`, `SLACK_CLIENT_ID`, `SLACK_CLIENT_SECRET`, and `DATA_ENCRYPTION_KEY`. `DATABASE_PASSWORD` and `DATABASE_USER` only when `DATABASE_BACKEND` is mysql or postgresql. The guided script also asks whether to use Secret Manager (`GCP_USE_SECRET_MANAGER`, default off). When it is off, secrets are Terraform variables injected as Cloud Run env, and an empty `DATA_ENCRYPTION_KEY` is generated and saved to the deploy file. When it is on, Slack secrets and the encryption key go into Secret Manager; an existing encryption-key secret is reused. Image-only GitHub Actions does not need these in GitHub secrets.
+5. **Terraform** (if Build/Deploy is selected) — Choose **SQLite + Litestream** (default) or a MySQL/PostgreSQL host, Cloud Run warmth (`GCP_CLOUD_RUN_MIN_INSTANCES` default **1**, keep-warm default on), optional Secret Manager, and log level. Then `terraform init` / `plan` / `apply` in `infra/gcp`. Confirm the plan does **not** create Cloud SQL. After apply, the script builds `infra/gcp/Dockerfile`, pushes it to Artifact Registry, updates Cloud Run, and waits for `GET /health` then `GET /ready`. Set `GCP_CLOUD_RUN_IMAGE` only if you already have an image and want to skip that build. GitHub Actions is optional.
 6. **Post-deploy** — According to selected tasks: manifest, Slack API, deploy receipt, **`gh`**, `print-bootstrap-outputs.sh`. The receipt includes all configuration, secrets, and Slack URLs. Use `--verbose` to also include the full Terraform variables array and inline Slack manifest.
 
 See [infra/gcp/README.md](../infra/gcp/README.md) for Terraform variables and outputs.
@@ -173,8 +175,9 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 | `GCP_REGION` | Terraform default if unset is `us-central1`. |
 | `GCP_SERVICE_ACCOUNT` | GitHub variable (CI). Deploy service-account email from Terraform output. |
 | `GCP_WORKLOAD_IDENTITY_PROVIDER` | GitHub variable (CI). Full WIF provider resource name from Terraform output. |
-| `GCP_CLOUD_RUN_IMAGE` | Optional, **local Terraform only**. Blank = `gcr.io/cloudrun/hello`; CI replaces it. |
-| `GCP_CLOUD_RUN_MIN_INSTANCES` | `0` (default, free scale-to-zero) or `1` (paid always-on). |
+| `GCP_CLOUD_RUN_IMAGE` | Optional. Skip the local Docker build and point Cloud Run at this image. Blank means `./deploy.sh` builds SyncBot after Terraform apply. |
+| `GCP_CLOUD_RUN_MIN_INSTANCES` | `1` (default, billed always-on) or `0` (free scale-to-zero). |
+| `GCP_USE_SECRET_MANAGER` | Optional. `true` / `false` (default `false`). When true, Slack secrets and `DATA_ENCRYPTION_KEY` live in Secret Manager. When false, they are Cloud Run env from the deploy file. |
 | `ENABLE_KEEP_WARM` | Portable name (also AWS). `true` (default) / `false`. GCP Cloud Scheduler `GET /health`. |
 
 ### Database
@@ -186,7 +189,7 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 | `DATABASE_PORT` | Optional. Empty = engine default (3306 MySQL, 5432 PostgreSQL); TiDB Cloud uses 4000. |
 | `DATABASE_USER` | Required for mysql/postgresql. GitHub **variable**, not a secret. Full username including any TiDB cluster prefix. |
 | `DATABASE_PASSWORD` | Required for mysql/postgresql. **Secret.** Unused for sqlite. |
-| `DATABASE_SCHEMA` | Database name. Convention `syncbot_test` / `syncbot_prod`. Empty in CI → reuse the live stack parameter, or infer on a new stack. Unused for sqlite. |
+| `DATABASE_SCHEMA` | Database name. A non-empty value wins. Empty reuses the live AWS stack or Cloud Run name, or uses `syncbot_test` / `syncbot_prod` on a new install. Unused for sqlite. |
 | `DATABASE_TLS_ENABLED` | Optional. `true` (default outside local) / `false`. |
 | `DATABASE_SSL_CA_PATH` | Optional. CA bundle path; unset uses the system trust store. |
 
@@ -194,17 +197,17 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 
 | Variable | Notes |
 |----------|-------|
-| `DATA_ENCRYPTION_KEY` | Required. **Secret.** Auto-generated and saved back if empty on a local deploy. Back it up — if you lose it, every workspace must reinstall. |
+| `DATA_ENCRYPTION_KEY` | Required. **Secret.** Auto-generated and saved back if empty on a local deploy. On GCP with `GCP_USE_SECRET_MANAGER=true`, an existing Secret Manager value is reused instead of generating a new one. Back it up — if you lose it, every workspace must reinstall. |
 
 ### Optional app settings
 
 | Variable | Notes |
 |----------|-------|
-| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). At DEBUG, logs include `sync.*` traces for message skip, pipeline fan-out, and file share timestamps. |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). At DEBUG, `log_debug()` events include skip, heal, missing bot token, pipeline fan-out, file share timestamps, and `/teams`. `log_info()` covers migration export/import and pair. |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 
-How long uninstalled workspace data is kept, whether federation is on, and which workspaces may publish a Broadcast are set in **Settings** on the primary workspace. Extra managers and whether private Channels may be published are per-workspace Settings on every installed workspace. Those are not environment variables. This instance's federation id is derived from its Ed25519 public key; you do not pin a UUID at deploy time.
+How long uninstalled workspace data is kept and whether federation is on are set in **Settings** on the primary workspace. Extra managers and whether private Channels may be published are per-workspace Settings on every installed workspace. Those are not environment variables. This instance's federation id is derived from its Ed25519 public key; you do not pin a UUID at deploy time.
 
 Leftover deploy env such as `REQUIRE_ADMIN`, `SYNCBOT_FEDERATION_ENABLED`, `SYNCBOT_PUBLIC_URL`, and `SYNCBOT_INSTANCE_ID` is no longer set by SAM or Terraform. If an old process still has them, the app logs a warning and ignores them — federation belongs in **Settings**, and the instance id is a fingerprint of the signing key.
 
@@ -254,7 +257,7 @@ Then set `DATABASE_BACKEND=mysql` (or `postgresql`), `DATABASE_HOST`, `DATABASE_
 
 If `./deploy.sh` or GitHub Actions **aborts** because the CloudFormation stack still contains `RDSInstanceMysql` / `RDSInstancePostgres`, do **not** retry the same update. There is no in-place migrate from stack RDS to TiDB or sqlite.
 
-1. While the old stack is still serving Slack, open Home → **Backup/Restore** and download JSON (`PRIMARY_WORKSPACE` required). Keep the same `DATA_ENCRYPTION_KEY` for the new stack. See [BACKUP_AND_MIGRATION.md](BACKUP_AND_MIGRATION.md).
+1. While the old stack is still serving Slack, open Home → **Backup/Restore** on the primary Workspace and download JSON. Keep the same `DATA_ENCRYPTION_KEY` for the new stack. See [BACKUP_AND_MIGRATION.md](BACKUP_AND_MIGRATION.md).
 2. Delete the CloudFormation **app** stack. RDS `DeletionProtection` may block `delete-stack` until you disable protection or delete the instance in the RDS console — do that **manually** after the backup. Deploy scripts will not disable protection.
 3. Deploy a **new** stack with `DATABASE_BACKEND=mysql` (TiDB / your own host) or `sqlite`. Point Slack at the new Function URL / generated manifest.
 4. Restore the backup JSON onto the empty new database.
@@ -275,13 +278,11 @@ Use this when you already know SAM/CloudFormation or are debugging.
 aws cloudformation deploy \
   --template-file infra/aws/template.bootstrap.yaml \
   --stack-name YOUR_BOOTSTRAP_STACK \
-  --parameter-overrides \
-    GitHubRepository=YOUR_GITHUB_OWNER/YOUR_REPO \
   --capabilities CAPABILITY_NAMED_IAM \
   --region YOUR_AWS_REGION
 ```
 
-Optional: `CreateOIDCProvider=false` if the GitHub OIDC provider already exists. Stack name convention is `syncbot-bootstrap` for bootstrap and `syncbot-test` or `syncbot-prod` for the app stack.
+`GitHubRepository` is optional. Omit it for a local-only deploy, or pass `GitHubRepository=YOUR_GITHUB_OWNER/YOUR_REPO` if you want GitHub Actions OIDC. Optional: `CreateOIDCProvider=false` if the GitHub OIDC provider already exists. Stack name convention is `syncbot-bootstrap` for bootstrap and `syncbot-test` or `syncbot-prod` for the app stack.
 
 **Outputs:**
 
@@ -321,7 +322,7 @@ Because the build no longer runs in a Lambda container, the Makefile asks pip fo
 
 Use **`sam deploy --guided`** the first time if you prefer prompts. Set `Stage` to `test` or `prod` (the [`samconfig.toml`](../samconfig.toml) profiles already do that). For **mysql** or **postgresql** set `DatabaseBackend`, `DatabaseHost`, `DatabaseUser`, `DatabasePassword`, and optional `DatabasePort` (empty uses the engine default; TiDB Cloud often uses **4000**). For **sqlite** set `DatabaseBackend=sqlite` (no host, user, or password). An empty `DatabaseHost` does **not** create RDS.
 
-**`DatabaseSchema` naming:** Use `syncbot_test` or `syncbot_prod` so environments can share one host. The app uses this name exactly; it does **not** append the stage. Match grants for your app user.
+**`DatabaseSchema` naming:** A non-empty value wins. Empty reuses the live stack name, or `syncbot_test` / `syncbot_prod` on a new install. The app uses this name exactly; it does **not** append the stage. Match grants for your app user.
 
 **samconfig:** [`samconfig.toml`](../samconfig.toml) has `test` / `prod` profiles with `Stage` only — pass other parameters via `--parameter-overrides` or the guided script. (CLI config, not a copy-paste guide.)
 
@@ -331,7 +332,7 @@ Use **`sam deploy --guided`** the first time if you prefer prompts. Set `Stage` 
 
 **CloudWatch Logs:** Log retention is set to **30 days** in the SAM template (`RetentionInDays: 30`). Adjust in `infra/aws/template.yaml` if needed.
 
-**Post-deploy migrate (Lambda only):** After `sam deploy`, run Alembic and warm the function (same as CI):
+**Post-deploy migrate (Lambda only):** After `sam deploy`, run Alembic and then ready (federation pulse and Home republish; same as CI):
 
 ```bash
 FUNCTION_ARN=$(aws cloudformation describe-stacks --stack-name YOUR_STACK_NAME \
@@ -339,7 +340,7 @@ FUNCTION_ARN=$(aws cloudformation describe-stacks --stack-name YOUR_STACK_NAME \
 bash infra/aws/scripts/invoke_lambda_migrate.sh "$FUNCTION_ARN"
 ```
 
-`aws lambda invoke` returns success even when the function sets `FunctionError`, so use that helper (or check the invoke metadata yourself). The function timeout is **120 seconds** so a cold start plus Alembic can finish; the helper waits up to 180 seconds for the invoke. The GitHub deploy role and bootstrap policy must allow `lambda:InvokeFunction` on `syncbot-*` functions; re-deploy the **bootstrap** stack if your policy predates that permission.
+`aws lambda invoke` returns success even when the function sets `FunctionError`, so use that helper (or check the invoke metadata yourself). The helper invokes migrate, then `{"action":"ready"}` so peers are pulsed and remembered Home tabs update without a Slack click. The function timeout is **120 seconds** so a cold start plus Alembic can finish; the helper waits up to 180 seconds for each invoke. The GitHub deploy role and bootstrap policy must allow `lambda:InvokeFunction` on `syncbot-*` functions; re-deploy the **bootstrap** stack if your policy predates that permission.
 
 ### 3. GitHub Actions (AWS)
 
@@ -376,7 +377,7 @@ Assume the bootstrap **GitHubDeployRole** (or equivalent) and run `sam build` / 
 
 ---
 
-## GCP — first apply and GitHub (image-only)
+## GCP — first apply and optional GitHub
 
 Warmth, cost, and Cloud SQL upgrade notes live in [infra/gcp/README.md](../infra/gcp/README.md). The first-time script path is the root [README](../README.md).
 
@@ -384,7 +385,7 @@ Warmth, cost, and Cloud SQL upgrade notes live in [infra/gcp/README.md](../infra
 
 - Terraform state is **one local file**: `infra/gcp/terraform.tfstate`. GitHub never runs `terraform apply`. Do **not** apply production over a test state file — you will mutate the same state. This repo does not use Terraform workspaces or a second state path.
 - WIF GitHub vars (`GCP_PROJECT_ID`, `GCP_REGION`, `GCP_SERVICE_ACCOUNT`, `GCP_WORKLOAD_IDENTITY_PROVIDER`) are **repo-level** in the helper: a test apply then a prod apply **overwrites** them. The WIF service account is per-stage.
-- First apply may use `gcr.io/cloudrun/hello`. Slack will not work until **CI pushes a real image** (push to `test` or `prod` with `GITHUB_DEPLOY_TARGET=gcp`).
+- `./deploy.sh` Terraform-creates the Cloud Run service (a public hello image is only the bootstrap so the service can exist), then builds SyncBot and updates the service. Slack Events URL verification needs that image step. GitHub Actions can do the same image update later if you want.
 - Confirm the plan **does not** create Cloud SQL.
 - `--setup-github` / GCP CI/CD does **not** change Cloud Run secrets, database backend, or warmth — only local `terraform apply` does.
 
@@ -394,7 +395,7 @@ GCP-only knobs use a `GCP_` prefix. Shared contract names and portable deploy sw
 
 ### Upgrading GCP (Cloud SQL removal)
 
-If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database. Early Tulsa/sprocktech GCP was unused in production; forks that did apply Cloud SQL must backup before upgrading.
+If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database.
 
 ---
 
@@ -402,13 +403,15 @@ If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform
 
 ### 1. Terraform apply
 
-From `infra/gcp` (or the repo root with paths adjusted). Pass secrets as sensitive Terraform variables. The first apply may use the public hello image; CI replaces it, and Terraform ignores later image changes. `stage` is only `test` or `prod`. Terraform defaults `stage` to `test` if you omit it; pass `-var=stage=prod` for production, and never apply prod over a test state file.
+From `infra/gcp` (or the repo root with paths adjusted). Pass secrets as sensitive Terraform variables. Terraform may create Cloud Run with the public hello image so the service exists; `./deploy.sh` then builds SyncBot and updates the service. Terraform ignores later image changes. `stage` is only `test` or `prod`. Terraform defaults `stage` to `test` if you omit it; pass `-var=stage=prod` for production, and never apply prod over a test state file.
 
 ```bash
 terraform init
-terraform plan -var="project_id=YOUR_PROJECT_ID" -var="github_repo=YOUR_GITHUB_OWNER/YOUR_REPO"
-terraform apply -var="project_id=YOUR_PROJECT_ID" -var="github_repo=YOUR_GITHUB_OWNER/YOUR_REPO"
+terraform plan -var="project_id=YOUR_PROJECT_ID"
+terraform apply -var="project_id=YOUR_PROJECT_ID"
 ```
+
+`github_repo` is optional. Pass `-var=github_repo=YOUR_GITHUB_OWNER/YOUR_REPO` only if you want GitHub Actions WIF. Local `./deploy.sh` builds and pushes the image either way.
 
 Default `database_backend` is `sqlite`. For TiDB / MySQL, pass `-var=database_backend=mysql` plus host, full `database_user` / `DATABASE_USER`, password, and (for TiDB Cloud) port **4000**. Leave `database_port` unset for 3306 (MySQL) or 5432 (PostgreSQL). Capture outputs:
 
@@ -422,7 +425,7 @@ Build the Cloud Run image from the **repository root** (not `infra/gcp/`):
 docker build -f infra/gcp/Dockerfile --platform linux/amd64 .
 ```
 
-### 2. GitHub Actions (GCP)
+### 2. GitHub Actions (GCP, optional)
 
 1. `github_repo` in Terraform must equal `YOUR_GITHUB_OWNER/YOUR_REPO` of **this** GitHub repository (the one with `test`/`prod`), not `F3Nation-Community/slack-syncbot` if you deploy from a fork. WIF is created in the same apply when that variable is set.
 2. Set **`GITHUB_DEPLOY_TARGET=gcp`** at repo level so `deploy-gcp.yml` runs and `deploy-aws.yml` is skipped. Unset `GITHUB_DEPLOY_TARGET` skips Deploy (GCP) (AWS-only forks stay green).
@@ -430,11 +433,11 @@ docker build -f infra/gcp/Dockerfile --platform linux/amd64 .
 
    The interactive `infra/gcp/scripts/deploy.sh` uses the same GitHub `owner/repo` selection as the AWS script (based on git remotes when fork and upstream differ).
 
-**CI is image-only:** Slack secrets and `DATA_ENCRYPTION_KEY` stay on the Cloud Run service from the last `terraform apply`. The workflow builds `infra/gcp/Dockerfile`, pushes to Artifact Registry (`syncbot-${stage}-images/syncbot:${sha}`), and runs `gcloud run services update --image`.
+**CI is image-only:** Slack secrets and `DATA_ENCRYPTION_KEY` stay on the Cloud Run service from the last `terraform apply`. The workflow builds `infra/gcp/Dockerfile`, pushes to Artifact Registry (`syncbot-${stage}-images/syncbot:${sha}`), runs `gcloud run services update --image`, and waits for `GET /health` then `GET /ready`. You do not need this if you deploy with `./deploy.sh`.
 
 ### 3. Ongoing deploys
 
-Push `test` / `prod` (or `workflow_dispatch`) after Terraform exists. Do not pass a new image to later `terraform apply` expecting it to stick — image updates are CI-only.
+Run `./deploy.sh --env test` (or `prod`) to rebuild and update the Cloud Run image. Push `test` / `prod` (or `workflow_dispatch`) only if you opted into GitHub Actions. Do not pass a new image to later `terraform apply` expecting it to stick — Terraform ignores the running image.
 
 ---
 
@@ -480,7 +483,7 @@ See also [Sharing infrastructure across apps](#sharing-infrastructure-across-app
 
 Schema lives under `syncbot/db/alembic/`. **`alembic upgrade head`** runs:
 
-- **AWS (existing SQL):** After `sam deploy`, the workflow invokes the Lambda with `{"action":"migrate"}` (migrations + warm instance). The guided script does the same.
+- **AWS (existing SQL):** After `sam deploy`, the workflow invokes the Lambda with `{"action":"migrate"}` then `{"action":"ready"}` (migrations, federation pulse, Home republish). The guided script does the same.
 - **AWS (sqlite):** The Litestream wrapper also runs Alembic once per new execution environment after restore. Keep the post-deploy migrate invoke so deploys upgrade the replica.
 - **Cloud Run / `python app.py`:** At process startup before the server listens.
 
@@ -488,7 +491,7 @@ Schema lives under `syncbot/db/alembic/`. **`alembic upgrade head`** runs:
 
 ## Post-deploy: Slack deferred modal flows (manual smoke test)
 
-After deploying a build that changes Slack listener wiring, verify **in the deployed workspace** (not only local dev) that modals using custom interaction responses still work. These flows rely on `view_submission` acks (`response_action`: `update`, `errors`, or `push`) being returned in the **first** Lambda response:
+After deploying a build that changes Slack listener wiring, verify **in the deployed workspace** (not only local dev) that modals using custom interaction responses still work. These flows rely on `view_submission` acks (`response_action`: `update`, `errors`, or `push`) being returned in the **first** HTTP response:
 
 1. **Create Sync** — Open **Create Sync**, choose participation and a Channel on the same screen, then **Create Sync**. Create a Sync, then Create Sync on that same channel into another group and confirm it is accepted. A channel that already participates in another Channel Sync must still be accepted.
 2. **Join Sync** — Open **Join Sync** from an available relationship, choose participation and a local Channel on the same screen, then **Join Sync**. A channel that already participates in another Channel Sync must still be accepted, while trying to join the same workspace to the same published source twice must show a field error.

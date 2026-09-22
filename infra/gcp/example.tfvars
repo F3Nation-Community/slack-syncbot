@@ -9,15 +9,18 @@ stage      = "test"
 # sqlite (default, Litestream + GCS), mysql, or postgresql
 database_backend = "sqlite"
 
-# Bootstrap image; CI replaces it. Terraform ignores subsequent image changes.
+# Bootstrap only. ./deploy.sh builds SyncBot and updates Cloud Run after apply.
 cloud_run_image = "gcr.io/cloudrun/hello"
 
-# 0 = free/best-effort (default). 1 = paid always-on for Slack 3s.
-cloud_run_min_instances = 0
+# 0 = scale-to-zero (cheaper). 1 = always-on (default, Slack 3s).
+cloud_run_min_instances = 1
 enable_keep_warm        = true
 
-# owner/repo of the GitHub repo that will push to test/prod (your fork, not necessarily sprocktech/syncbot)
-github_repo = "YOUR_GITHUB_OWNER/YOUR_REPO"
+# Optional GitHub Actions WIF. Empty skips WIF; local ./deploy.sh still builds and pushes.
+github_repo = ""
+
+# Optional Secret Manager for Slack secrets and DATA_ENCRYPTION_KEY (billed). Default false.
+use_secret_manager = false
 
 slack_signing_secret = "replace-me"
 slack_client_id      = "111.222"

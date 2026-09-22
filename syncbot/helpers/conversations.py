@@ -25,7 +25,6 @@ Imports submodules only (``constants``, ``helpers._cache``, ``helpers.core``,
 ``helpers/sync_cleanup.py``.
 """
 
-import logging
 import os
 import urllib.parse
 
@@ -36,9 +35,8 @@ import constants
 from helpers.core import safe_get
 from helpers.slack_api import get_own_bot_user_id
 from helpers.workspace_settings import allow_private_channels
+from logger import log_warning
 from slack_manifest_scopes import USER_PERMISSION_GROUPS
-
-_logger = logging.getLogger(__name__)
 
 # Slack errors that mean "this bot cannot see the channel", which for a private
 # channel is the expected answer rather than a failure.
@@ -72,7 +70,7 @@ def _installation_store():
     try:
         oauth_flow = get_oauth_flow()
     except Exception as exc:
-        _logger.warning(f"installation store unavailable: {exc}")
+        log_warning("installation_store_unavailable", error=str(exc))
         return None
     if oauth_flow is None:
         return None
@@ -89,7 +87,7 @@ def _find_user_installation(team_id: str | None, user_id: str | None):
     try:
         return store.find_installation(enterprise_id=None, team_id=team_id, user_id=user_id)
     except Exception as exc:
-        _logger.warning(f"find_installation failed for team {team_id}: {exc}")
+        log_warning("find_installation_failed_for_team", team_id=team_id, error=str(exc))
         return None
 
 
@@ -131,7 +129,7 @@ def clear_user_authorization(team_id: str | None, user_id: str | None) -> bool:
         store.delete_installation(enterprise_id=None, team_id=team_id, user_id=user_id)
         return True
     except Exception as exc:
-        _logger.warning(f"clear_user_authorization failed for team {team_id}: {exc}")
+        log_warning("clear_user_authorization_failed_for_team", team_id=team_id, error=str(exc))
         return False
 
 
@@ -150,7 +148,7 @@ def clear_workspace_installations(team_id: str | None) -> bool:
         store.delete_all(enterprise_id=None, team_id=team_id)
         return True
     except Exception as exc:
-        _logger.warning(f"clear_workspace_installations failed for team {team_id}: {exc}")
+        log_warning("clear_workspace_installations_failed_for_team", team_id=team_id, error=str(exc))
         return False
 
 
@@ -264,6 +262,24 @@ def _channel_visibility(client: WebClient, channel_id: str, *, team_id: str | No
         ) from exc
 
     channel = safe_get(response, "channel") or {}
+    return bool(channel.get("is_private")), bool(channel.get("is_member"))
+
+
+def inspect_bot_channel_access(client: WebClient, channel_id: str) -> tuple[bool, bool]:
+    """Return ``(is_private, is_member)`` without raising.
+
+    A Channel the bot cannot see is treated as private and not a member, so
+    restore can leave it paused instead of calling ``conversations.join``.
+    """
+    if not channel_id:
+        return True, False
+    try:
+        response = client.conversations_info(channel=channel_id)
+    except Exception:
+        return True, False
+    channel = safe_get(response, "channel")
+    if not isinstance(channel, dict):
+        return True, False
     return bool(channel.get("is_private")), bool(channel.get("is_member"))
 
 

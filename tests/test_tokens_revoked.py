@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from handlers.tokens import handle_app_uninstalled, handle_tokens_revoked
 
-WORKSPACE = SimpleNamespace(id=10, team_id="T1", workspace_name="WS", bot_token="enc", deleted_at=None)
+WORKSPACE = SimpleNamespace(id=10, team_id="T1", workspace_name="WS", deleted_at=None)
 
 
 def _body(*, oauth=None, bot=None):
@@ -20,7 +20,7 @@ class TestTokensRevokedOauthOnly:
         with (
             patch("handlers.tokens.helpers.clear_user_authorization", return_value=True) as clear,
             patch("handlers.tokens._republish_home_after_user_revoke") as republish,
-            patch("handlers.tokens._uninstall_workspace") as uninstall,
+            patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
         ):
             handle_tokens_revoked(_body(oauth=["U9"]), MagicMock(), MagicMock(), {})
 
@@ -33,7 +33,7 @@ class TestTokensRevokedOauthOnly:
         with (
             patch("handlers.tokens.helpers.clear_user_authorization") as clear,
             patch("handlers.tokens._republish_home_after_user_revoke") as republish,
-            patch("handlers.tokens._uninstall_workspace") as uninstall,
+            patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
             patch("handlers.tokens.DbManager.get_record", return_value=WORKSPACE),
             patch("handlers.tokens._workspace_bot_is_alive", return_value=False),
         ):
@@ -47,7 +47,7 @@ class TestTokensRevokedOauthOnly:
         with (
             patch("handlers.tokens.helpers.clear_user_authorization", return_value=True) as clear,
             patch("handlers.tokens._republish_home_after_user_revoke") as republish,
-            patch("handlers.tokens._uninstall_workspace") as uninstall,
+            patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
             patch("handlers.tokens.DbManager.get_record", return_value=WORKSPACE),
             patch("handlers.tokens._workspace_bot_is_alive", return_value=True),
         ):
@@ -61,7 +61,7 @@ class TestTokensRevokedOauthOnly:
 
 class TestAppUninstalled:
     def test_wipes_installations_and_pauses_the_workspace(self):
-        with patch("handlers.tokens._uninstall_workspace") as uninstall:
+        with patch("handlers.tokens.helpers.uninstall_workspace") as uninstall:
             handle_app_uninstalled(
                 {"team_id": "T1", "event": {"type": "app_uninstalled"}},
                 MagicMock(),
@@ -74,13 +74,13 @@ class TestAppUninstalled:
 
 class TestUninstallWorkspace:
     def test_uses_bolt_delete_all_then_soft_deletes(self):
-        from handlers.tokens import _uninstall_workspace
+        from helpers.workspace import uninstall_workspace
 
         with (
-            patch("handlers.tokens.helpers.clear_workspace_installations") as purge,
-            patch("handlers.tokens._soft_delete_uninstalled_workspace") as soft,
+            patch("helpers.conversations.clear_workspace_installations") as purge,
+            patch("helpers.workspace._soft_delete_uninstalled_workspace") as soft,
         ):
-            _uninstall_workspace("T1")
+            uninstall_workspace("T1")
 
         purge.assert_called_once_with("T1")
         soft.assert_called_once_with("T1")

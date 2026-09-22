@@ -59,6 +59,14 @@ prereqs_hint_gcloud() {
   echo "  gcloud CLI reference: https://cloud.google.com/sdk/gcloud/reference"
 }
 
+prereqs_hint_docker() {
+  echo "Install Docker (GCP local deploys build the Cloud Run image on this machine):"
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) echo "  brew install --cask docker" ;;
+    *) echo "  https://docs.docker.com/get-docker/" ;;
+  esac
+}
+
 prereqs_hint_gh_cli() {
   echo "Install GitHub CLI (gh):"
   case "$(uname -s 2>/dev/null)" in
@@ -451,24 +459,24 @@ _prompt_deploy_tasks_parsechoices() {
 prompt_deploy_tasks_aws() {
   echo "=== Deploy Tasks ==="
   printf '  1) %s\n' "Build/Deploy - SAM build + deploy"
-  printf '  2) %s\n' "CI/CD - GitHub Actions configuration"
+  printf '  2) %s\n' "CI/CD - GitHub Actions configuration (optional)"
   printf '  3) %s\n' "Slack API - Configure Slack app via API"
-  local default_all="1,2,3"
+  local default_build="1"
   local choices=""
-  read -r -e -p "Select tasks (comma-separated) [$default_all]: " choices
-  choices="${choices:-$default_all}"
+  read -r -e -p "Select tasks (comma-separated) [$default_build]: " choices
+  choices="${choices:-$default_build}"
   _prompt_deploy_tasks_parsechoices "$choices" TASK_BUILD_DEPLOY TASK_CICD TASK_SLACK_API
 }
 
 prompt_deploy_tasks_gcp() {
   echo "=== Deploy Tasks ==="
   printf '  1) %s\n' "Build/Deploy - Terraform plan + apply"
-  printf '  2) %s\n' "CI/CD - GitHub Actions configuration"
+  printf '  2) %s\n' "CI/CD - GitHub Actions configuration (optional)"
   printf '  3) %s\n' "Slack API - Configure Slack app via API"
-  local default_all="1,2,3"
+  local default_build="1"
   local choices=""
-  read -r -e -p "Select tasks (comma-separated) [$default_all]: " choices
-  choices="${choices:-$default_all}"
+  read -r -e -p "Select tasks (comma-separated) [$default_build]: " choices
+  choices="${choices:-$default_build}"
   _prompt_deploy_tasks_parsechoices "$choices" TASK_BUILD_DEPLOY TASK_CICD TASK_SLACK_API
 }
 

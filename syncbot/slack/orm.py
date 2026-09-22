@@ -1,12 +1,10 @@
 import json
-import logging
 from dataclasses import dataclass, field
 from typing import Any
 
 from helpers import format_error_dm, get_user_id_from_body, safe_get
 from helpers.slack_api import slack_error_code as _slack_error_code
-
-logger = logging.getLogger(__name__)
+from logger import log_debug, log_error, log_warning
 
 _MODAL_EXPIRED_TRIGGER_DM = "SyncBot could not open that window in time. Please click the button again."
 
@@ -39,7 +37,7 @@ def _notify_expired_trigger(
     try:
         client.chat_postMessage(channel=user_id, text=text)
     except Exception as dm_exc:
-        logger.warning("modal_open_timeout_dm_failed", extra={"error": str(dm_exc)})
+        log_warning("modal_open_timeout_dm_failed", error=str(dm_exc))
 
 
 def open_or_push_view(
@@ -60,11 +58,8 @@ def open_or_push_view(
             return client.views_push(trigger_id=trigger_id, view=view)
         return client.views_open(trigger_id=trigger_id, view=view)
     except Exception as e:
-        logger.error(
-            "modal_open_or_push_failed",
-            extra={"callback_id": callback_id, "mode": new_or_add, "error": str(e)},
-        )
-        logger.debug("modal_view_payload", extra={"view": json.dumps(view, indent=2)})
+        log_error("modal_open_or_push_failed", callback_id=callback_id, mode=new_or_add, error=str(e))
+        log_debug("modal_view_payload", view=json.dumps(view, indent=2))
         _notify_expired_trigger(client, e, body, callback_id=callback_id, mode=new_or_add)
         return None
 

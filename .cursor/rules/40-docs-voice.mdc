@@ -12,5 +12,6 @@ Match README: friendly, helpful, explanatory. Full sentences (do not drop “the
 
 - Stage is only `test` or `prod`. Write `--env test` (or `prod`), `slack-manifest_test.json`, `syncbot_test`. Do not invent `YOURSTAGE`.
 - Keep `YOUR_*` for values that really vary (region, host, username).
+- Example Slack names are generic: `Workspace A`, `Workspace B`, `#general`, `#announcements`, `Ada Lovelace`. `Partner Org` is a connection label, not a workspace name. Do not copy operator screenshots or community-specific names into docs.
 - Prefer “set up” (verb) over “setup” when you mean the action.
 - Do not document deploy aliases (`AWS_DATABASE_MODE`, `database_mode`, …) in operator docs; canonical name is `DATABASE_BACKEND`.

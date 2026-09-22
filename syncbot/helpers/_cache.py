@@ -1,7 +1,7 @@
 """Lightweight in-process TTL cache.
 
-Lambda containers are reused across invocations, so a short TTL cache
-avoids redundant DB queries for the same sync list within a warm container.
+A warm process is reused across requests, so a short TTL cache
+avoids redundant DB queries for the same lookups.
 """
 
 import contextvars

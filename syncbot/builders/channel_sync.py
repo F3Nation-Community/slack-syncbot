@@ -1,7 +1,5 @@
 """Channel sync form builders."""
 
-import logging
-
 import helpers
 from builders._common import (
     _format_channel_ref,
@@ -15,8 +13,6 @@ from slack.blocks import (
 from slack.blocks import (
     section,
 )
-
-_logger = logging.getLogger(__name__)
 
 
 def _format_other_channel_ref(channel, workspace, *, paused: bool) -> str:
@@ -89,8 +85,6 @@ def _build_inline_channel_sync(
         elif my_channel and not other_channels:
             waiting_syncs.append((sync, my_channel))
         elif not my_channel and other_channels:
-            if sync.sync_mode == "direct" and sync.target_workspace_id != workspace_record.id:
-                continue
             publishers = [c for c in other_channels if helpers.channel_publishes(c)]
             if not publishers:
                 continue
@@ -159,7 +153,7 @@ def _build_inline_channel_sync(
         if context_parts:
             blocks.append(block_context("\n".join(context_parts)))
         teardown_btn = orm.ButtonElement(
-            label=":octagonal_sign: Leave Sync",
+            label=":wave: Leave Sync",
             action=f"{actions.CONFIG_LEAVE_SYNC}_{sync.id}",
             value=str(sync.id),
             style="danger",
@@ -181,7 +175,7 @@ def _build_inline_channel_sync(
                 value=f"c:{my_ch.id}",
             )
             teardown_btn = orm.ButtonElement(
-                label=":octagonal_sign: Leave Sync",
+                label=":wave: Leave Sync",
                 action=f"{actions.CONFIG_LEAVE_SYNC}_{sync.id}",
                 value=str(sync.id),
                 style="danger",
@@ -192,7 +186,7 @@ def _build_inline_channel_sync(
                 section(f":outbox_tray: <#{my_ch.channel_id}> — _no publishers remaining; this Sync has ended_")
             )
             teardown_btn = orm.ButtonElement(
-                label=":octagonal_sign: Leave Sync",
+                label=":wave: Leave Sync",
                 action=f"{actions.CONFIG_LEAVE_SYNC}_{sync.id}",
                 value=str(sync.id),
                 style="danger",

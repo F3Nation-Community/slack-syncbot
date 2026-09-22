@@ -1,20 +1,18 @@
 """Atomic claim/complete/release for Slack Events API ``event_id`` dedup.
 
-Slack delivers events at least once (retries, queued cold starts). Handlers
+Slack delivers events at least once (retries). Handlers
 claim ``(team_id, event_id)`` from the envelope before side effects.
 """
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import IntegrityError
 
 from db.schemas import ProcessedEvent
-
-_logger = logging.getLogger(__name__)
+from logger import log_info
 
 STATUS_PENDING = "pending"
 STATUS_COMPLETE = "complete"
@@ -141,10 +139,7 @@ def run_claimed(body: dict, work: Callable[[], object]) -> None:
         return
     team_id, event_id = ident
     if not claim_event(team_id, event_id):
-        _logger.info(
-            "skipping_duplicate_slack_event",
-            extra={"team_id": team_id, "event_id": event_id},
-        )
+        log_info("skipping_duplicate_slack_event", team_id=team_id, event_id=event_id)
         return
     try:
         ready = work()

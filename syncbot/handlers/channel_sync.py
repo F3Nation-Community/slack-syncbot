@@ -1,7 +1,6 @@
 """Channel sync handlers — create, join, edit, pause, resume, leave."""
 
 import contextlib
-import logging
 from datetime import UTC, datetime
 from logging import Logger
 
@@ -21,12 +20,10 @@ from handlers._common import (
     _parse_private_metadata,
     _sanitize_text,
 )
+from logger import log_debug, log_error, log_info, log_warning
 from slack import actions, orm
 from slack.blocks import context as block_context
 from slack.blocks import section
-
-_logger = logging.getLogger(__name__)
-
 
 _PARTICIPATION_ACTIONS = (actions.CONFIG_SYNC_PARTICIPATION,)
 _CREATE_CHANNEL_ACTIONS = (actions.CONFIG_CREATE_SYNC_SELECT,)
@@ -385,7 +382,7 @@ def _looks_private(client: WebClient, channel_id: str) -> bool:
     try:
         conv_info = client.conversations_info(channel=channel_id)
     except Exception as exc:
-        _logger.debug(f"_looks_private: conversations_info failed for {channel_id}: {exc}")
+        log_debug("looks_private_conversations_info_failed_for", channel_id=channel_id, error=str(exc))
         return True
     return bool(helpers.safe_get(conv_info, "channel", "is_private"))
 
@@ -451,7 +448,7 @@ def _validate_channel_selection(
             is_private = bool(helpers.safe_get(conv_info, "channel", "is_private"))
         except Exception as e:
             # Fail closed: an unreadable channel is one the bot cannot join either.
-            _logger.warning(f"_validate_channel_selection: conversations_info failed for {channel_id}: {e}")
+            log_warning("validate_channel_selection_conversations_info_failed_for", channel_id=channel_id, error=str(e))
             return {
                 "response_action": "errors",
                 "errors": {action_id: "SyncBot could not read that Channel. Pick a public Channel it can join."},
@@ -512,7 +509,7 @@ def handle_create_sync(
     try:
         group_id = int(raw_group_id)
     except (TypeError, ValueError):
-        _logger.warning(f"create_sync: invalid group_id: {raw_group_id!r}")
+        log_warning("create_sync", raw_group_id=raw_group_id)
         return
 
     orm.BlockView(blocks=_build_create_sync_blocks(team_id=workspace_record.team_id, group_id=group_id)).post_modal(
@@ -542,7 +539,7 @@ def handle_create_sync_submit_ack(
     group_id = metadata.get("group_id")
 
     if not group_id:
-        _logger.warning("create_sync_submit: missing group_id in metadata")
+        log_warning("create_sync_submit", reason="missing group_id in metadata")
         return None
 
     channel_id, picker_action = _selected_channel(body, _CREATE_CHANNEL_ACTIONS)
@@ -599,19 +596,21 @@ def handle_create_sync_submit_work(
     )
 
     try:
+        from federation.replicate import mint_uid
+
         sync_record = schemas.Sync(
             title=_sanitize_text(channel_name),
             description=None,
             group_id=group_id,
             sync_mode="group",
-            target_workspace_id=None,
-            publisher_workspace_id=workspace_record.id,
+            uid=mint_uid(),
         )
         DbManager.create_record(sync_record)
 
         sync_channel_record = schemas.SyncChannel(
             sync_id=sync_record.id,
             channel_id=channel_id,
+            channel_name=channel_name if channel_name and channel_name != channel_id else None,
             workspace_id=workspace_record.id,
             created_at=datetime.now(UTC),
             reaction_style=reaction_style,
@@ -620,7 +619,7 @@ def handle_create_sync_submit_work(
         )
         DbManager.create_record(sync_channel_record)
     except Exception as e:
-        _logger.error(f"Failed to create Sync for channel {channel_id}: {e}")
+        log_error("failed_to_create_sync_for_channel", channel_id=channel_id, error=str(e))
         return
 
     helpers.invalidate_channel_memberships(channel_id)
@@ -653,25 +652,29 @@ def handle_create_sync_submit_work(
     try:
         client.chat_postMessage(channel=channel_id, text=_create_sync_notice(admin_name, publishes, subscribes))
     except Exception as exc:
-        _logger.warning(
-            "create_sync_announce_failed",
-            extra={"channel_id": channel_id, "sync_id": sync_record.id, "error": str(exc)},
-        )
+        log_warning("create_sync_announce_failed", channel_id=channel_id, sync_id=sync_record.id, error=str(exc))
 
-    _logger.info(
+    log_info(
         "sync_created",
-        extra={
-            "workspace_id": workspace_record.id,
-            "channel_id": channel_id,
-            "group_id": group_id,
-            "sync_id": sync_record.id,
-            "publishes": publishes,
-            "subscribes": subscribes,
-        },
+        workspace_id=workspace_record.id,
+        channel_id=channel_id,
+        group_id=group_id,
+        sync_id=sync_record.id,
+        publishes=publishes,
+        subscribes=subscribes,
     )
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
+
+    try:
+        from federation.replicate import replicate_sync_channel_upsert
+
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
+        if group:
+            replicate_sync_channel_upsert(sync_record, group, sync_channel_record, workspace_record)
+    except Exception:
+        log_warning("federation_replicate_sync_create_failed", sync_id=sync_record.id)
 
 
 def handle_leave_sync(
@@ -683,7 +686,7 @@ def handle_leave_sync(
     """Show a confirmation modal before leaving a channel sync."""
     sync_id = _sync_id_from_action(body, (actions.CONFIG_LEAVE_SYNC,))
     if not sync_id:
-        _logger.warning("leave_sync_invalid_id", extra={"action_id": helpers.safe_get(body, "actions", 0, "action_id")})
+        log_warning("leave_sync_invalid_id", action_id=helpers.safe_get(body, "actions", 0, "action_id"))
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -739,7 +742,7 @@ def handle_leave_sync(
             orm.ActionsBlock(
                 elements=[
                     orm.ButtonElement(
-                        label=":octagonal_sign: Leave Sync",
+                        label=":wave: Leave Sync",
                         action=actions.CONFIG_LEAVE_SYNC_CONFIRM,
                         value=str(sync_id),
                         style="danger",
@@ -776,7 +779,7 @@ def handle_leave_sync_confirm(
     meta = _parse_private_metadata(body)
     sync_id = meta.get("sync_id")
     if not sync_id:
-        _logger.warning("leave_sync_confirm: missing sync_id in metadata")
+        log_warning("leave_sync_confirm", reason="missing sync_id in metadata")
         return
 
     sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
@@ -794,35 +797,44 @@ def handle_leave_sync_confirm(
     for sync_channel in all_channels:
         try:
             channel_ws = helpers.get_workspace_by_id(sync_channel.workspace_id)
-            if not channel_ws or not channel_ws.bot_token:
+            if not channel_ws or not helpers.get_bot_token(channel_ws):
                 continue
             name = admin_name if sync_channel.workspace_id == workspace_record.id else admin_label
             if end_sync:
-                msg = f":octagonal_sign: *{name}* left this Sync. The Sync has ended."
+                msg = f":wave: *{name}* left this Sync. The Sync has ended."
             else:
-                msg = f":octagonal_sign: *{name}* left this Sync."
-            ws_client = WebClient(token=helpers.decrypt_bot_token(channel_ws.bot_token))
+                msg = f":wave: *{name}* left this Sync."
+            ws_client = WebClient(token=helpers.get_bot_token(channel_ws))
             helpers.notify_synced_channels(ws_client, [sync_channel.channel_id], msg)
         except Exception as e:
-            _logger.warning(f"Failed to notify channel {sync_channel.channel_id}: {e}")
+            log_warning("failed_to_notify_channel", channel_id=sync_channel.channel_id, error=str(e))
 
     group_id = sync_record.group_id if sync_record else None
     if last_publisher:
+        if group_id and sync_record:
+            try:
+                from federation.replicate import replicate_sync_ended
+
+                group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
+                if group:
+                    pairs = []
+                    for sync_channel in all_channels:
+                        pairs.append((sync_channel, helpers.get_workspace_by_id(sync_channel.workspace_id)))
+                    replicate_sync_ended(sync_record, group, pairs)
+            except Exception:
+                log_warning("federation_replicate_sync_leave_failed", sync_id=sync_id)
         for sync_channel in all_channels:
             try:
                 member_ws = helpers.get_workspace_by_id(sync_channel.workspace_id)
-                if member_ws and member_ws.bot_token:
-                    member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
+                if member_ws and helpers.get_bot_token(member_ws):
+                    member_client = WebClient(token=helpers.get_bot_token(member_ws))
                     member_client.conversations_leave(channel=sync_channel.channel_id)
             except Exception as e:
-                _logger.warning(f"Failed to leave channel {sync_channel.channel_id}: {e}")
+                log_warning("failed_to_leave_channel", channel_id=sync_channel.channel_id, error=str(e))
         try:
             helpers.purge_sync(sync_id)
         except Exception as exc:
-            _logger.error(
-                "leave_sync_failed",
-                extra={"sync_id": sync_id, "group_id": group_id, "error": str(exc)},
-            )
+            log_error("leave_sync_failed", sync_id=sync_id, group_id=group_id, error=str(exc))
             with contextlib.suppress(Exception):
                 helpers.notify_admins_dm(
                     client,
@@ -836,28 +848,40 @@ def handle_leave_sync_confirm(
             return
     else:
         if my_channel:
+            if group_id and sync_record:
+                try:
+                    from federation.replicate import replicate_sync_channel_remove
+
+                    group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
+                    if group:
+                        replicate_sync_channel_remove(
+                            sync_record,
+                            group,
+                            team_id=workspace_record.team_id,
+                            channel_id=my_channel.channel_id,
+                        )
+                except Exception:
+                    log_warning("federation_replicate_sync_leave_failed", sync_id=sync_id)
             helpers.purge_sync_channels([my_channel])
             try:
                 client.conversations_leave(channel=my_channel.channel_id)
             except Exception as e:
-                _logger.warning(f"Failed to leave channel {my_channel.channel_id}: {e}")
+                log_warning("failed_to_leave_channel", channel_id=my_channel.channel_id, error=str(e))
         if not other_channels:
             helpers.purge_sync(sync_id)
 
-    _logger.info(
+    log_info(
         "sync_left",
-        extra={
-            "sync_id": sync_id,
-            "workspace_id": workspace_record.id,
-            "channel_id": my_channel.channel_id if my_channel else None,
-            "ended": end_sync,
-        },
+        sync_id=sync_id,
+        workspace_id=workspace_record.id,
+        channel_id=my_channel.channel_id if my_channel else None,
+        ended=end_sync,
     )
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     if group_id:
         _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
-    _close_modal_done(client, body, ":octagonal_sign: You left the Sync. You can close this now.")
+    _close_modal_done(client, body, ":wave: You left the Sync. You can close this now.")
 
 
 def _open_pause_resume_confirm(
@@ -875,9 +899,7 @@ def _open_pause_resume_confirm(
 ) -> None:
     sync_id = _sync_id_from_action(body, prefixes)
     if not sync_id:
-        _logger.warning(
-            f"{log_event}_invalid_id", extra={"action_id": helpers.safe_get(body, "actions", 0, "action_id")}
-        )
+        log_warning(f"{log_event}_invalid_id", action_id=helpers.safe_get(body, "actions", 0, "action_id"))
         return
     trigger_id = helpers.safe_get(body, "trigger_id")
     if not trigger_id:
@@ -954,7 +976,7 @@ def _toggle_sync_status(
     if not sync_id:
         sync_id = _sync_id_from_action(body, (actions.CONFIG_PAUSE_SYNC, actions.CONFIG_RESUME_SYNC))
     if not sync_id:
-        _logger.warning(f"{log_event}_invalid_id")
+        log_warning(f"{log_event}_invalid_id")
         return
 
     auth_result = _get_authorized_workspace(body, client, context, log_event)
@@ -972,9 +994,7 @@ def _toggle_sync_status(
         None,
     )
     if not my_sync_channel:
-        _logger.warning(
-            f"{log_event}_no_channel_for_workspace", extra={"sync_id": sync_id, "workspace_id": workspace_record.id}
-        )
+        log_warning(f"{log_event}_no_channel_for_workspace", sync_id=sync_id, workspace_id=workspace_record.id)
         return
 
     DbManager.update_records(
@@ -983,10 +1003,11 @@ def _toggle_sync_status(
         {schemas.SyncChannel.status: target_status},
     )
     helpers.invalidate_sync_fanout_for_syncs([sync_id])
+    my_sync_channel.status = target_status
 
     try:
-        if workspace_record.bot_token:
-            ws_client = WebClient(token=helpers.decrypt_bot_token(workspace_record.bot_token))
+        if helpers.get_bot_token(workspace_record):
+            ws_client = WebClient(token=helpers.get_bot_token(workspace_record))
             if target_status == "active":
                 try:
                     helpers.ensure_bot_in_conversation(
@@ -997,19 +1018,16 @@ def _toggle_sync_status(
                         context=context,
                     )
                 except Exception as exc:
-                    _logger.warning(
-                        "resume_sync_membership_failed",
-                        extra={"channel_id": my_sync_channel.channel_id, "error": str(exc)},
-                    )
+                    log_warning("resume_sync_membership_failed", channel_id=my_sync_channel.channel_id, error=str(exc))
             helpers.notify_synced_channels(
                 ws_client,
                 [my_sync_channel.channel_id],
                 f":{emoji}: *{admin_name}* {verb} this Sync.",
             )
     except Exception as e:
-        _logger.warning(f"Failed to notify channel {my_sync_channel.channel_id} about {verb}: {e}")
+        log_warning("failed_to_notify_channel_about", channel_id=my_sync_channel.channel_id, verb=verb, error=str(e))
 
-    _logger.info(log_event, extra={"sync_id": sync_id, "sync_channel_id": my_sync_channel.id})
+    log_info(log_event, sync_id=sync_id, sync_channel_id=my_sync_channel.id)
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     sync_record = DbManager.get_record(schemas.Sync, id=sync_id)
@@ -1017,6 +1035,14 @@ def _toggle_sync_status(
         _refresh_group_member_homes(
             sync_record.group_id, workspace_record.id if workspace_record else 0, logger, context=context
         )
+        try:
+            from federation.replicate import replicate_sync_channel_upsert
+
+            group = DbManager.get_record(schemas.WorkspaceGroup, id=sync_record.group_id)
+            if group:
+                replicate_sync_channel_upsert(sync_record, group, my_sync_channel, workspace_record)
+        except Exception:
+            log_warning("federation_replicate_sync_status_failed", sync_id=sync_id)
     _close_modal_done(client, body, done_message)
 
 
@@ -1097,7 +1123,7 @@ def handle_join_sync(
     trigger_id = helpers.safe_get(body, "trigger_id")
     sync_id = helpers.safe_get(body, "actions", 0, "value")
     if not sync_id:
-        _logger.warning("join_sync: missing sync_id")
+        log_warning("join_sync", reason="missing sync_id")
         return
 
     sync_record = DbManager.get_record(schemas.Sync, int(sync_id))
@@ -1157,7 +1183,7 @@ def handle_join_sync_submit_ack(
 
     metadata = _parse_private_metadata(body)
     if not metadata.get("sync_id"):
-        _logger.warning("join_sync_submit: missing sync_id")
+        log_warning("join_sync_submit", reason="missing sync_id")
         return None
 
     channel_id, picker_action = _selected_channel(body, _JOIN_CHANNEL_ACTIONS)
@@ -1189,7 +1215,7 @@ def handle_join_sync_submit(
     sync_id = metadata.get("sync_id")
 
     if not sync_id:
-        _logger.warning("join_sync_submit: missing sync_id")
+        log_warning("join_sync_submit", reason="missing sync_id")
         return
 
     channel_id, picker_action = _selected_channel(body, _JOIN_CHANNEL_ACTIONS)
@@ -1224,14 +1250,7 @@ def handle_join_sync_submit(
         ],
     )
     if existing_sub:
-        _logger.info(
-            "join_sync_duplicate_skip",
-            extra={
-                "sync_id": sync_id,
-                "channel_id": channel_id,
-                "workspace_id": workspace_record.id,
-            },
-        )
+        log_info("join_sync_duplicate_skip", sync_id=sync_id, channel_id=channel_id, workspace_id=workspace_record.id)
         builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         if group_id:
             _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
@@ -1245,11 +1264,18 @@ def handle_join_sync_submit(
 
     reaction_style = _parse_reaction_fields(body)
     publishes, subscribes = _participation_from_body(body)
+    channel_name, _is_private = helpers.lookup_channel_meta(
+        channel_id,
+        workspace_record,
+        user_token=helpers.get_user_token(team_id, acting_user_id),
+        client=client,
+    )
 
     try:
         sync_channel_record = schemas.SyncChannel(
             sync_id=sync_id,
             channel_id=channel_id,
+            channel_name=channel_name if channel_name and channel_name != channel_id else None,
             workspace_id=workspace_record.id,
             created_at=datetime.now(UTC),
             reaction_style=reaction_style,
@@ -1258,7 +1284,7 @@ def handle_join_sync_submit(
         )
         DbManager.create_record(sync_channel_record)
     except Exception as e:
-        _logger.error(f"Failed to join channel sync {sync_id}: {e}")
+        log_error("failed_to_join_channel_sync", sync_id=sync_id, error=str(e))
         return
 
     helpers.invalidate_sync_fanout_for_syncs([sync_id])
@@ -1311,13 +1337,13 @@ def handle_join_sync_submit(
                 ),
             )
         except Exception as exc:
-            _logger.debug(f"join_sync: failed to notify joining channel {channel_id}: {exc}")
+            log_debug("join_sync", channel_id=channel_id, error=str(exc))
 
         for peer in peer_channels:
             try:
                 peer_ws = helpers.get_workspace_by_id(peer.workspace_id)
                 if peer_ws:
-                    pub_client = WebClient(token=helpers.decrypt_bot_token(peer_ws.bot_token))
+                    pub_client = WebClient(token=helpers.get_bot_token(peer_ws))
                     pub_client.chat_postMessage(
                         channel=peer.channel_id,
                         text=_join_notice(
@@ -1331,23 +1357,26 @@ def handle_join_sync_submit(
                         ),
                     )
             except Exception as exc:
-                _logger.debug(f"join_sync: failed to notify peer channel {peer.channel_id}: {exc}")
+                log_debug("join_sync", channel_id=peer.channel_id, error=str(exc))
 
-        _logger.info(
-            "sync_joined",
-            extra={
-                "workspace_id": workspace_record.id,
-                "channel_id": channel_id,
-                "sync_id": sync_id,
-                "group_id": group_id,
-            },
+        log_info(
+            "sync_joined", workspace_id=workspace_record.id, channel_id=channel_id, sync_id=sync_id, group_id=group_id
         )
     except Exception as e:
-        _logger.error(f"Failed to join channel sync {sync_id}: {e}")
+        log_error("failed_to_join_channel_sync", sync_id=sync_id, error=str(e))
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     if group_id:
         _refresh_group_member_homes(group_id, workspace_record.id, logger, context=context)
+
+    try:
+        from federation.replicate import replicate_sync_channel_upsert
+
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id) if group_id else None
+        if group and sync_record:
+            replicate_sync_channel_upsert(sync_record, group, sync_channel_record, workspace_record)
+    except Exception:
+        log_warning("federation_replicate_sync_join_failed", sync_id=sync_id)
 
 
 def _parse_edit_sync_ref(body: dict) -> tuple[str | None, int | None]:
@@ -1400,7 +1429,7 @@ def handle_edit_sync(
 
     kind, ref_id = _parse_edit_sync_ref(body)
     if not kind or not ref_id:
-        _logger.warning("edit_sync: invalid action value")
+        log_warning("edit_sync", reason="invalid action value")
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -1415,7 +1444,7 @@ def handle_edit_sync(
         if not sync_channel or sync_channel.deleted_at:
             return
         if sync_channel.workspace_id != workspace_record.id:
-            _logger.warning("edit_sync: channel not in acting workspace")
+            log_warning("edit_sync", reason="channel not in acting workspace")
             return
         sync_record = DbManager.get_record(schemas.Sync, id=sync_channel.sync_id)
     else:

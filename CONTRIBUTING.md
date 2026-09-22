@@ -63,7 +63,7 @@ pre-commit install --hook-type commit-msg
 ## Before you submit
 
 - Run **`pre-commit run --all-files`** (install with `pip install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg` if needed).
-- Ensure **CI passes**: requirements export check, SAM template lint, ruff, pip-audit, and tests (see [.github/workflows/ci.yml](.github/workflows/ci.yml)).
+- Ensure **CI passes**: requirements export check, SAM template lint, ruff, pip-audit, and tests (see [.github/workflows/ci.yml](.github/workflows/ci.yml)). Local pytest should finish with no warnings you introduced; do not skip tests to hide them.
 - If you change dependencies in `pyproject.toml`, refresh the lockfile and `syncbot/requirements.txt` as described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
 
 ## Questions

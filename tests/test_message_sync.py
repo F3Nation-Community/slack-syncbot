@@ -1,4 +1,4 @@
-"""Tests for sync list / post record deduplication."""
+"""Tests for post record deduplication."""
 
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -48,8 +48,8 @@ class TestGetPostRecordsDeduplication:
         assert len(result) == 1
         assert result[0][1] is sc_a
 
-    def test_dedup_prefers_lower_post_meta_id_for_split_file_alias(self):
-        """Reactions on file thread replies share post_id; primary text row must win."""
+    def test_dedup_prefers_lower_post_meta_id(self):
+        """Two PostMeta rows can share a post_id; the earlier row wins."""
         pm_file = SimpleNamespace(id=99, post_id="p1", ts=888.888)
         pm_text = SimpleNamespace(id=10, post_id="p1", ts=111.111)
         ws = SimpleNamespace(id=42)

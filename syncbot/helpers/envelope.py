@@ -19,9 +19,9 @@ _FOLLOW_UP_ACTIONS = frozenset({ACTION_EDIT, ACTION_DELETE, ACTION_ADD, ACTION_R
 def get_post_id_for_post_records(envelope: dict[str, Any]) -> str | None:
     """PostMeta ``post_id`` used to look up ``get_post_records`` for this envelope.
 
-    Thread replies and files in a thread use ``thread_post_id``. Edits,
-    deletes, and reactions use ``post_id`` of that message. A new top-level
-    create has neither and fans out to every publish target.
+    Thread replies and files in a thread use ``thread_post_id`` so parent
+    PostMeta can supply ``target_ts``. Edits, deletes, and reactions use
+    ``post_id`` of that message. A new top-level create has neither.
     """
     thread = envelope.get("thread_post_id")
     if thread:
@@ -54,11 +54,13 @@ def build_envelope(
     user_avatar_url: str | None = None,
     workspace_name: str | None = None,
     source_ts: str | None = None,
+    event_ts: str | None = None,
 ) -> dict[str, Any]:
     """Build one envelope dict. Omit unused keys rather than empty stubs.
 
     ``kind`` is only ``message`` or ``reaction``. ``action`` is kind-specific:
     message → create/edit/delete; reaction → add/remove.
+    Optional ``event_ts`` is Slack event time for reaction last-write-wins.
     """
     envelope: dict[str, Any] = {
         "kind": kind,
@@ -84,6 +86,8 @@ def build_envelope(
         envelope["workspace_name"] = workspace_name
     if source_ts:
         envelope["source_ts"] = source_ts
+    if event_ts:
+        envelope["event_ts"] = str(event_ts)
 
     if kind == KIND_MESSAGE:
         if action in (ACTION_CREATE, ACTION_EDIT):

@@ -1,7 +1,6 @@
 """Cross-workspace user mapping and mention resolution."""
 
 import json
-import logging
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -14,15 +13,14 @@ import constants
 from db import DbManager, schemas
 from helpers._cache import _CACHE, _USER_INFO_CACHE_TTL, _cache_get, _cache_set
 from helpers.core import code_ticked_display_name, safe_get
-from helpers.encryption import decrypt_bot_token
 from helpers.message_blocks import is_url_display_text
 from helpers.slack_api import _users_info, get_user_info, slack_retry
 from helpers.workspace import (
+    get_bot_token,
     get_workspace_by_id,
     resolve_workspace_name,
 )
-
-_logger = logging.getLogger(__name__)
+from logger import log_debug, log_error, log_info, log_warning
 
 
 def _get_user_profile(client: WebClient, user_id: str) -> dict[str, Any] | None:
@@ -38,7 +36,7 @@ def _get_user_profile(client: WebClient, user_id: str) -> dict[str, Any] | None:
     try:
         res = _users_info(client, user_id)
     except SlackApiError as exc:
-        _logger.warning(f"Failed to look up user {user_id}: {exc}")
+        log_warning("failed_to_look_up_user", user_id=user_id, error=str(exc))
         return None
 
     profile = safe_get(res, "user", "profile") or {}
@@ -292,22 +290,13 @@ def _get_user_map(
             except Exception:
                 err = str(exc)
             if err in ("missing_scope", "invalid_auth", "not_allowed"):
-                _logger.warning(
-                    "map_user_email_lookup_denied",
-                    extra={"workspace_id": target_workspace_id, "error": err},
-                )
+                log_warning("map_user_email_lookup_denied", workspace_id=target_workspace_id, error=err)
                 if email_lookup_denied is not None:
                     email_lookup_denied[0] = True
             elif err == "users_not_found":
-                _logger.debug(
-                    "map_user_email_lookup_users_not_found",
-                    extra={"workspace_id": target_workspace_id},
-                )
+                log_debug("map_user_email_lookup_users_not_found", workspace_id=target_workspace_id)
             else:
-                _logger.debug(
-                    "map_user_email_lookup_failed",
-                    extra={"workspace_id": target_workspace_id, "error": err},
-                )
+                log_debug("map_user_email_lookup_failed", workspace_id=target_workspace_id, error=err)
 
     return None, "none"
 
@@ -345,7 +334,7 @@ def _get_source_profile_full(client: WebClient, user_id: str) -> dict[str, Any] 
     try:
         res = _users_info(client, user_id)
     except SlackApiError as exc:
-        _logger.warning(f"Failed to look up user {user_id}: {exc}")
+        log_warning("failed_to_look_up_user", user_id=user_id, error=str(exc))
         return None
 
     profile = safe_get(res, "user", "profile") or {}
@@ -440,10 +429,7 @@ def _persist_mapping_row(
 
                 invalidate_home_tab_caches_for_team(target_ws.team_id)
         except Exception:
-            _logger.warning(
-                "user_mapping_home_hash_invalidate_failed",
-                extra={"target_workspace_id": target_workspace_id},
-            )
+            log_warning("user_mapping_home_hash_invalidate_failed", target_workspace_id=target_workspace_id)
     from helpers._cache import request_scope_delete
 
     request_scope_delete(f"mapping_row:{source_workspace_id}:{source_user_id}:{target_workspace_id}")
@@ -516,15 +502,9 @@ def ensure_mapped_target_user_id(
                 except Exception:
                     err = str(exc)
                 if err == "users_not_found":
-                    _logger.debug(
-                        "map_user_email_lookup_users_not_found",
-                        extra={"workspace_id": target_workspace_id},
-                    )
+                    log_debug("map_user_email_lookup_users_not_found", workspace_id=target_workspace_id)
                 else:
-                    _logger.debug(
-                        "map_user_email_lookup_failed",
-                        extra={"workspace_id": target_workspace_id, "error": err},
-                    )
+                    log_debug("map_user_email_lookup_failed", workspace_id=target_workspace_id, error=err)
                 target_uid = None
 
         if target_uid:
@@ -537,14 +517,12 @@ def ensure_mapped_target_user_id(
                 display_name=display,
                 existing=existing,
             )
-            _logger.info(
+            log_info(
                 "user_mapping_on_the_fly",
-                extra={
-                    "source_workspace_id": source_workspace_id,
-                    "target_workspace_id": target_workspace_id,
-                    "source_user_id": source_user_id,
-                    "target_user_id": target_uid,
-                },
+                source_workspace_id=source_workspace_id,
+                target_workspace_id=target_workspace_id,
+                source_user_id=source_user_id,
+                target_user_id=target_uid,
             )
             return target_uid
 
@@ -559,14 +537,12 @@ def ensure_mapped_target_user_id(
         )
         return None
     except Exception as exc:
-        _logger.warning(
+        log_warning(
             "user_mapping_on_the_fly_failed",
-            extra={
-                "source_workspace_id": source_workspace_id,
-                "target_workspace_id": target_workspace_id,
-                "source_user_id": source_user_id,
-                "error": str(exc),
-            },
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=target_workspace_id,
+            source_user_id=source_user_id,
+            error=str(exc),
         )
         return None
 
@@ -673,12 +649,9 @@ def resolve_mention_for_workspace(
     return result
 
 
-_MAX_MENTIONS = 50
-
-
 def parse_mentioned_users(msg_text: str, client: WebClient) -> list[dict[str, Any]]:
     """Extract mentioned user IDs from a message and resolve their profiles."""
-    user_ids = re.findall(r"<@(\w+)>", msg_text or "")[:_MAX_MENTIONS]
+    user_ids = re.findall(r"<@(\w+)>", msg_text or "")
     if not user_ids:
         return []
 
@@ -718,7 +691,7 @@ def apply_mentioned_users(
             )
             replace_list.append(resolved)
         except Exception as exc:
-            _logger.error(f"Failed to resolve mention for user {uid}: {exc}")
+            log_error("failed_to_resolve_mention_for_user", uid=uid, error=str(exc))
             fallback = user_info.get("user_name") or uid
             source_ws = get_workspace_by_id(source_workspace_id) if source_workspace_id else None
             ws_label = resolve_workspace_name(source_ws) if source_ws else None
@@ -730,7 +703,6 @@ def apply_mentioned_users(
         try:
             return next(replace_iter)
         except StopIteration:
-            # parse_mentioned_users caps at 50; leave any leftover tags unchanged.
             return _match.group(0)
 
     return re.sub(r"<@\w+>", _replace, msg_text)
@@ -765,10 +737,7 @@ def _lookup_channel_name(
             if name and name != channel_id:
                 return name
         except Exception as exc:
-            _logger.debug(
-                "resolve_channel_reference_failed",
-                extra={"channel_id": channel_id, "error": str(exc)},
-            )
+            log_debug("resolve_channel_reference_failed", channel_id=channel_id, error=str(exc))
     return inline_label or channel_id
 
 
@@ -857,6 +826,40 @@ def resolve_channel_references(
         )
 
     return msg_text
+
+
+def rewrite_envelope_channel_refs(
+    envelope: dict[str, Any],
+    source_client: WebClient | None,
+    source_workspace: "schemas.Workspace | None" = None,
+) -> None:
+    """Rewrite source ``#channel`` mentions on an envelope before federation send.
+
+    The peer cannot call source Slack. User mentions stay ``<@U>`` for the
+    receiving instance to map. Mutates *envelope* in place.
+    """
+    if not source_client:
+        return
+    from helpers.message_blocks import rewrite_content_blocks
+
+    text = envelope.get("text")
+    if isinstance(text, str) and text:
+        envelope["text"] = resolve_channel_references(text, source_client, source_workspace)
+
+    blocks = envelope.get("blocks")
+    if not isinstance(blocks, list) or not blocks:
+        return
+
+    def rewrite_mrkdwn(value: str) -> str:
+        return resolve_channel_references(value, source_client, source_workspace)
+
+    def keep_user(uid: str) -> str | None:
+        return uid
+
+    def keep_unmapped(uid: str) -> str:
+        return f"<@{uid}>"
+
+    envelope["blocks"] = rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
 
 
 def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group_id: int | None = None) -> int:
@@ -977,8 +980,8 @@ def run_auto_map_for_workspace(
             # Slack users.info only when the caller allowed per-user lookups
             # (not Auto Map Now, which must stay directory-only).
             source_workspace = get_workspace_by_id(mapping.source_workspace_id)
-            if source_workspace and source_workspace.bot_token:
-                source_client = WebClient(token=decrypt_bot_token(source_workspace.bot_token))
+            if source_workspace and get_bot_token(source_workspace):
+                source_client = WebClient(token=get_bot_token(source_workspace))
                 source_profile = _get_source_profile_full(source_client, mapping.source_user_id)
         if not source_profile:
             still_unmatched += 1
@@ -1025,7 +1028,7 @@ def run_auto_map_for_workspace(
     }
     if seeded is not None:
         extras["seeded"] = seeded
-    _logger.info("user_auto_map_complete", extra=extras)
+    log_info("user_auto_map_complete", **extras)
     return newly_matched, still_unmatched
 
 

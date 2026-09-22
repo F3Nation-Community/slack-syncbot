@@ -56,9 +56,13 @@ def test_template_sqlite_and_keep_warm() -> None:
     assert "MemorySize: 256" in TEMPLATE
     assert "MemorySize: 128" not in TEMPLATE
     assert "Timeout: 120" in TEMPLATE
+    assert "EphemeralStorage:" in TEMPLATE
+    assert "Size: 2048" in TEMPLATE
     assert "Timeout: 10" not in TEMPLATE
     assert "Timeout: 30" not in TEMPLATE
     assert "sqlite:////tmp/syncbot.db" in TEMPLATE
+    assert 'FEDERATION_HTTP_MAX_MB: "4"' in TEMPLATE
+    assert "FILE_CHUNK_MB" not in TEMPLATE
     assert "LITESTREAM_S3_BUCKET" in TEMPLATE
     assert "ReservedConcurrentExecutions" in TEMPLATE
     assert "State: !If [KeepWarmEnabled, ENABLED, DISABLED]" in TEMPLATE
@@ -71,11 +75,13 @@ def test_template_sqlite_and_keep_warm() -> None:
     assert "VpcId" not in TEMPLATE
 
 
-def test_template_has_no_syncbot_instance_id() -> None:
+def test_template_has_no_leftover_syncbot_env() -> None:
+    for name in ("SYNCBOT_INSTANCE_ID", "SYNCBOT_PUBLIC_URL", "REQUIRE_ADMIN", "FILE_CHUNK_MB"):
+        assert name not in TEMPLATE
+        assert f"{name}:" not in WORKFLOW
     assert "SyncbotInstanceId" not in TEMPLATE
-    assert "SYNCBOT_INSTANCE_ID" not in TEMPLATE
+    assert "SyncbotPublicUrl" not in TEMPLATE
     assert "SyncbotInstanceId" not in CI_SAM
-    assert "SYNCBOT_INSTANCE_ID:" not in WORKFLOW
     assert "SyncbotInstanceId=" not in DEPLOY_SH
     assert "SyncbotInstanceId=" not in CI_SAM
 
@@ -89,11 +95,23 @@ def test_bootstrap_has_no_rds_or_vpc_create() -> None:
 def test_bootstrap_oidc_trust_accepts_immutable_subject_claim() -> None:
     """Repos created or transferred after 2026-07-15 send repo:owner@id/repo@id."""
     assert "GitHubImmutableRepository:" in BOOTSTRAP
+    assert "HasGitHubRepository:" in BOOTSTRAP
     assert 'HasImmutableRepository: !Not [!Equals [!Ref GitHubImmutableRepository, ""]]' in BOOTSTRAP
+    assert "Condition: HasGitHubRepository" in BOOTSTRAP
     assert '- - !Sub "repo:${GitHubRepository}:*"' in BOOTSTRAP
     assert '    - !Sub "repo:${GitHubImmutableRepository}:*"' in BOOTSTRAP
     # A wildcard under StringEquals is compared literally and never matches.
     assert "StringLike:" in BOOTSTRAP
+
+
+def test_bootstrap_github_repository_is_optional() -> None:
+    repo_block = BOOTSTRAP.split("GitHubRepository:", 1)[1].split("GitHubImmutableRepository:", 1)[0]
+    assert 'Default: ""' in repo_block
+    assert "Error: GITHUB_REPO is unset and origin is not a github.com remote." not in ENSURE
+    assert "GitHub repo optional" in ENSURE
+    root_deploy = (REPO_ROOT / "deploy.sh").read_text(encoding="utf-8")
+    assert 'local default_build="1"' in root_deploy
+    assert 'local default_all="1,2,3"' not in root_deploy
 
 
 def test_ensure_bootstrap_passes_and_refreshes_immutable_repository() -> None:
@@ -161,17 +179,15 @@ def test_makefile_installs_wheels_for_lambda_runtime_not_build_host() -> None:
 def test_aws_build_is_in_source_not_containerised() -> None:
     """syncbot/ lives above CodeUri; a container build never mounts it."""
     samconfig = (REPO_ROOT / "samconfig.toml").read_text(encoding="utf-8")
-    root_deploy = (REPO_ROOT / "deploy.sh").read_text(encoding="utf-8")
     assert DEPLOY_SH.count('sam build -t "$APP_TEMPLATE" --build-in-source') == 2
     assert "--use-container" not in DEPLOY_SH
     assert "sam build -t infra/aws/template.yaml --build-in-source" in WORKFLOW
     assert "--use-container" not in WORKFLOW
     assert samconfig.count("build_in_source = true") == 3
     assert "use_container" not in samconfig
-    # Docker was only ever needed for the container build.
+    # Docker is a GCP image-build prereq in the shared launcher, not AWS SAM.
     assert "prereqs_require_cmd docker" not in DEPLOY_SH
     assert 'prereqs_print_cli_status_matrix "AWS" aws sam python3 curl' in DEPLOY_SH
-    assert "prereqs_hint_docker" not in root_deploy
 
 
 def test_wrapper_restore_then_init_then_replicate() -> None:
@@ -222,6 +238,11 @@ def test_deploy_scripts_modes_and_rds_abort() -> None:
     assert "ExistingDatabaseHost=" not in CI_SAM
     assert "resolve_database_schema" in CI_SAM
     assert 'DATABASE_SCHEMA="${DATABASE_SCHEMA:-syncbot}"' not in CI_SAM
+    schema_block = TEMPLATE.split("DatabaseSchema:", 1)[1].split("LogLevel:", 1)[0]
+    assert 'Default: ""' in schema_block
+    assert 'Default: "syncbot"' not in schema_block
+    assert "HasDatabaseSchema:" in TEMPLATE
+    assert '!Sub "syncbot_${Stage}"' in TEMPLATE
     assert "DeploymentBucketName" in CI_SAM
     assert "AWS_S3_BUCKET is empty and bootstrap" in CI_SAM
     assert "STAGE_NAME must be test or prod" in CI_SAM
@@ -232,6 +253,8 @@ def test_deploy_scripts_modes_and_rds_abort() -> None:
     migrate_helper = (INFRA_AWS / "scripts" / "invoke_lambda_migrate.sh").read_text(encoding="utf-8")
     assert "FunctionError" in migrate_helper
     assert "--cli-read-timeout 180" in migrate_helper
+    assert "invoke_action migrate" in migrate_helper
+    assert "invoke_action ready" in migrate_helper
 
     assert "DatabaseInstanceClass" not in CI_SAM
     assert "VpcCidr" not in CI_SAM

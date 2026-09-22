@@ -103,6 +103,27 @@ jobs:
             echo "::error::If this is a WIF 403, github_repo must equal owner/repo of THIS GitHub repository (the one with test/prod), not F3Nation-Community/slack-syncbot when deploying from a fork."
             exit 1
           fi
+          BASE_URL=$(gcloud run services describe "syncbot-${STAGE}" \
+            --project "${{ vars.GCP_PROJECT_ID }}" \
+            --region "${{ vars.GCP_REGION }}" \
+            --format 'value(status.url)')
+          echo "=== Waiting for GET /health ==="
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -sfS --max-time 30 "${BASE_URL}/health" | grep -q '"status"'; then
+              echo "Health OK"
+              if ! curl -sfS --max-time 180 "${BASE_URL}/ready" | grep -q '"status"'; then
+                echo "Warning: GET /ready failed; Home tabs may stay stale until opened."
+              fi
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [[ "$ok" != "1" ]]; then
+            echo "::error::GET /health did not become ready at ${BASE_URL}/health"
+            exit 1
+          fi
 
       - name: Post-deploy summary
         env:

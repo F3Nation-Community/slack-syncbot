@@ -1,7 +1,7 @@
 # SyncBot
 <img src="assets/icon.png" alt="SyncBot Icon" width="128">
 
-SyncBot is a Slack app for syncing messages across workspaces. Once it is configured, it syncs messages, threads, edits, deletes, reactions, images, videos, and GIFs to every channel in a SyncBot group.
+SyncBot is a Slack app for syncing messages across workspaces. Once it is configured, it syncs messages, threads, edits, deletes, reactions, and hosted files (images, video, GIFs, PDFs, and similar) to every channel in a SyncBot group.
 
 > **Using SyncBot in Slack already?** See the [User Guide](docs/USER_GUIDE.md).
 
@@ -25,7 +25,7 @@ After you have set up the Slack app, you can follow the steps below to deploy to
 
 - Git and Bash. On Windows, use Git Bash or WSL.
 - **AWS:** AWS CLI v2, SAM CLI, Python 3, `curl`, and an active `aws` login.
-- **GCP:** Terraform, `gcloud`, Python 3, `curl`, and an active `gcloud` login (including Application Default Credentials).
+- **GCP:** Terraform, `gcloud`, Docker, Python 3, `curl`, and an active `gcloud` login (including Application Default Credentials).
 - Optional: `gh`, if you want the script to write GitHub Environment variables for you.
 
 1. **Set up the database** — MySQL or PostgreSQL only; skip this if you are using SQLite.
@@ -74,7 +74,7 @@ For local development, run `cp .env.example .env` and set your Slack app variabl
 | [DEPLOY.md](docs/DEPLOY.md) | AWS vs GCP databases, GitHub CI, manual SAM and Terraform |
 | [DEVELOPMENT.md](docs/DEVELOPMENT.md) | Local dev, branching for forks, dependencies |
 | [INFRA_CONTRACT.md](docs/INFRA_CONTRACT.md) | Environment variables and platform expectations |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Sync flow, AWS reference architecture |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Schema, message sync flow, AWS and GCP layouts |
 | [BACKUP_AND_MIGRATION.md](docs/BACKUP_AND_MIGRATION.md) | Backup/restore and federation migration |
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | HTTP routes and Slack events |
 | [CHANGELOG.md](CHANGELOG.md) | Release history (updated by python-semantic-release on F3Nation-Community `main`) |

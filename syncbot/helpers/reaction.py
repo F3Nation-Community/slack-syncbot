@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Literal
 
 from slack_sdk import WebClient
@@ -12,13 +11,19 @@ import constants
 from db import DbManager, schemas
 from helpers.conversations import get_user_token
 from helpers.core import safe_get
-from helpers.encryption import decrypt_bot_token
 from helpers.reaction_notice import build_reaction_notice_post_id, delete_notices_for_unreact
-from helpers.slack_api import slack_error_code
+from helpers.slack_api import get_thread_root_ts, get_user_info, slack_error_code
 from helpers.sync_participation import channel_subscribes
-from helpers.user_action_echo import post_meta_ts, reaction_echo_fingerprint, remember_user_action, slack_message_ts
-
-_logger = logging.getLogger(__name__)
+from helpers.user_action_echo import (
+    post_meta_ts,
+    reaction_echo_fingerprint,
+    reaction_event_ts_is_stale,
+    remember_reaction_event_ts,
+    remember_user_action,
+    slack_message_ts,
+)
+from helpers.workspace import get_bot_token
+from logger import log_debug, log_warning
 
 ApplyResult = Literal["direct", "thread", "skipped", "failed"]
 _slack_error_code = slack_error_code
@@ -58,9 +63,11 @@ def _mapped_user_for_target(
         return existing
 
     # Build Slack clients only when we may need an on-the-fly email map.
-    if target_client is None and target_workspace is not None and getattr(target_workspace, "bot_token", None):
+    if target_client is None and target_workspace is not None:
         try:
-            target_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+            token = get_bot_token(target_workspace)
+            if token:
+                target_client = WebClient(token=token)
         except Exception:
             target_client = None
     if source_client is None:
@@ -68,8 +75,8 @@ def _mapped_user_for_target(
             from helpers.workspace import get_workspace_by_id
 
             source_ws = get_workspace_by_id(source_workspace_id)
-            if source_ws and source_ws.bot_token:
-                source_client = WebClient(token=decrypt_bot_token(source_ws.bot_token))
+            if source_ws and get_bot_token(source_ws):
+                source_client = WebClient(token=get_bot_token(source_ws))
         except Exception:
             source_client = None
 
@@ -80,6 +87,23 @@ def _mapped_user_for_target(
         source_client=source_client,
         target_client=target_client,
     )
+
+
+def _mapped_notice_identity(
+    *,
+    mapped_user_id: str | None,
+    target_client: WebClient,
+    source_display_name: str,
+    source_icon_url: str | None,
+) -> tuple[str, str | None]:
+    """Target display name and icon for a bot Hybrid notice, else the source identity."""
+    if not mapped_user_id:
+        return source_display_name, source_icon_url
+    local_name, local_icon = get_user_info(target_client, mapped_user_id)
+    if isinstance(local_name, str) and local_name.strip():
+        icon = local_icon if isinstance(local_icon, str) and local_icon else source_icon_url
+        return local_name.strip(), icon
+    return source_display_name, source_icon_url
 
 
 def _post_threaded_reaction_notice(
@@ -96,7 +120,7 @@ def _post_threaded_reaction_notice(
     source_workspace_id: int | None,
     federated_instance_id: str | None = None,
 ) -> schemas.PostMeta | None:
-    target_msg_ts = f"{post_meta.ts:.6f}"
+    target_msg_ts = slack_message_ts(post_meta.ts)
     reaction_username_suffix = "" if author_is_mapped else posted_from
     permalink = None
     try:
@@ -106,9 +130,11 @@ def _post_threaded_reaction_notice(
         )
         permalink = safe_get(plink_resp, "permalink")
     except Exception as exc:
-        _logger.debug(
+        log_debug(
             "reaction_permalink_lookup_failed",
-            extra={"channel_id": sync_channel.channel_id, "message_ts": target_msg_ts, "error": str(exc)},
+            channel_id=sync_channel.channel_id,
+            message_ts=target_msg_ts,
+            error=str(exc),
         )
 
     if permalink:
@@ -116,12 +142,13 @@ def _post_threaded_reaction_notice(
     else:
         msg_text = f"reacted with :{reaction}:"
 
+    thread_ts = get_thread_root_ts(target_client, sync_channel.channel_id, target_msg_ts)
     resp = target_client.chat_postMessage(
         channel=sync_channel.channel_id,
         text=msg_text,
         username=f"{display_name} {reaction_username_suffix}".strip(),
         icon_url=icon_url,
-        thread_ts=target_msg_ts,
+        thread_ts=thread_ts,
         unfurl_links=False,
         unfurl_media=False,
     )
@@ -184,10 +211,7 @@ def _target_reaction_name_is_invalid(
         elif error_code in _IDEMPOTENT_ADD_ERRORS:
             result = False
         else:
-            _logger.debug(
-                "reaction_name_probe_failed",
-                extra={"channel_id": channel_id, "error": error_code or str(exc)},
-            )
+            log_debug("reaction_name_probe_failed", channel_id=channel_id, error=error_code or str(exc))
             result = None
         if cache is not None and result is not None:
             cache[cache_key] = result
@@ -195,10 +219,7 @@ def _target_reaction_name_is_invalid(
     try:
         bot_client.reactions_remove(channel=channel_id, timestamp=target_ts, name=reaction)
     except SlackApiError as exc:
-        _logger.debug(
-            "reaction_name_probe_remove_failed",
-            extra={"channel_id": channel_id, "error": _slack_error_code(exc) or str(exc)},
-        )
+        log_debug("reaction_name_probe_remove_failed", channel_id=channel_id, error=_slack_error_code(exc) or str(exc))
     if cache is not None:
         cache[cache_key] = False
     return False
@@ -288,10 +309,7 @@ def _apply_direct_reaction(
             return "skipped", None
         if error_code in _NO_AUTHORIZE_ERRORS:
             return None
-        _logger.warning(
-            "reaction_direct_failed",
-            extra={"channel_id": channel_id, "error": error_code or str(exc)},
-        )
+        log_warning("reaction_direct_failed", channel_id=channel_id, error=error_code or str(exc))
         return "failed", None
 
 
@@ -381,9 +399,11 @@ def apply_reaction_to_target(
     posted_from: str,
     author_is_mapped: bool,
     mapped_user_id: str | None = None,
+    source_client: WebClient | None = None,
     name_probe_cache: dict[tuple[str, str], bool] | None = None,
     federated_instance_id: str | None = None,
     event_workspace_id: int | None = None,
+    event_ts: str | None = None,
 ) -> tuple[ApplyResult, schemas.PostMeta | None]:
     """Apply a reaction add/remove on a target channel. Never writes to the origin.
 
@@ -394,6 +414,7 @@ def apply_reaction_to_target(
     same-instance cross-workspace still probe — origin having the emoji does not
     mean the target has it. Direct-only never probes. Off does not apply add or remove.
     ``invalid_name`` always skips; it never becomes a thread notice.
+    Inbound apply is last-write-wins on envelope ``event_ts`` when present.
     """
     if source_sync_channel is not None and source_sync_channel.channel_id == target_sync_channel.channel_id:
         return "skipped", None
@@ -408,18 +429,33 @@ def apply_reaction_to_target(
     target_ts = slack_message_ts(target_post_meta.ts)
     channel_id = target_sync_channel.channel_id
     parent_post_id = str(getattr(target_post_meta, "post_id", None) or "")
+    padded_event_ts = slack_message_ts(event_ts) if event_ts else ""
+    if (
+        padded_event_ts
+        and source_user_id
+        and reaction_event_ts_is_stale(
+            target_workspace.team_id,
+            source_user_id,
+            channel_id,
+            target_ts,
+            reaction,
+            padded_event_ts,
+        )
+    ):
+        return "skipped", None
     bot_client: WebClient | None = None
 
     def target_bot_client() -> WebClient:
         nonlocal bot_client
         if bot_client is None:
-            bot_client = WebClient(token=decrypt_bot_token(target_workspace.bot_token))
+            bot_client = WebClient(token=get_bot_token(target_workspace))
         return bot_client
 
     resolved_user = mapped_user_id or _mapped_user_for_target(
         source_user_id,
         source_workspace_id,
         target_workspace.id,
+        source_client=source_client,
         target_workspace=target_workspace,
     )
     if resolved_user:
@@ -442,9 +478,26 @@ def apply_reaction_to_target(
             event_workspace_id=event_workspace_id,
         )
         if direct is not None:
+            if padded_event_ts and source_user_id and direct[0] != "failed":
+                remember_reaction_event_ts(
+                    target_workspace.team_id,
+                    source_user_id,
+                    channel_id,
+                    target_ts,
+                    reaction,
+                    padded_event_ts,
+                )
             return direct
 
-    return _apply_hybrid_reaction(
+    if style == constants.REACTION_STYLE_THREADED_AND_DIRECT and resolved_user:
+        display_name, icon_url = _mapped_notice_identity(
+            mapped_user_id=resolved_user,
+            target_client=target_bot_client(),
+            source_display_name=display_name,
+            source_icon_url=icon_url,
+        )
+
+    hybrid = _apply_hybrid_reaction(
         action=action,
         reaction=reaction,
         source_user_id=source_user_id,
@@ -465,6 +518,16 @@ def apply_reaction_to_target(
         event_workspace_id=event_workspace_id,
         style=style,
     )
+    if padded_event_ts and source_user_id and hybrid[0] != "failed":
+        remember_reaction_event_ts(
+            target_workspace.team_id,
+            source_user_id,
+            channel_id,
+            target_ts,
+            reaction,
+            padded_event_ts,
+        )
+    return hybrid
 
 
 def update_sync_channel_reactions(

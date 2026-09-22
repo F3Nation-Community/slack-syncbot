@@ -1,9 +1,9 @@
 """Copy and flatten Slack Block Kit for message sync.
 
-Events API ``text`` is a notification fallback. Long Block Kit posts (Slackblast
-preblasts, Workflows, and similar) often arrive with newlines stripped and the
-tail omitted. The full body is in ``blocks``. ``Show more`` is a client chrome
-on those blocks, not a second payload.
+Events API ``text`` is a notification fallback. Long Block Kit posts (forms
+and similar) often arrive with newlines stripped and the tail omitted. The
+full body is in ``blocks``. ``Show more`` is a client chrome on those blocks,
+not a second payload.
 
 Interactive blocks (buttons, pickers) are dropped: they belong to the source
 app and would be dead controls in the target.
@@ -12,11 +12,11 @@ app and would be dead controls in the target.
 from __future__ import annotations
 
 import copy
-import logging
 import re
 from collections.abc import Callable
+from urllib.parse import urlparse
 
-_logger = logging.getLogger(__name__)
+from logger import log_debug, log_warning
 
 _CONTENT_BLOCK_TYPES = frozenset(
     {
@@ -65,6 +65,33 @@ _INTERACTIVE_ACCESSORY = frozenset(
     }
 )
 _BODY_BLOCK_TYPES = frozenset({"section", "header", "rich_text", "context", "markdown"})
+_SLACK_HOSTED_MEDIA_HOSTS = frozenset({"files.slack.com", "slack-files.com"})
+
+
+def is_slack_hosted_media_url(url: object) -> bool:
+    """True when a Block Kit media URL is a Slack-hosted file the target cannot play."""
+    if not isinstance(url, str) or not url.strip():
+        return False
+    host = (urlparse(url).hostname or "").lower()
+    if host in _SLACK_HOSTED_MEDIA_HOSTS:
+        return True
+    return any(host.endswith(f".{root}") for root in _SLACK_HOSTED_MEDIA_HOSTS)
+
+
+def event_has_slack_hosted_media_blocks(event: dict | None) -> bool:
+    """True when the event's Block Kit shows a Slack-hosted video or image."""
+    for raw in get_event_layout_blocks(event or {}):
+        if not isinstance(raw, dict):
+            continue
+        btype = raw.get("type")
+        if btype == "image" and is_slack_hosted_media_url(raw.get("image_url")):
+            return True
+        if btype == "video" and is_slack_hosted_media_url(raw.get("video_url")):
+            return True
+        slack_file = raw.get("slack_file")
+        if btype in {"image", "video", "file"} and isinstance(slack_file, dict) and slack_file.get("id"):
+            return True
+    return False
 
 
 def get_event_layout_blocks(event: dict) -> list[dict]:
@@ -90,9 +117,9 @@ def build_content_blocks_for_sync(blocks: list[dict] | None) -> list[dict]:
         btype = raw.get("type")
         if btype in _SKIP_BLOCK_TYPES or btype not in _CONTENT_BLOCK_TYPES:
             continue
-        if btype == "image" and not raw.get("image_url"):
+        if btype == "image" and (not raw.get("image_url") or is_slack_hosted_media_url(raw.get("image_url"))):
             continue
-        if btype == "video" and not (raw.get("video_url") or raw.get("thumbnail_url")):
+        if btype == "video" and (not raw.get("video_url") or is_slack_hosted_media_url(raw.get("video_url"))):
             continue
         block = copy.deepcopy(raw)
         block.pop("block_id", None)
@@ -101,10 +128,7 @@ def build_content_blocks_for_sync(blocks: list[dict] | None) -> list[dict]:
             block.pop("accessory", None)
         out.append(block)
     if len(out) > _SLACK_MAX_BLOCKS:
-        _logger.warning(
-            "content_blocks_trimmed",
-            extra={"original": len(out), "kept": _SLACK_MAX_BLOCKS},
-        )
+        log_warning("content_blocks_trimmed", original=len(out), kept=_SLACK_MAX_BLOCKS)
         out = out[:_SLACK_MAX_BLOCKS]
     return out
 
@@ -114,7 +138,7 @@ def trim_target_blocks(blocks: list[dict] | None, *, limit: int = _SLACK_MAX_BLO
     items = list(blocks or [])
     if len(items) <= limit:
         return items
-    _logger.warning("target_blocks_trimmed", extra={"original": len(items), "kept": limit})
+    log_warning("target_blocks_trimmed", original=len(items), kept=limit)
     return items[:limit]
 
 
@@ -127,10 +151,7 @@ def clamp_section_text_in_blocks(blocks: list[dict] | None, *, limit: int = _SLA
         if isinstance(text_obj, dict) and isinstance(text_obj.get("text"), str):
             raw = text_obj["text"]
             if len(raw) > limit:
-                _logger.warning(
-                    "section_text_clamped",
-                    extra={"original": len(raw), "kept": limit, "block_type": block.get("type")},
-                )
+                log_warning("section_text_clamped", original=len(raw), kept=limit, block_type=block.get("type"))
                 text_obj["text"] = raw[: limit - 1] + "…"
     return blocks or []
 
@@ -352,7 +373,7 @@ def _emoji_to_str(el: dict) -> str:
         try:
             return "".join(chr(int(part, 16)) for part in uni.replace(" ", "-").split("-") if part)
         except ValueError:
-            _logger.debug("emoji_unicode_parse_failed", extra={"unicode": uni, "name": name})
+            log_debug("emoji_unicode_parse_failed", unicode=uni, emoji_name=name)
     return f":{name}:" if name else ""
 
 

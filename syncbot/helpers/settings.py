@@ -14,15 +14,14 @@ Imports submodules only (``db``, ``db.schemas``, ``helpers._cache``), per the
 import-direction constraint documented in ``helpers/sync_cleanup.py``.
 """
 
-import logging
 import os
+import re
 from datetime import UTC, datetime
 
 import constants
 from db import DbManager, schemas
 from helpers._cache import _cache_delete, _cache_get, _cache_set
-
-_logger = logging.getLogger(__name__)
+from logger import log_info, log_warning
 
 _TRUTHY = ("true", "1", "yes", "on")
 _FALSY = ("false", "0", "no", "off")
@@ -32,7 +31,6 @@ _SENTINEL_MISSING = "\x00__missing__"
 # Env vars that used to seed these settings. Still recognized so a leftover
 # deploy config logs a warning instead of silently changing behavior.
 _IGNORED_ENV_BY_SETTING = {
-    constants.SETTING_BROADCAST_ALLOWED_WORKSPACES: constants.BROADCAST_ALLOWED_WORKSPACES,
     constants.SETTING_SOFT_DELETE_RETENTION_DAYS: constants.SOFT_DELETE_RETENTION_DAYS_VAR,
     constants.SETTING_FEDERATION_ENABLED: constants.SYNCBOT_FEDERATION_ENABLED,
 }
@@ -51,18 +49,15 @@ def _warn_ignored_env(setting_key: str) -> None:
     if raw is None or raw.strip() == "":
         return
     _IGNORED_ENV_WARNED.add(env_var)
-    _logger.warning(
-        "%s is ignored; set this in the SyncBot Settings modal instead",
-        env_var,
-    )
+    log_warning("legacy_env_ignored", env=env_var)
 
 
 def get_raw_setting(key: str) -> str | None:
     """Return the stored database value for *key*, or None if there is no row.
 
-    Cached per process, like ``sync_list``. On Lambda each warm container holds
+    Cached per process, like ``sync_list``. Each warm process holds
     its own copy, so the TTL bounds staleness rather than removing it; the
-    Settings modal invalidates on save within its own container.
+    Settings modal invalidates on save within its own process.
     """
     cached = _cache_get(_cache_key(key))
     if cached is not None:
@@ -88,7 +83,7 @@ def set_setting(key: str, value: str | None) -> None:
         DbManager.create_record(schemas.InstanceSetting(key=key, value=value, updated_at=now))
 
     _cache_delete(_cache_key(key))
-    _logger.info("instance_setting_saved", extra={"setting_key": key})
+    log_info("instance_setting_saved", setting_key=key)
 
 
 def _resolve(key: str) -> str | None:
@@ -107,7 +102,7 @@ def get_bool_setting(key: str, default: bool) -> bool:
         return True
     if normalized in _FALSY:
         return False
-    _logger.warning("instance_setting_unparseable", extra={"setting_key": key, "expected": "bool"})
+    log_warning("instance_setting_unparseable", setting_key=key, expected="bool")
     return default
 
 
@@ -119,29 +114,13 @@ def get_int_setting(key: str, default: int) -> int:
     try:
         return int(raw.strip())
     except (TypeError, ValueError):
-        _logger.warning("instance_setting_unparseable", extra={"setting_key": key, "expected": "int"})
+        log_warning("instance_setting_unparseable", setting_key=key, expected="int")
         return default
-
-
-def get_list_setting(key: str, default: list[str] | None = None) -> list[str]:
-    """Resolve *key* as a comma-separated list, matching the SLACK_BOT_SCOPES idiom."""
-    raw = _resolve(key)
-    if raw is None:
-        return list(default or [])
-    return [item.strip() for item in raw.split(",") if item.strip()]
 
 
 # ---------------------------------------------------------------------------
 # Typed accessors for instance settings
 # ---------------------------------------------------------------------------
-
-
-def broadcast_allowed_workspaces() -> list[str]:
-    """Slack team IDs permitted to publish a broadcast. Empty means any installed workspace."""
-    return get_list_setting(
-        constants.SETTING_BROADCAST_ALLOWED_WORKSPACES,
-        constants.DEFAULT_BROADCAST_ALLOWED_WORKSPACES,
-    )
 
 
 def soft_delete_retention_days() -> int:
@@ -152,12 +131,37 @@ def soft_delete_retention_days() -> int:
     )
 
 
-def may_publish_broadcast(team_id: str | None) -> bool:
-    """Whether *team_id* may publish a broadcast under the current allow-list."""
-    allowed = broadcast_allowed_workspaces()
-    if not allowed:
-        return True
-    return (team_id or "") in allowed
+def parse_workspace_block_list(raw: str | None) -> tuple[list[str], str | None]:
+    """Split Team IDs on comma, semicolon, or whitespace. Returns (ids, error)."""
+    text = raw or ""
+    tokens = [part.strip().upper() for part in re.split(r"[,;\s]+", text) if part.strip()]
+    seen: list[str] = []
+    for token in tokens:
+        if not re.fullmatch(r"T[A-Z0-9]+", token):
+            return [], f"`{token}` is not a Slack Team ID."
+        if token not in seen:
+            seen.append(token)
+    return seen, None
+
+
+def format_workspace_block_list(team_ids: list[str]) -> str:
+    """Canonical comma-separated Team IDs."""
+    return ", ".join(team_ids)
+
+
+def workspace_block_list() -> list[str]:
+    """Team IDs that may not install or reinstall on this instance."""
+    raw = get_raw_setting(constants.SETTING_WORKSPACE_BLOCK_LIST)
+    ids, _err = parse_workspace_block_list(raw)
+    return ids
+
+
+def team_id_is_blocked(team_id: str | None) -> bool:
+    """True when *team_id* is on the Workspace Block List."""
+    tid = (team_id or "").strip().upper()
+    if not tid:
+        return False
+    return tid in workspace_block_list()
 
 
 def federation_enabled() -> bool:

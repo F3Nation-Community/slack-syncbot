@@ -11,9 +11,11 @@ Description: >
 Parameters:
   GitHubRepository:
     Type: String
+    Default: ""
     Description: >
       GitHub repository in form owner/repo (e.g. myorg/syncbot).
       Used to scope OIDC trust so only this repo can assume the deploy role.
+      Leave empty for a local-only deploy (no GitHub Actions OIDC).
   GitHubImmutableRepository:
     Type: String
     Default: ""
@@ -48,7 +50,10 @@ Parameters:
       later deploys skip CloudFormation when the file is unchanged. Do not set by hand.
 
 Conditions:
-  CreateOIDC: !Equals [!Ref CreateOIDCProvider, "true"]
+  HasGitHubRepository: !Not [!Equals [!Ref GitHubRepository, ""]]
+  CreateOIDC: !And
+    - !Equals [!Ref CreateOIDCProvider, "true"]
+    - !Condition HasGitHubRepository
   HasImmutableRepository: !Not [!Equals [!Ref GitHubImmutableRepository, ""]]
 
 Resources:
@@ -90,6 +95,7 @@ Resources:
   # -------------------------------------------------------------------------
   GitHubDeployRole:
     Type: AWS::IAM::Role
+    Condition: HasGitHubRepository
     Properties:
       RoleName: !Sub "syncbot-github-deploy-${AWS::Region}"
       AssumeRolePolicyDocument:
@@ -119,6 +125,7 @@ Resources:
   # -------------------------------------------------------------------------
   DeployPolicy:
     Type: AWS::IAM::ManagedPolicy
+    Condition: HasGitHubRepository
     Properties:
       ManagedPolicyName: !Sub "syncbot-deploy-policy-${AWS::Region}"
       PolicyDocument:
@@ -276,6 +283,7 @@ Resources:
 
 Outputs:
   GitHubDeployRoleArn:
+    Condition: HasGitHubRepository
     Description: ARN of the role for GitHub Actions to assume (set as AWS_ROLE_TO_ASSUME).
     Value: !GetAtt GitHubDeployRole.Arn
     Export:

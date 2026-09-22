@@ -1,7 +1,6 @@
 """Workspace group handlers — create, join, accept, cancel."""
 
 import contextlib
-import logging
 import secrets
 import string
 from datetime import UTC, datetime
@@ -18,11 +17,10 @@ from handlers._common import (
     _get_text_input_value,
     _parse_private_metadata,
 )
+from logger import log_debug, log_info, log_warning
 from slack import actions, orm
 from slack.blocks import context as block_context
 from slack.blocks import divider, section
-
-_logger = logging.getLogger(__name__)
 
 _INVITE_CODE_CHARS = string.ascii_uppercase + string.digits
 
@@ -64,7 +62,7 @@ def _activate_group_membership(
             helpers.seed_user_mappings(workspace_record.id, member_ws.id, group_id=group.id)
             helpers.seed_user_mappings(member_ws.id, workspace_record.id, group_id=group.id)
         except Exception as e:
-            _logger.warning(f"Failed to seed user mappings: {e}")
+            log_warning("failed_to_seed_user_mappings", error=str(e))
 
 
 def handle_create_group(
@@ -77,7 +75,7 @@ def handle_create_group(
     user_id = helpers.get_user_id_from_body(body)
     team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
-        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "create_group"})
+        log_warning("authorization_denied", user_id=user_id, action="create_group")
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -125,11 +123,13 @@ def handle_create_group_submit(
     group_name = (_get_text_input_value(body, actions.CONFIG_CREATE_GROUP_NAME) or "").strip()
 
     if not group_name:
-        _logger.warning("create_group_submit: empty group name")
+        log_warning("create_group_submit", reason="empty group name")
         return
 
     if len(group_name) > 100:
         group_name = group_name[:100]
+
+    from federation.replicate import mint_uid
 
     code = _generate_invite_code()
     now = datetime.now(UTC)
@@ -139,6 +139,7 @@ def handle_create_group_submit(
         invite_code=code,
         status="active",
         created_at=now,
+        uid=mint_uid(),
     )
     DbManager.create_record(group)
 
@@ -151,14 +152,8 @@ def handle_create_group_submit(
     )
     DbManager.create_record(member)
 
-    _logger.info(
-        "group_created",
-        extra={
-            "workspace_id": workspace_record.id,
-            "group_id": group.id,
-            "group_name": group_name,
-            "invite_code": code,
-        },
+    log_info(
+        "group_created", workspace_id=workspace_record.id, group_id=group.id, group_name=group_name, invite_code=code
     )
 
     acting_user_id = user_id
@@ -173,7 +168,7 @@ def handle_create_group_submit(
                     "You can share the Invite Code with an Admin from another Workspace and they can join the Group.",
                 )
         except Exception as e:
-            _logger.warning(f"Failed to DM invite code: {e}")
+            log_warning("failed_to_dm_invite_code", error=str(e))
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
@@ -188,7 +183,7 @@ def handle_join_group(
     user_id = helpers.get_user_id_from_body(body)
     team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
-        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "join_group"})
+        log_warning("authorization_denied", user_id=user_id, action="join_group")
         return
 
     trigger_id = helpers.safe_get(body, "trigger_id")
@@ -242,7 +237,7 @@ def handle_join_group_submit(
     rate_key = f"group_join_attempts:{workspace_record.id}"
     attempts = helpers._cache_get(rate_key) or 0
     if attempts >= 5:
-        _logger.warning("group_join_rate_limited", extra={"workspace_id": workspace_record.id})
+        log_warning("group_join_rate_limited", workspace_id=workspace_record.id)
         builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
@@ -256,13 +251,8 @@ def handle_join_group_submit(
 
     if not groups:
         helpers._cache_set(rate_key, attempts + 1, ttl=900)
-        _logger.warning(
-            "group_code_invalid",
-            extra={
-                "workspace_id": workspace_record.id,
-                "attempt": attempts + 1,
-                "code_length": len(raw_code),
-            },
+        log_warning(
+            "group_code_invalid", workspace_id=workspace_record.id, attempt=attempts + 1, code_length=len(raw_code)
         )
         builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
@@ -282,7 +272,7 @@ def handle_join_group_submit(
         ],
     )
     if existing:
-        _logger.info("group_already_member", extra={"workspace_id": workspace_record.id, "group_id": group.id})
+        log_info("group_already_member", workspace_id=workspace_record.id, group_id=group.id)
         builders.build_home_tab(body, client, logger, context, user_id=acting_user_id)
         return
 
@@ -296,18 +286,12 @@ def handle_join_group_submit(
     )
     DbManager.create_record(member)
 
-    _logger.info(
-        "group_joined",
-        extra={
-            "workspace_id": workspace_record.id,
-            "group_id": group.id,
-            "group_name": group.name,
-        },
-    )
+    log_info("group_joined", workspace_id=workspace_record.id, group_id=group.id, group_name=group.name)
 
     _activate_group_membership(client, workspace_record, group)
 
-    _, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    display_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    person = helpers.code_ticked_display_name(display_name, helpers.resolve_workspace_name(workspace_record))
 
     other_members = DbManager.find_records(
         schemas.WorkspaceGroupMember,
@@ -322,18 +306,18 @@ def handle_join_group_submit(
         if not other_member.workspace_id:
             continue
         member_ws = helpers.get_workspace_by_id(other_member.workspace_id)
-        if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+        if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
             continue
         try:
-            member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
+            member_client = WebClient(token=helpers.get_bot_token(member_ws))
             helpers.notify_admins_dm(
                 member_client,
-                f":punch: *{admin_label}* joined the Workspace Group called *{group.name}*.",
+                f":punch: {person} joined `{group.name}`.",
                 team_id=member_ws.team_id,
             )
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
         except Exception as e:
-            _logger.warning(f"Failed to notify group member {other_member.workspace_id}: {e}")
+            log_warning("failed_to_notify_group_member", workspace_id=other_member.workspace_id, error=str(e))
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
@@ -361,7 +345,7 @@ def handle_invite_workspace(
     try:
         group_id = int(raw_group_id)
     except (TypeError, ValueError):
-        _logger.warning(f"invite_workspace: invalid group_id: {raw_group_id!r}")
+        log_warning("invite_workspace", raw_group_id=raw_group_id)
         return
 
     group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
@@ -385,10 +369,12 @@ def handle_invite_workspace(
         schemas.Workspace,
         [schemas.Workspace.deleted_at.is_(None)],
     )
-    eligible = [ws for ws in all_workspaces if ws.id not in member_ws_ids and ws.bot_token]
+    from helpers.workspace_kind import is_deliverable_workspace, is_stub_workspace
 
-    # Show Oops only when there are no other installed workspaces at all (not when everyone is already in the group)
-    other_installed = [ws for ws in all_workspaces if ws.bot_token and ws.id != current_workspace_id]
+    eligible = [ws for ws in all_workspaces if ws.id not in member_ws_ids and is_deliverable_workspace(ws)]
+
+    # Show Oops only when there are no other deliverable workspaces at all (not when everyone is already in the group)
+    other_installed = [ws for ws in all_workspaces if is_deliverable_workspace(ws) and ws.id != current_workspace_id]
     if not other_installed and not helpers.federation_enabled():
         msg_blocks = [
             section(
@@ -412,7 +398,11 @@ def handle_invite_workspace(
     if eligible:
         workspace_options = [
             orm.SelectorOption(
-                name=helpers.resolve_workspace_name(workspace),
+                name=(
+                    f"{helpers.resolve_workspace_name(workspace)} (External)"
+                    if is_stub_workspace(workspace)
+                    else helpers.resolve_workspace_name(workspace)
+                ),
                 value=str(workspace.id),
             )
             for workspace in eligible
@@ -430,7 +420,8 @@ def handle_invite_workspace(
         )
         modal_blocks.append(
             block_context(
-                "A SyncBot DM will be sent to Admins in the other Workspace.",
+                "A SyncBot DM will be sent to Admins in a local Workspace. "
+                "External stubs are added to the Group immediately.",
             )
         )
 
@@ -442,16 +433,6 @@ def handle_invite_workspace(
             f"Alternatively, share this Invite Code with an Admin from another Workspace:\n\n`{group.invite_code}`"
         )
     )
-
-    if helpers.federation_enabled():
-        modal_blocks.append(divider())
-        modal_blocks.append(section(":globe_with_meridians: *External Workspace*"))
-        modal_blocks.append(
-            block_context(
-                "For Workspaces running their own external SyncBot instance, "
-                f"share this Invite Code for them to join:\n\n`{group.invite_code}`"
-            )
-        )
 
     submit_text = "Send Invite" if eligible else None
     view = orm.BlockView(blocks=modal_blocks)
@@ -498,8 +479,10 @@ def handle_invite_workspace_submit(
         return
 
     target_ws = helpers.get_workspace_by_id(target_ws_id)
-    if not target_ws or not target_ws.bot_token or target_ws.deleted_at:
-        _logger.warning(f"invite_workspace_submit: target workspace {target_ws_id} not available")
+    from helpers.workspace_kind import is_deliverable_workspace, is_local_workspace, is_stub_workspace
+
+    if not target_ws or target_ws.deleted_at or not is_deliverable_workspace(target_ws):
+        log_warning("invite_workspace_submit", target_ws_id=target_ws_id)
         return
 
     existing = DbManager.find_records(
@@ -510,11 +493,38 @@ def handle_invite_workspace_submit(
         ],
     )
     if existing:
-        _logger.info(f"invite_workspace_submit: workspace {target_ws_id} already in group {group_id}")
+        log_info("invite_workspace_submit", target_ws_id=target_ws_id, group_id=group_id)
         builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
     acting_user_id = user_id
+
+    # Stub targets join immediately (no DM on the peer); replicate membership.
+    if is_stub_workspace(target_ws):
+        from federation.replicate import replicate_group_invite
+        from helpers.workspace_kind import peer_for_workspace
+
+        member = schemas.WorkspaceGroupMember(
+            group_id=group_id,
+            workspace_id=target_ws_id,
+            status="active",
+            role="member",
+            joined_at=datetime.now(UTC).replace(tzinfo=None),
+            invited_by_slack_user_id=acting_user_id,
+            invited_by_workspace_id=workspace_record.id,
+        )
+        DbManager.create_record(member)
+        replicate_group_invite(group, target_ws)
+        peer = peer_for_workspace(target_ws)
+        if peer:
+            replicate_group_invite(group, workspace_record, peer=peer)
+        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
+        return
+
+    if not is_local_workspace(target_ws) or not helpers.get_bot_token(target_ws):
+        log_warning("invite_workspace_submit", target_ws_id=target_ws_id)
+        return
+
     member = schemas.WorkspaceGroupMember(
         group_id=group_id,
         workspace_id=target_ws_id,
@@ -526,16 +536,18 @@ def handle_invite_workspace_submit(
     )
     DbManager.create_record(member)
 
-    _, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    display_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    person = helpers.code_ticked_display_name(display_name, helpers.resolve_workspace_name(workspace_record))
 
-    target_client = WebClient(token=helpers.decrypt_bot_token(target_ws.bot_token))
+    target_client = WebClient(token=helpers.get_bot_token(target_ws))
 
+    invite_text = f":punch: {person} has invited your Workspace to join `{group.name}`."
     invite_blocks = [
         {
             "type": "section",
             "text": {
                 "type": "mrkdwn",
-                "text": f":punch: *{admin_label}* has invited your Workspace to join a SyncBot Group!\n\n*Group Name:* `{group.name}`",
+                "text": invite_text,
             },
         },
         {
@@ -543,14 +555,14 @@ def handle_invite_workspace_submit(
             "elements": [
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Accept"},
+                    "text": {"type": "plain_text", "text": ":white_check_mark: Accept"},
                     "style": "primary",
                     "action_id": f"{actions.CONFIG_ACCEPT_GROUP_INVITE}_{member.id}",
                     "value": str(member.id),
                 },
                 {
                     "type": "button",
-                    "text": {"type": "plain_text", "text": "Decline"},
+                    "text": {"type": "plain_text", "text": ":eject: Decline"},
                     "style": "danger",
                     "action_id": f"{actions.CONFIG_DECLINE_GROUP_INVITE}_{member.id}",
                     "value": str(member.id),
@@ -561,20 +573,13 @@ def handle_invite_workspace_submit(
 
     dm_entries = helpers.notify_admins_dm_blocks(
         target_client,
-        f"{admin_label} has invited your Workspace to join a SyncBot Group!\n\n*Group Name:* `{group.name}`",
+        invite_text,
         invite_blocks,
         team_id=target_ws.team_id,
     )
     helpers.save_dm_messages_to_group_member(member.id, dm_entries)
 
-    _logger.info(
-        "group_invite_sent",
-        extra={
-            "group_id": group_id,
-            "target_workspace_id": target_ws_id,
-            "member_id": member.id,
-        },
-    )
+    log_info("group_invite_sent", group_id=group_id, target_workspace_id=target_ws_id, member_id=member.id)
 
     builders.refresh_home_tab_for_workspace(target_ws, logger, context=None)
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
@@ -602,7 +607,7 @@ def handle_accept_group_invite(
     try:
         member_id = int(raw_member_id)
     except (TypeError, ValueError):
-        _logger.warning(f"accept_group_invite: invalid member_id: {raw_member_id!r}")
+        log_warning("accept_group_invite", raw_member_id=raw_member_id)
         return
 
     auth_result = _get_authorized_workspace(body, client, context, "accept_group_invite")
@@ -612,17 +617,15 @@ def handle_accept_group_invite(
 
     member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
     if not member or member.status != "pending":
-        _logger.info(f"accept_group_invite: member {member_id} not pending")
+        log_info("accept_group_invite", member_id=member_id)
         return
 
     if not member.workspace_id or member.workspace_id != acting_workspace.id:
-        _logger.warning(
+        log_warning(
             "authorization_denied",
-            extra={
-                "action": "accept_group_invite",
-                "member_id": member_id,
-                "acting_workspace_id": acting_workspace.id,
-            },
+            action="accept_group_invite",
+            member_id=member_id,
+            acting_workspace_id=acting_workspace.id,
         )
         return
 
@@ -646,10 +649,17 @@ def handle_accept_group_invite(
 
     _activate_group_membership(client, workspace_record, group)
 
+    try:
+        from federation.replicate import replicate_group_invite
+
+        replicate_group_invite(group, workspace_record)
+    except Exception:
+        log_warning("federation_replicate_group_invite_failed", group_id=group.id)
+
     _update_invite_dms(
         member,
         workspace_record,
-        f"Your Workspace has joined the SyncBot Group called *{group.name}*.",
+        f"Your Workspace has joined `{group.name}`.",
     )
 
     other_members = DbManager.find_records(
@@ -666,27 +676,20 @@ def handle_accept_group_invite(
         if not other_member.workspace_id:
             continue
         member_ws = helpers.get_workspace_by_id(other_member.workspace_id)
-        if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+        if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
             continue
         try:
-            member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
+            member_client = WebClient(token=helpers.get_bot_token(member_ws))
             helpers.notify_admins_dm(
                 member_client,
-                f":punch: *{ws_name}* has joined the Workspace Group called *{group.name}*.",
+                f":punch: `{ws_name}` has joined `{group.name}`.",
                 team_id=member_ws.team_id,
             )
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
         except Exception as e:
-            _logger.warning(f"Failed to notify group member {other_member.workspace_id}: {e}")
+            log_warning("failed_to_notify_group_member", workspace_id=other_member.workspace_id, error=str(e))
 
-    _logger.info(
-        "group_invite_accepted",
-        extra={
-            "member_id": member_id,
-            "group_id": group.id,
-            "workspace_id": workspace_record.id,
-        },
-    )
+    log_info("group_invite_accepted", member_id=member_id, group_id=group.id, workspace_id=workspace_record.id)
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
@@ -709,7 +712,7 @@ def handle_decline_group_invite(
     try:
         member_id = int(raw_member_id)
     except (TypeError, ValueError):
-        _logger.warning(f"decline_group_invite: invalid member_id: {raw_member_id!r}")
+        log_warning("decline_group_invite", raw_member_id=raw_member_id)
         return
 
     action_id = helpers.safe_get(body, "actions", 0, "action_id") or ""
@@ -724,7 +727,7 @@ def handle_decline_group_invite(
 
     member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
     if not member or member.status != "pending":
-        _logger.info(f"decline_group_invite: member {member_id} not pending")
+        log_info("decline_group_invite", member_id=member_id)
         return
 
     if is_cancel:
@@ -739,13 +742,8 @@ def handle_decline_group_invite(
         authorized = member.workspace_id == acting_workspace.id
 
     if not authorized:
-        _logger.warning(
-            "authorization_denied",
-            extra={
-                "action": action_name,
-                "member_id": member_id,
-                "acting_workspace_id": acting_workspace.id,
-            },
+        log_warning(
+            "authorization_denied", action=action_name, member_id=member_id, acting_workspace_id=acting_workspace.id
         )
         return
 
@@ -757,7 +755,7 @@ def handle_decline_group_invite(
     _update_invite_dms(
         member,
         target_ws,
-        f":x: The invitation to join *{group_name}* was {outcome}.",
+        f":eject: The invitation to join `{group_name}` was {outcome}.",
     )
 
     group_id = member.group_id
@@ -767,10 +765,7 @@ def handle_decline_group_invite(
         [schemas.WorkspaceGroupMember.id == member_id],
     )
 
-    _logger.info(
-        "group_invite_declined",
-        extra={"member_id": member_id, "group_id": group_id},
-    )
+    log_info("group_invite_declined", member_id=member_id, group_id=group_id)
 
     all_members = DbManager.find_records(
         schemas.WorkspaceGroupMember,
@@ -784,12 +779,12 @@ def handle_decline_group_invite(
         if not member.workspace_id:
             continue
         member_ws = helpers.get_workspace_by_id(member.workspace_id)
-        if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+        if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
             continue
         with contextlib.suppress(Exception):
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
 
-    if target_ws and target_ws.bot_token and not target_ws.deleted_at:
+    if target_ws and not target_ws.deleted_at and helpers.get_bot_token(target_ws):
         with contextlib.suppress(Exception):
             builders.refresh_home_tab_for_workspace(target_ws, logger, context=None)
 
@@ -805,21 +800,21 @@ def _update_invite_dms(
     import json as _json
 
     if not member.dm_messages:
-        _logger.debug("_update_invite_dms: no dm_messages on member %s", member.id)
+        log_debug("invite_dm_update_skipped", member_id=member.id)
         return
-    if not workspace or not workspace.bot_token:
+    if not workspace or not helpers.get_bot_token(workspace):
         return
 
     try:
         entries = _json.loads(member.dm_messages)
     except (ValueError, TypeError):
-        _logger.warning("_update_invite_dms: invalid dm_messages JSON for member %s", member.id)
+        log_warning("invite_dm_messages_invalid", member_id=member.id)
         return
 
     if not entries:
         return
 
-    ws_client = WebClient(token=helpers.decrypt_bot_token(workspace.bot_token))
+    ws_client = WebClient(token=helpers.get_bot_token(workspace))
     blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": new_text}}]
     for entry in entries:
         channel_id = entry.get("channel")
@@ -837,9 +832,9 @@ def _update_invite_dms(
                 blocks=blocks,
             )
         except Exception as e:
-            _logger.warning(
-                "_update_invite_dms: failed to update DM channel=%s ts=%s: %s",
-                channel_id,
-                message_ts_str,
-                e,
+            log_warning(
+                "invite_dm_update_failed",
+                channel_id=channel_id,
+                ts=message_ts_str,
+                error=str(e),
             )

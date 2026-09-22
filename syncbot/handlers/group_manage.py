@@ -1,6 +1,5 @@
 """Group management handlers — leave group with confirmation."""
 
-import logging
 from logging import Logger
 
 from slack_sdk.web import WebClient
@@ -8,9 +7,8 @@ from slack_sdk.web import WebClient
 import builders
 import helpers
 from db import DbManager, schemas
+from logger import log_error, log_info, log_warning
 from slack import actions, orm
-
-_logger = logging.getLogger(__name__)
 
 
 def handle_leave_group(
@@ -23,7 +21,7 @@ def handle_leave_group(
     user_id = helpers.get_user_id_from_body(body)
     team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
-        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "leave_group"})
+        log_warning("authorization_denied", user_id=user_id, action="leave_group")
         return
 
     action_data = helpers.safe_get(body, "actions", 0) or {}
@@ -33,7 +31,7 @@ def handle_leave_group(
     try:
         group_id = int(group_id_str)
     except (TypeError, ValueError):
-        _logger.warning("leave_group_invalid_id", extra={"action_id": action_id})
+        log_warning("leave_group_invalid_id", action_id=action_id)
         return
 
     groups = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
@@ -70,10 +68,7 @@ def handle_leave_group(
                     ),
                 ]
             )
-            _logger.info(
-                "leave_group_blocked",
-                extra={"group_id": group_id, "workspace_id": workspace_record.id, "reason": reason},
-            )
+            log_info("leave_group_blocked", group_id=group_id, workspace_id=workspace_record.id, reason=reason)
             blocked_form.post_modal(
                 client=client,
                 trigger_id=trigger_id,
@@ -143,13 +138,13 @@ def handle_leave_group_confirm(
     user_id = helpers.get_user_id_from_body(body)
     team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
-        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "leave_group_confirm"})
+        log_warning("authorization_denied", user_id=user_id, action="leave_group_confirm")
         return
 
     meta = _parse_private_metadata(body)
     group_id = meta.get("group_id")
     if not group_id:
-        _logger.warning("leave_group_confirm: missing group_id in metadata")
+        log_warning("leave_group_confirm", reason="missing group_id in metadata")
         return
 
     if meta.get("blocked"):
@@ -165,10 +160,7 @@ def handle_leave_group_confirm(
     # modal-time check alone is bypassable with a forged view submission.
     allowed, reason = helpers.can_workspace_leave(group_id, workspace_record.id)
     if not allowed:
-        _logger.warning(
-            "leave_group_denied",
-            extra={"group_id": group_id, "workspace_id": workspace_record.id, "reason": reason},
-        )
+        log_warning("leave_group_denied", group_id=group_id, workspace_id=workspace_record.id, reason=reason)
         return
 
     groups = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
@@ -185,11 +177,12 @@ def handle_leave_group_confirm(
         ],
     )
     if not members:
-        _logger.warning("leave_group_confirm: not a member", extra={"group_id": group_id})
+        log_warning("leave_group_confirm_not_member", group_id=group_id)
         return
 
     acting_user_id = user_id
-    _, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    display_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    person = helpers.code_ticked_display_name(display_name, helpers.resolve_workspace_name(workspace_record))
 
     syncs_in_group = DbManager.find_records(schemas.Sync, [schemas.Sync.group_id == group_id])
 
@@ -207,18 +200,17 @@ def handle_leave_group_confirm(
             try:
                 client.conversations_leave(channel=ch.channel_id)
             except Exception as e:
-                _logger.warning(f"Failed to leave channel {ch.channel_id}: {e}")
+                log_warning("failed_to_leave_channel", channel_id=ch.channel_id, error=str(e))
 
-        if sync.publisher_workspace_id == workspace_record.id:
-            remaining = DbManager.find_records(
-                schemas.SyncChannel,
-                [schemas.SyncChannel.sync_id == sync.id, schemas.SyncChannel.deleted_at.is_(None)],
-            )
-            if not remaining:
-                # purge_sync, not a bare Sync delete: soft-deleted channels from an
-                # uninstalled member are excluded by `remaining` but still reference
-                # the sync, so a parent-first delete fails on MySQL.
-                helpers.purge_sync(sync.id)
+        remaining = DbManager.find_records(
+            schemas.SyncChannel,
+            [schemas.SyncChannel.sync_id == sync.id, schemas.SyncChannel.deleted_at.is_(None)],
+        )
+        if not remaining:
+            # purge_sync, not a bare Sync delete: soft-deleted channels from an
+            # uninstalled member are excluded by `remaining` but still reference
+            # the sync, so a parent-first delete fails on MySQL.
+            helpers.purge_sync(sync.id)
 
     DbManager.delete_records(
         schemas.UserMapping,
@@ -244,10 +236,14 @@ def handle_leave_group_confirm(
             },
         )
 
-    _logger.info(
-        "group_left",
-        extra={"workspace_id": workspace_record.id, "group_id": group_id, "group_name": group.name},
-    )
+    try:
+        from federation.replicate import replicate_group_leave
+
+        replicate_group_leave(group, workspace_record)
+    except Exception:
+        log_warning("federation_replicate_group_leave_failed", group_id=group_id)
+
+    log_info("group_left", workspace_id=workspace_record.id, group_id=group_id, group_name=group.name)
 
     remaining_members = DbManager.find_records(
         schemas.WorkspaceGroupMember,
@@ -259,25 +255,25 @@ def handle_leave_group_confirm(
     )
 
     if not remaining_members:
-        DbManager.delete_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
-        _logger.info("group_deleted_empty", extra={"group_id": group_id})
+        # Keep the group when an uninstalled owner is still in retention.
+        helpers.succeed_ownership(group_id)
     else:
         for member in remaining_members:
             if not member.workspace_id:
                 continue
             member_ws = helpers.get_workspace_by_id(member.workspace_id)
-            if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+            if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
                 continue
             try:
-                member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
+                member_client = WebClient(token=helpers.get_bot_token(member_ws))
                 helpers.notify_admins_dm(
                     member_client,
-                    f":wave: *{admin_label}* left the group *{group.name}*.",
+                    f":wave: {person} left `{group.name}`.",
                     team_id=member_ws.team_id,
                 )
                 builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
             except Exception as e:
-                _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
+                log_warning("failed_to_notify_group_member", workspace_id=member.workspace_id, error=str(e))
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     _close_modal_done(client, body, f":wave: You have left *{group.name}*. You can close this now.")
@@ -290,7 +286,7 @@ def _member_id_from_action(body: dict, prefix: str) -> int | None:
     try:
         return int(raw)
     except (TypeError, ValueError):
-        _logger.warning("invalid_member_id", extra={"action": prefix, "raw_length": len(str(raw))})
+        log_warning("invalid_member_id", action=prefix, raw_length=len(str(raw)))
         return None
 
 
@@ -300,14 +296,14 @@ def _notify_group_admins(group_id: int, message: str, logger: Logger) -> None:
         if not member.workspace_id:
             continue
         member_ws = helpers.get_workspace_by_id(member.workspace_id)
-        if not member_ws or not member_ws.bot_token or member_ws.deleted_at:
+        if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
             continue
         try:
-            member_client = WebClient(token=helpers.decrypt_bot_token(member_ws.bot_token))
+            member_client = WebClient(token=helpers.get_bot_token(member_ws))
             helpers.notify_admins_dm(member_client, message, team_id=member_ws.team_id)
             builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
         except Exception as e:
-            _logger.warning(f"Failed to notify group member {member.workspace_id}: {e}")
+            log_warning("failed_to_notify_group_member", workspace_id=member.workspace_id, error=str(e))
 
 
 def handle_promote_to_owner(
@@ -338,22 +334,17 @@ def handle_promote_to_owner(
         return
 
     if not helpers.is_workspace_owner(target.group_id, workspace_record.id):
-        _logger.warning(
+        log_warning(
             "authorization_denied",
-            extra={
-                "action": "promote_to_owner",
-                "group_id": target.group_id,
-                "acting_workspace_id": workspace_record.id,
-            },
+            action="promote_to_owner",
+            group_id=target.group_id,
+            acting_workspace_id=workspace_record.id,
         )
         return
 
     eligible_ids = {member.id for member in helpers.get_promotable_members(target.group_id)}
     if member_id not in eligible_ids:
-        _logger.warning(
-            "promote_to_owner_ineligible",
-            extra={"member_id": member_id, "group_id": target.group_id},
-        )
+        log_warning("promote_to_owner_ineligible", member_id=member_id, group_id=target.group_id)
         return
 
     DbManager.update_records(
@@ -362,14 +353,12 @@ def handle_promote_to_owner(
         {schemas.WorkspaceGroupMember.role: helpers.OWNER},
     )
 
-    _logger.info(
+    log_info(
         "group_owner_promoted",
-        extra={
-            "group_id": target.group_id,
-            "member_id": member_id,
-            "workspace_id": target.workspace_id,
-            "promoted_by_workspace_id": workspace_record.id,
-        },
+        group_id=target.group_id,
+        member_id=member_id,
+        workspace_id=target.workspace_id,
+        promoted_by_workspace_id=workspace_record.id,
     )
 
     group = DbManager.get_record(schemas.WorkspaceGroup, id=target.group_id)
@@ -377,7 +366,7 @@ def handle_promote_to_owner(
     target_name = helpers.resolve_workspace_name(target_ws) if target_ws else "A Workspace"
     _notify_group_admins(
         target.group_id,
-        f":key: *{target_name}* is now an Owner of the group *{group.name if group else 'the group'}*.",
+        f":key: `{target_name}` is now an Owner of `{group.name if group else 'the group'}`.",
         logger,
     )
 
@@ -412,13 +401,8 @@ def handle_demote_self(
         return
 
     if target.workspace_id != workspace_record.id:
-        _logger.warning(
-            "authorization_denied",
-            extra={
-                "action": "demote_self",
-                "member_id": member_id,
-                "acting_workspace_id": workspace_record.id,
-            },
+        log_warning(
+            "authorization_denied", action="demote_self", member_id=member_id, acting_workspace_id=workspace_record.id
         )
         return
 
@@ -426,10 +410,7 @@ def handle_demote_self(
     if not any(owner.id == member_id for owner in owners):
         return
     if len(owners) < 2:
-        _logger.info(
-            "demote_self_blocked_sole_owner",
-            extra={"group_id": target.group_id, "workspace_id": workspace_record.id},
-        )
+        log_info("demote_self_blocked_sole_owner", group_id=target.group_id, workspace_id=workspace_record.id)
         return
 
     DbManager.update_records(
@@ -438,17 +419,13 @@ def handle_demote_self(
         {schemas.WorkspaceGroupMember.role: helpers.MEMBER},
     )
 
-    _logger.info(
-        "group_owner_demoted",
-        extra={"group_id": target.group_id, "member_id": member_id, "workspace_id": workspace_record.id},
-    )
+    log_info("group_owner_demoted", group_id=target.group_id, member_id=member_id, workspace_id=workspace_record.id)
 
     group = DbManager.get_record(schemas.WorkspaceGroup, id=target.group_id)
     ws_name = helpers.resolve_workspace_name(workspace_record)
     _notify_group_admins(
         target.group_id,
-        f":information_source: *{ws_name}* is no longer an Owner of the group "
-        f"*{group.name if group else 'the group'}*.",
+        f":door: `{ws_name}` is no longer an Owner of `{group.name if group else 'the group'}`.",
         logger,
     )
 
@@ -471,7 +448,7 @@ def _disband_denial_message(reason: str, group_name: str, group_id: int, workspa
         for publisher_id in publisher_ids:
             publisher_ws = helpers.get_workspace_by_id(publisher_id)
             names.append(helpers.resolve_workspace_name(publisher_ws) if publisher_ws else f"Workspace {publisher_id}")
-        named = ", ".join(f"*{name}*" for name in names) or "another Workspace"
+        named = ", ".join(f"`{name}`" for name in names) or "another Workspace"
         return (
             f':lock: *"{group_name}" still has Channels published by other Workspaces.*\n\n'
             f"{named} would lose work you do not own, so disbanding is blocked. "
@@ -510,7 +487,7 @@ def handle_disband_group(
     try:
         group_id = int(raw)
     except (TypeError, ValueError):
-        _logger.warning("disband_group_invalid_id")
+        log_warning("disband_group_invalid_id")
         return
 
     groups = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
@@ -524,10 +501,7 @@ def handle_disband_group(
 
     allowed, reason = helpers.can_disband(group_id, workspace_record.id)
     if not allowed:
-        _logger.info(
-            "disband_group_blocked",
-            extra={"group_id": group_id, "workspace_id": workspace_record.id, "reason": reason},
-        )
+        log_info("disband_group_blocked", group_id=group_id, workspace_id=workspace_record.id, reason=reason)
         orm.BlockView(
             blocks=[
                 orm.SectionBlock(
@@ -609,7 +583,7 @@ def handle_disband_group_confirm(
     user_id = helpers.get_user_id_from_body(body)
     team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
-        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": "disband_group_confirm"})
+        log_warning("authorization_denied", user_id=user_id, action="disband_group_confirm")
         return
 
     meta = _parse_private_metadata(body)
@@ -625,10 +599,7 @@ def handle_disband_group_confirm(
     # modal-time check alone is bypassable with a forged view submission.
     allowed, reason = helpers.can_disband(group_id, workspace_record.id)
     if not allowed:
-        _logger.warning(
-            "disband_group_denied",
-            extra={"group_id": group_id, "workspace_id": workspace_record.id, "reason": reason},
-        )
+        log_warning("disband_group_denied", group_id=group_id, workspace_id=workspace_record.id, reason=reason)
         return
 
     groups = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
@@ -637,12 +608,13 @@ def handle_disband_group_confirm(
     group = groups[0]
 
     acting_user_id = user_id
-    _, admin_label = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    display_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    person = helpers.code_ticked_display_name(display_name, helpers.resolve_workspace_name(workspace_record))
 
     # Notify before the teardown, while the membership rows still exist.
     _notify_group_admins(
         group_id,
-        f":wastebasket: *{admin_label}* disbanded the group *{group.name}*. Its Channel Syncs have been removed.",
+        f":wastebasket: {person} disbanded `{group.name}`. Its Channel Syncs have been removed.",
         logger,
     )
 
@@ -654,18 +626,18 @@ def handle_disband_group_confirm(
         try:
             helpers.purge_sync(sync.id)
         except Exception as e:
-            _logger.error("disband_purge_sync_failed", extra={"sync_id": sync.id, "error": str(e)})
+            log_error("disband_purge_sync_failed", sync_id=sync.id, error=str(e))
             return
 
         for channel in channels:
             channel_ws = helpers.get_workspace_by_id(channel.workspace_id)
-            if not channel_ws or not channel_ws.bot_token:
+            if not channel_ws or not helpers.get_bot_token(channel_ws):
                 continue
             try:
-                ws_client = WebClient(token=helpers.decrypt_bot_token(channel_ws.bot_token))
+                ws_client = WebClient(token=helpers.get_bot_token(channel_ws))
                 ws_client.conversations_leave(channel=channel.channel_id)
             except Exception as e:
-                _logger.warning(f"Failed to leave channel {channel.channel_id}: {e}")
+                log_warning("failed_to_leave_channel", channel_id=channel.channel_id, error=str(e))
 
     DbManager.delete_records(schemas.UserMapping, [schemas.UserMapping.group_id == group_id])
     DbManager.delete_records(
@@ -674,10 +646,7 @@ def handle_disband_group_confirm(
     )
     DbManager.delete_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group_id])
 
-    _logger.info(
-        "group_disbanded",
-        extra={"group_id": group_id, "group_name": group.name, "workspace_id": workspace_record.id},
-    )
+    log_info("group_disbanded", group_id=group_id, group_name=group.name, workspace_id=workspace_record.id)
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
     _close_modal_done(client, body, f":wastebasket: *{group.name}* has been disbanded. You can close this now.")
