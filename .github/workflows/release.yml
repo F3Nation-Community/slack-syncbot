@@ -82,6 +82,7 @@ jobs:
             const parentSha = context.sha;
 
             const pyproject = fs.readFileSync('pyproject.toml', 'utf8');
+            const constantsPy = fs.readFileSync('syncbot/constants.py', 'utf8');
             const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
 
             function notesFromChangelog(md, ver) {
@@ -117,6 +118,7 @@ jobs:
               base_tree: parentCommit.tree.sha,
               tree: [
                 { path: 'pyproject.toml', mode: '100644', type: 'blob', content: pyproject },
+                { path: 'syncbot/constants.py', mode: '100644', type: 'blob', content: constantsPy },
                 { path: 'CHANGELOG.md', mode: '100644', type: 'blob', content: changelog },
               ],
             });

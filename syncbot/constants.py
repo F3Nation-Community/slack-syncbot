@@ -219,7 +219,7 @@ def get_database_backend() -> str:
 
 
 # Keep in lockstep with [tool.poetry] version. python-semantic-release updates both.
-__version__ = "1.6.2"
+__version__ = "1.7.0"
 
 
 def app_version() -> str:

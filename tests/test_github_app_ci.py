@@ -66,6 +66,7 @@ def test_release_copies_changelog_section_to_github_release() -> None:
     text = (REPO_ROOT / ".github" / "workflows" / "release.yml").read_text()
     assert "function notesFromChangelog" in text
     assert "steps.psr.outputs.release_notes" not in text
+    assert "path: 'syncbot/constants.py'" in text
 
 
 def test_psr_changelog_excludes_non_user_facing_commits() -> None:
