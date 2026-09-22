@@ -126,7 +126,18 @@ def test_slack_events_oversize_413_on_container_server(monkeypatch) -> None:
         f"\r\n"
     )
     conn.sendall(request.encode())
-    response = conn.recv(4096)
+    conn.settimeout(0.2)
+    chunks: list[bytes] = []
+    deadline = time.monotonic() + 2
+    while b"payload_too_large" not in b"".join(chunks) and time.monotonic() < deadline:
+        try:
+            more = conn.recv(4096)
+        except TimeoutError:
+            continue
+        if not more:
+            break
+        chunks.append(more)
     conn.close()
+    response = b"".join(chunks)
     assert b"413" in response
     assert b"payload_too_large" in response

@@ -213,6 +213,7 @@ class TestSettingsHandlerGate:
             patch("handlers.settings.helpers.federation_enabled", return_value=False),
             patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
             patch("handlers.settings.builders.refresh_home_tab_for_workspace"),
+            patch("handlers.settings._primary_workspace_label", return_value="Workspace A"),
         ):
             handle_settings_submit(body, MagicMock(), MagicMock(), context={})
 
@@ -263,6 +264,8 @@ class TestSettingsFormRenders:
             patch("handlers.settings.helpers.federation_enabled", return_value=False),
             patch("handlers.settings.helpers.soft_delete_retention_days", return_value=30),
             patch("handlers.settings.helpers.workspace_block_list", return_value=[]),
+            patch("handlers.settings._primary_workspace_label", return_value="Workspace A"),
+            patch("handlers.settings._instance_fingerprint", return_value="aabb" + "c" * 60),
         ):
             blocks = _build_settings_form("T_PRIMARY").as_form_field()
 
@@ -286,6 +289,7 @@ class TestSettingsFormRenders:
             patch.dict(os.environ, {constants.PRIMARY_WORKSPACE: "T_PRIMARY"}),
             patch("handlers.settings.helpers.allow_private_channels", return_value=False),
             patch("handlers.settings.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.settings._primary_workspace_label", return_value="Workspace A"),
         ):
             blocks = _build_settings_form("T_OTHER").as_form_field()
 
