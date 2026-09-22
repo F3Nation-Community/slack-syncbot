@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from typing import Any
 
@@ -10,10 +9,10 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from helpers.conversations import get_user_token
-from helpers.core import format_file_share_notice, safe_get
-from helpers.encryption import decrypt_bot_token
+from helpers.core import format_file_share_notice, format_synced_from_line, safe_get
 from helpers.files import upload_files_to_slack
-from helpers.message_blocks import rewrite_content_blocks, trim_target_blocks
+from helpers.message_blocks import blocks_include_body, rewrite_content_blocks, trim_target_blocks
+from helpers.notifications import notify_source_user_error
 from helpers.slack_api import delete_message, post_message, slack_error_code
 from helpers.user_action_echo import remember_pending_file_share, remember_user_action, slack_message_ts
 from helpers.user_map import (
@@ -24,16 +23,18 @@ from helpers.user_map import (
     resolve_channel_references,
     resolve_mention_for_workspace,
 )
-from logger import log_sync
-
-_logger = logging.getLogger(__name__)
+from helpers.workspace import get_bot_token
+from logger import log_debug, log_error, log_info, log_warning
 
 _NO_AUTHORIZE_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "missing_scope", "account_inactive"})
 _USER_WRITE_ERRORS = _NO_AUTHORIZE_ERRORS | frozenset({"not_in_channel", "channel_not_found"})
 
 
 def _bot_token_for(workspace) -> str:
-    return decrypt_bot_token(workspace.bot_token)
+    token = get_bot_token(workspace)
+    if not token:
+        raise ValueError("bot_token_unavailable")
+    return token
 
 
 def pick_write_token(workspace, mapped_user_id: str | None) -> tuple[str, str | None]:
@@ -115,6 +116,48 @@ def build_target_blocks(
     return trim_target_blocks(rewritten + (photo_blocks or []))
 
 
+def _notify_file_write_failed(
+    *,
+    envelope: dict[str, Any],
+    source_client: WebClient | None,
+    channel_id: str,
+    error: str,
+) -> None:
+    log_error(
+        "file_share_failed",
+        reason="upload_failed",
+        channel_id=channel_id,
+        error=error,
+        post_id=envelope.get("post_id"),
+        thread_post_id=envelope.get("thread_post_id"),
+    )
+    summary = (
+        ":warning: SyncBot could not copy your file because that workspace's file storage is full."
+        if error == "storage_limit_reached"
+        else ":warning: SyncBot could not copy your file to the other Channels."
+    )
+    notify_source_user_error(
+        source_client=source_client,
+        source_user_id=envelope.get("source_user_id"),
+        summary=summary,
+        details={
+            "event": "file_share_failed",
+            "reason": "upload_failed",
+            "error": error,
+            "channel": channel_id,
+        },
+    )
+
+
+def _blocks_for_file_share(adapted_text: str, target_blocks: list[dict] | None) -> list[dict] | None:
+    """Message body for a file share. Slack drops blocks when a comment is also set."""
+    blocks = list(target_blocks or [])
+    text = (adapted_text or "").strip()
+    if text and not blocks_include_body(blocks):
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": text}}] + blocks
+    return blocks or None
+
+
 def _upload_target_files(
     *,
     token: str,
@@ -126,6 +169,12 @@ def _upload_target_files(
     team_id: str | None,
     as_user: str | None,
     post_id: str | None = None,
+    sync_channel_id: int | None = None,
+    source_user_id: str | None = None,
+    source_workspace_id: int | None = None,
+    blocks: list[dict] | None = None,
+    username: str | None = None,
+    icon_url: str | None = None,
 ) -> str | None:
     """Upload files on the target; remember echo when posted as a mapped user."""
 
@@ -145,16 +194,28 @@ def _upload_target_files(
         channel_id=channel_id,
         files=files,
         initial_comment=initial_comment,
+        blocks=blocks,
+        username=username,
+        icon_url=icon_url,
         thread_ts=thread_ts,
         reply_broadcast=reply_broadcast,
         after_upload=_remember_files,
         after_share_ts=_remember_ts,
     )
-    if not file_ts and post_id and team_id:
+    if not file_ts and post_id and team_id and sync_channel_id:
         for file_id in uploaded_ids:
-            remember_pending_file_share(team_id, channel_id, file_id, post_id)
+            remember_pending_file_share(
+                team_id,
+                channel_id,
+                file_id,
+                post_id,
+                sync_channel_id=sync_channel_id,
+                source_user_id=source_user_id,
+                source_workspace_id=source_workspace_id,
+                posted_as_user_id=as_user,
+            )
         if uploaded_ids:
-            log_sync(
+            log_debug(
                 "file_share_ts",
                 channel_id=channel_id,
                 ts=None,
@@ -185,10 +246,7 @@ def _apply_share_blocks(
             reply_broadcast=reply_broadcast,
         )
     except Exception as exc:
-        _logger.warning(
-            "slack_write_share_blocks_failed",
-            extra={"channel_id": channel_id, "error": str(exc)},
-        )
+        log_warning("slack_write_share_blocks_failed", channel_id=channel_id, error=str(exc))
 
 
 def _post_target_text(
@@ -204,13 +262,10 @@ def _post_target_text(
     target_icon_url: str | None,
     user_avatar_url: str | None,
     remote_workspace_label: str | None,
-    file_refs: list,
-    file_notice: str,
     team_id: str | None,
     as_user: str | None,
-    post_id: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
-    """Post target text (optional blocks), then optional threaded files."""
+    """Post target text. A file share is its own message, not a reply under this one."""
     post_kwargs: dict[str, Any] = {
         "bot_token": token,
         "channel_id": channel_id,
@@ -226,26 +281,9 @@ def _post_target_text(
 
     res = post_message(**post_kwargs)
     ts = safe_get(res, "ts")
-    split_file_ts: str | None = None
-
-    if file_refs and ts:
-        file_thread_ts = thread_ts or ts
-        file_broadcast = reply_broadcast or thread_ts is None
-        split_file_ts = _upload_target_files(
-            token=token,
-            channel_id=channel_id,
-            files=file_refs,
-            initial_comment=file_notice,
-            thread_ts=file_thread_ts,
-            reply_broadcast=file_broadcast,
-            team_id=team_id,
-            as_user=as_user,
-            post_id=post_id,
-        )
-
     if as_user and ts:
         remember_message_echo(team_id, as_user, channel_id, ts)
-    return ts, split_file_ts, as_user
+    return ts, None, as_user
 
 
 def _mentioned_users_from_envelope(envelope: dict[str, Any]) -> list[dict]:
@@ -345,13 +383,21 @@ def slack_write_create(
             source_workspace_name=workspace_name,
             mentioned_users=mentioned_users,
         )
+    elif content_blocks:
+        target_blocks = trim_target_blocks(list(content_blocks) + list(images or []))
     elif images:
         target_blocks = list(images)
 
+    pending_apply = {
+        "sync_channel_id": sync_channel.id,
+        "source_user_id": source_user_id or None,
+        "source_workspace_id": envelope.get("source_workspace_id") or None,
+    }
+
     def _write(token: str, customize: bool, as_user: str | None) -> tuple[str | None, str | None, str | None]:
-        # User-token uploads are native file shares: caption and files on one
-        # message, like the source. Bot-token posts cannot do that, so they
-        # still split text-plus-file and use the code-ticked notice.
+        # The file share is the message. completeUploadExternal accepts blocks,
+        # username, and icon_url. A comment and blocks together drop the blocks.
+        # User tokens keep the caption as initial_comment, then chat.update blocks.
         if file_refs and as_user:
             comment = (adapted_text or "").strip() or None
             file_ts = _upload_target_files(
@@ -364,8 +410,12 @@ def slack_write_create(
                 team_id=workspace.team_id,
                 as_user=as_user,
                 post_id=post_id,
+                **pending_apply,
             )
-            if file_ts and target_blocks:
+            if not file_ts:
+                # Share is in Slack; inbound file_share completes PostMeta.
+                return None, None, as_user
+            if target_blocks:
                 _apply_share_blocks(
                     token=token,
                     channel_id=sync_channel.channel_id,
@@ -375,19 +425,32 @@ def slack_write_create(
                     reply_broadcast=reply_broadcast,
                 )
             return file_ts, None, as_user
-        if file_refs and not msg_text.strip() and not content_blocks:
+        if file_refs:
+            share_blocks = _blocks_for_file_share(adapted_text, target_blocks)
             file_ts = _upload_target_files(
                 token=token,
                 channel_id=sync_channel.channel_id,
                 files=file_refs,
-                initial_comment=file_notice,
+                initial_comment=None if share_blocks else file_notice,
+                blocks=share_blocks,
+                username=(
+                    format_synced_from_line(name_for_target, remote_workspace_label)
+                    if share_blocks and customize
+                    else None
+                ),
+                icon_url=(target_icon_url or user_avatar_url) if share_blocks and customize else None,
                 thread_ts=thread_ts,
                 reply_broadcast=reply_broadcast,
                 team_id=workspace.team_id,
                 as_user=as_user,
                 post_id=post_id,
+                **pending_apply,
             )
+            if not file_ts:
+                return None, None, as_user
             return file_ts, None, as_user
+        if not (adapted_text or "").strip() and not target_blocks:
+            raise RuntimeError("empty_message_create")
         return _post_target_text(
             token=token,
             channel_id=sync_channel.channel_id,
@@ -400,41 +463,34 @@ def slack_write_create(
             target_icon_url=target_icon_url,
             user_avatar_url=user_avatar_url,
             remote_workspace_label=remote_workspace_label,
-            file_refs=file_refs,
-            file_notice=file_notice,
             team_id=workspace.team_id,
             as_user=as_user,
-            post_id=post_id,
         )
+
+    def _fail_create(exc: Exception) -> tuple[None, None, None]:
+        log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=str(exc))
+        if file_refs:
+            _notify_file_write_failed(
+                envelope=envelope,
+                source_client=source_client,
+                channel_id=sync_channel.channel_id,
+                error=slack_error_code(exc) or str(exc),
+            )
+        return None, None, None
 
     try:
         return _write(write_token, use_customize, posted_as)
     except SlackApiError as exc:
         code = slack_error_code(exc)
         if posted_as and code in _USER_WRITE_ERRORS:
-            _logger.info(
-                "slack_write_user_fallback_bot",
-                extra={"channel_id": sync_channel.channel_id, "error": code},
-            )
+            log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
             try:
                 return _write(bot_token, True, None)
             except Exception as retry_exc:
-                _logger.warning(
-                    "slack_write_bot_fallback_failed",
-                    extra={"channel_id": sync_channel.channel_id, "error": str(retry_exc)},
-                )
-                return None, None, None
-        _logger.warning(
-            "slack_write_create_failed",
-            extra={"channel_id": sync_channel.channel_id, "error": str(exc)},
-        )
-        return None, None, None
+                return _fail_create(retry_exc)
+        return _fail_create(exc)
     except Exception as exc:
-        _logger.warning(
-            "slack_write_create_failed",
-            extra={"channel_id": sync_channel.channel_id, "error": str(exc)},
-        )
-        return None, None, None
+        return _fail_create(exc)
 
 
 def slack_write_edit(
@@ -459,16 +515,14 @@ def slack_write_edit(
     bot_token = _bot_token_for(workspace)
     target_client = WebClient(token=bot_token)
     token = bot_token
+    used_user_token = False
     if posted_as:
         user_token = get_user_token(workspace.team_id, posted_as)
         if user_token:
             token = user_token
+            used_user_token = True
         else:
-            _logger.warning(
-                "slack_write_edit_skip_no_user_token",
-                extra={"channel_id": sync_channel.channel_id, "posted_as": posted_as},
-            )
-            return False
+            log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error="no_user_token")
 
     mentioned_users: list[dict] = []
     adapted_text = msg_text
@@ -499,25 +553,44 @@ def slack_write_edit(
                 source_workspace_name=workspace_name,
                 mentioned_users=mentioned_users,
             )
+    elif content_blocks:
+        target_blocks = trim_target_blocks(list(content_blocks) + list(images or []))
     elif images:
         target_blocks = list(images)
 
-    try:
+    def _update(write_token: str, as_user: str | None) -> bool:
         post_message(
-            bot_token=token,
+            bot_token=write_token,
             channel_id=sync_channel.channel_id,
             msg_text=adapted_text,
             update_ts=update_ts,
             blocks=target_blocks or None,
         )
-        if posted_as:
-            remember_message_echo(workspace.team_id, posted_as, sync_channel.channel_id, update_ts)
+        if as_user:
+            remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, update_ts)
         return True
+
+    try:
+        return _update(token, posted_as if used_user_token else None)
+    except SlackApiError as exc:
+        code = slack_error_code(exc)
+        if used_user_token and code in _USER_WRITE_ERRORS | {"cant_update_message"}:
+            log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
+            try:
+                return _update(bot_token, None)
+            except SlackApiError as retry_exc:
+                retry_code = slack_error_code(retry_exc)
+                log_warning(
+                    "slack_write_edit_failed", channel_id=sync_channel.channel_id, error=retry_code or str(retry_exc)
+                )
+                return False
+            except Exception as retry_exc:
+                log_warning("slack_write_edit_failed", channel_id=sync_channel.channel_id, error=str(retry_exc))
+                return False
+        log_warning("slack_write_edit_failed", channel_id=sync_channel.channel_id, error=code or str(exc))
+        return False
     except Exception as exc:
-        _logger.warning(
-            "slack_write_edit_failed",
-            extra={"channel_id": sync_channel.channel_id, "error": str(exc)},
-        )
+        log_warning("slack_write_edit_failed", channel_id=sync_channel.channel_id, error=str(exc))
         return False
 
 
@@ -532,9 +605,8 @@ def slack_write_delete(*, sync_channel, workspace, target_post_meta) -> bool:
         if user_token:
             token = user_token
         else:
-            _logger.warning(
-                "slack_write_delete_skip_no_user_token",
-                extra={"channel_id": sync_channel.channel_id, "posted_as": posted_as},
+            log_warning(
+                "slack_write_delete_skip_no_user_token", channel_id=sync_channel.channel_id, posted_as=posted_as
             )
             return False
     try:
@@ -543,8 +615,5 @@ def slack_write_delete(*, sync_channel, workspace, target_post_meta) -> bool:
             remember_message_echo(workspace.team_id, posted_as, sync_channel.channel_id, ts)
         return True
     except Exception as exc:
-        _logger.warning(
-            "slack_write_delete_failed",
-            extra={"channel_id": sync_channel.channel_id, "error": str(exc)},
-        )
+        log_warning("slack_write_delete_failed", channel_id=sync_channel.channel_id, error=str(exc))
         return False

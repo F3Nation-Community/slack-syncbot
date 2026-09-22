@@ -15,9 +15,9 @@ class TestSplitMessagePostMeta:
         client = MagicMock(spec=WebClient)
 
         sc_source = SimpleNamespace(id=1, channel_id="C_SRC", sync_id=7)
-        ws_source = SimpleNamespace(id=10, team_id="T1", bot_token="enc", workspace_name="A")
+        ws_source = SimpleNamespace(id=10, team_id="T1", workspace_name="A")
         sc_target = SimpleNamespace(id=2, channel_id="C_TGT", sync_id=7)
-        ws_target = SimpleNamespace(id=20, team_id="T2", bot_token="enc", workspace_name="B")
+        ws_target = SimpleNamespace(id=20, team_id="T2", workspace_name="B")
 
         body = {
             "event": {
@@ -49,11 +49,10 @@ class TestSplitMessagePostMeta:
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
             patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
-            patch("handlers.message.helpers.get_federated_workspace_for_sync", return_value=None),
             patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-test"),
             patch("handlers.message.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
             patch("handlers.message.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
-            patch("handlers.message.helpers.get_workspace_by_id", return_value=None),
+            patch("handlers.message.DbManager.find_records", return_value=[]),
             patch(
                 "handlers.message.helpers.get_display_name_and_icon_for_synced_message",
                 return_value=("N", None, False, None),
@@ -79,9 +78,9 @@ class TestSplitMessagePostMeta:
         pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0, source_workspace_id=10)
         pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0, source_workspace_id=10)
         sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7, publishes=True)
-        ws_source = SimpleNamespace(id=10, workspace_name="A", bot_token="enc")
+        ws_source = SimpleNamespace(id=10, workspace_name="A")
         sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7, publishes=True)
-        ws_target = SimpleNamespace(id=20, workspace_name="B", bot_token="enc")
+        ws_target = SimpleNamespace(id=20, workspace_name="B")
 
         post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
 
@@ -112,11 +111,10 @@ class TestSplitMessagePostMeta:
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
             patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
-            patch("handlers.message.helpers.get_federated_workspace_for_sync", return_value=None),
             patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-test"),
             patch("handlers.message.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
             patch("handlers.message.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
-            patch("handlers.message.helpers.get_workspace_by_id", return_value=None),
+            patch("handlers.message.DbManager.find_records", return_value=[]),
             patch(
                 "handlers.message.helpers.get_display_name_and_icon_for_synced_message",
                 return_value=("N", None, False, None),
@@ -144,9 +142,9 @@ class TestFileOnlyThreadPostMeta:
         pm_src = SimpleNamespace(id=1, post_id="parent", ts=10.0, source_workspace_id=10)
         pm_tgt = SimpleNamespace(id=2, post_id="parent", ts=20.0, source_workspace_id=10)
         sc_source = SimpleNamespace(id=11, channel_id="C_SRC", sync_id=7, publishes=True)
-        ws_source = SimpleNamespace(id=10, workspace_name="A", bot_token="enc")
+        ws_source = SimpleNamespace(id=10, workspace_name="A")
         sc_target = SimpleNamespace(id=22, channel_id="C_TGT", sync_id=7, publishes=True)
-        ws_target = SimpleNamespace(id=20, workspace_name="B", bot_token="enc")
+        ws_target = SimpleNamespace(id=20, workspace_name="B")
 
         post_records = [(pm_src, sc_source, ws_source), (pm_tgt, sc_target, ws_target)]
 
@@ -173,11 +171,10 @@ class TestFileOnlyThreadPostMeta:
                 return_value=[SimpleNamespace(post_id="child", sync_channel_id=22, ts=350.0)],
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
-            patch("handlers.message.helpers.get_federated_workspace_for_sync", return_value=None),
             patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-test"),
             patch("handlers.message.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
             patch("handlers.message.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
-            patch("handlers.message.helpers.get_workspace_by_id", return_value=None),
+            patch("handlers.message.DbManager.find_records", return_value=[]),
             patch(
                 "handlers.message.helpers.get_display_name_and_icon_for_synced_message",
                 return_value=("N", None, False, None),

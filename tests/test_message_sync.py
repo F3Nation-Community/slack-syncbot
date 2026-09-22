@@ -1,4 +1,4 @@
-"""Tests for sync list / post record deduplication."""
+"""Tests for post record deduplication."""
 
 from types import SimpleNamespace
 from unittest.mock import patch

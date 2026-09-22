@@ -22,7 +22,7 @@ def _write(ctx, direct_files, *, user_name="Ada", thread_ts=None):
             "reply_broadcast": bool(ctx.get("reply_broadcast")),
         },
         sync_channel=SimpleNamespace(channel_id="C_TGT", id=2),
-        workspace=SimpleNamespace(id=2, team_id="T2", bot_token="enc"),
+        workspace=SimpleNamespace(id=2, team_id="T2"),
         source_client=MagicMock(),
         thread_ts=thread_ts,
     )
@@ -46,8 +46,8 @@ class TestFromLineUsername:
         from helpers.core import code_ticked_display_name
         from helpers.user_map import format_unmapped_author_label
 
-        assert code_ticked_display_name("F3 Tulsa - TEST", "F3 T-Town Test") == "`F3 Tulsa - TEST (F3 T-Town Test)`"
-        assert format_unmapped_author_label("F3 Tulsa - TEST", "F3 T-Town Test") == "`F3 Tulsa - TEST (F3 T-Town Test)`"
+        assert code_ticked_display_name("Workspace B", "Workspace A") == "`Workspace B (Workspace A)`"
+        assert format_unmapped_author_label("Workspace B", "Workspace A") == "`Workspace B (Workspace A)`"
         assert "@" not in code_ticked_display_name("Ada", "WS")
         assert "[" not in code_ticked_display_name("Ada", "WS")
 
@@ -56,7 +56,7 @@ class TestFileOnlyAuthorAttribution:
     def test_pdf_uses_single_upload_with_ticked_notice(self):
         ctx = make_event_context(msg_text=" ", user_id="U_SRC", reply_broadcast=False)
         with (
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
             patch("helpers.slack_write.WebClient"),
             patch(
                 "helpers.slack_write.get_display_name_and_icon_for_synced_message",
@@ -83,7 +83,7 @@ class TestFileOnlyAuthorAttribution:
     def test_file_only_thread_reply_uses_parent_thread_ts(self):
         ctx = make_event_context(msg_text="", user_id="U_SRC", reply_broadcast=False)
         with (
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
             patch("helpers.slack_write.WebClient"),
             patch(
                 "helpers.slack_write.get_display_name_and_icon_for_synced_message",
@@ -109,7 +109,7 @@ class TestFileOnlyAuthorAttribution:
     def test_image_file_uses_same_notice_as_pdf(self):
         ctx = make_event_context(msg_text="", user_id="U_SRC", reply_broadcast=False)
         with (
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
             patch("helpers.slack_write.WebClient"),
             patch(
                 "helpers.slack_write.get_display_name_and_icon_for_synced_message",
@@ -128,10 +128,10 @@ class TestFileOnlyAuthorAttribution:
 
 
 class TestTextPlusFileUpload:
-    def test_threaded_file_uses_same_notice(self):
+    def test_bot_text_and_file_share_one_message(self):
         ctx = make_event_context(msg_text="see attached", user_id="U_SRC", reply_broadcast=False)
         with (
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
             patch("helpers.slack_write.WebClient"),
             patch(
                 "helpers.slack_write.get_display_name_and_icon_for_synced_message",
@@ -140,18 +140,22 @@ class TestTextPlusFileUpload:
             patch("helpers.slack_write.apply_mentioned_users", side_effect=lambda t, *_a, **_k: t),
             patch("helpers.slack_write.resolve_channel_references", side_effect=lambda t, *_a, **_k: t),
             patch("helpers.workspace.get_workspace_by_id", return_value=None),
-            patch("helpers.slack_write.post_message", return_value={"ts": "100.0"}),
+            patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "200.0")) as upload_files,
         ):
-            _write(ctx, [{"path": "/tmp/a.pdf", "name": "a.pdf"}])
-        assert upload_files.call_args.kwargs["initial_comment"] == "`Ada` shared a file"
-        assert upload_files.call_args.kwargs["thread_ts"] == "100.0"
-        assert upload_files.call_args.kwargs["reply_broadcast"] is True
+            ts, split, _posted = _write(ctx, [{"path": "/tmp/a.pdf", "name": "a.pdf"}])
+        assert (ts, split) == ("200.0", None)
+        post_msg.assert_not_called()
+        assert upload_files.call_args.kwargs["initial_comment"] is None
+        assert upload_files.call_args.kwargs["thread_ts"] is None
+        assert upload_files.call_args.kwargs["reply_broadcast"] is False
+        assert upload_files.call_args.kwargs["username"] == "Ada"
+        assert upload_files.call_args.kwargs["blocks"][0]["text"]["text"] == "see attached"
 
     def test_thread_reply_text_plus_file_uploads_at_parent_thread(self):
         ctx = make_event_context(msg_text="see attached", user_id="U_SRC", reply_broadcast=False)
         with (
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
             patch("helpers.slack_write.WebClient"),
             patch(
                 "helpers.slack_write.get_display_name_and_icon_for_synced_message",
@@ -160,7 +164,7 @@ class TestTextPlusFileUpload:
             patch("helpers.slack_write.apply_mentioned_users", side_effect=lambda t, *_a, **_k: t),
             patch("helpers.slack_write.resolve_channel_references", side_effect=lambda t, *_a, **_k: t),
             patch("helpers.workspace.get_workspace_by_id", return_value=None),
-            patch("helpers.slack_write.post_message", return_value={"ts": "250.0"}),
+            patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "350.0")) as upload_files,
         ):
             _write(
@@ -168,8 +172,10 @@ class TestTextPlusFileUpload:
                 [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
                 thread_ts="20.000000",
             )
+        post_msg.assert_not_called()
         assert upload_files.call_args.kwargs["thread_ts"] == "20.000000"
-        assert upload_files.call_args.kwargs["initial_comment"] == "`Ada` shared a file"
+        assert upload_files.call_args.kwargs["initial_comment"] is None
+        assert upload_files.call_args.kwargs["blocks"][0]["text"]["text"] == "see attached"
         assert upload_files.call_args.kwargs["reply_broadcast"] is False
 
 
@@ -182,23 +188,24 @@ def _stub_external_upload(client, *, file_id="F1"):
 
 
 class TestUploadReplyBroadcast:
-    def test_broadcast_uses_chat_update_not_complete_kwarg(self):
+    def test_broadcast_uses_chat_update_not_complete_kwarg(self, tmp_path):
         from helpers.files import upload_files_to_slack
 
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"pdf")
         client = MagicMock()
         _stub_external_upload(client)
         put = MagicMock()
         put.status_code = 200
         with (
             patch("helpers.files.WebClient", return_value=client),
-            patch("helpers.files._read_local_file_bytes", return_value=b"pdf"),
             patch("helpers.files.requests.post", return_value=put),
             patch("helpers.files._extract_file_message_ts", return_value="200.0"),
         ):
             upload_files_to_slack(
                 "xoxb",
                 "C1",
-                [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                [{"path": str(pdf), "name": "a.pdf"}],
                 initial_comment="notice",
                 thread_ts="100.0",
                 reply_broadcast=True,
@@ -206,31 +213,102 @@ class TestUploadReplyBroadcast:
         assert "reply_broadcast" not in client.files_completeUploadExternal.call_args.kwargs
         client.chat_update.assert_called_once_with(channel="C1", ts="200.0", reply_broadcast=True)
 
-    def test_no_broadcast_skips_chat_update(self):
+    def test_blocks_are_sent_without_initial_comment(self, tmp_path):
+        import json
+
         from helpers.files import upload_files_to_slack
 
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"pdf")
         client = MagicMock()
         _stub_external_upload(client)
         put = MagicMock()
         put.status_code = 200
+        blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": "see attached"}}]
         with (
             patch("helpers.files.WebClient", return_value=client),
-            patch("helpers.files._read_local_file_bytes", return_value=b"pdf"),
             patch("helpers.files.requests.post", return_value=put),
             patch("helpers.files._extract_file_message_ts", return_value="200.0"),
         ):
             upload_files_to_slack(
                 "xoxb",
                 "C1",
-                [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                [{"path": str(pdf), "name": "a.pdf"}],
+                initial_comment="notice",
+                blocks=blocks,
+                username="Ada",
+                icon_url="https://icon.example/a.png",
+            )
+        kwargs = client.files_completeUploadExternal.call_args.kwargs
+        assert "initial_comment" not in kwargs
+        assert json.loads(kwargs["blocks"]) == blocks
+        assert kwargs["username"] == "Ada"
+        assert kwargs["icon_url"] == "https://icon.example/a.png"
+
+    def test_broadcast_waits_until_thread_share_appears(self, tmp_path):
+        from helpers.files import upload_files_to_slack
+
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"pdf")
+        client = MagicMock()
+        _stub_external_upload(client)
+        put = MagicMock()
+        put.status_code = 200
+        client.files_info.return_value = {"file": {"id": "F1", "shares": {}}}
+        client.conversations_replies.side_effect = [
+            {"messages": [{"ts": "100.0", "files": [{"id": "F1"}]}]},
+            {
+                "messages": [
+                    {"ts": "100.0", "files": [{"id": "F1"}]},
+                    {"ts": "200.0", "files": [{"id": "F1"}]},
+                ]
+            },
+        ]
+        with (
+            patch("helpers.files.WebClient", return_value=client),
+            patch("helpers.files.requests.post", return_value=put),
+            patch("helpers.files._time.sleep"),
+        ):
+            _res, msg_ts = upload_files_to_slack(
+                "xoxb",
+                "C1",
+                [{"path": str(pdf), "name": "a.pdf"}],
+                initial_comment="notice",
+                thread_ts="100.0",
+                reply_broadcast=True,
+            )
+        assert msg_ts == "200.0"
+        assert client.conversations_replies.call_count == 2
+        client.chat_update.assert_called_once_with(channel="C1", ts="200.0", reply_broadcast=True)
+
+    def test_no_broadcast_skips_chat_update(self, tmp_path):
+        from helpers.files import upload_files_to_slack
+
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"pdf")
+        client = MagicMock()
+        _stub_external_upload(client)
+        put = MagicMock()
+        put.status_code = 200
+        with (
+            patch("helpers.files.WebClient", return_value=client),
+            patch("helpers.files.requests.post", return_value=put),
+            patch("helpers.files._extract_file_message_ts", return_value="200.0"),
+        ):
+            upload_files_to_slack(
+                "xoxb",
+                "C1",
+                [{"path": str(pdf), "name": "a.pdf"}],
                 thread_ts="100.0",
                 reply_broadcast=False,
             )
         client.chat_update.assert_not_called()
 
-    def test_after_upload_runs_before_complete_share(self):
+    def test_after_upload_runs_before_complete_share(self, tmp_path):
         from helpers.files import upload_files_to_slack
 
+        pdf = tmp_path / "a.pdf"
+        pdf.write_bytes(b"pdf")
         client = MagicMock()
         _stub_external_upload(client)
         put = MagicMock()
@@ -248,14 +326,13 @@ class TestUploadReplyBroadcast:
         client.files_completeUploadExternal.side_effect = complete
         with (
             patch("helpers.files.WebClient", return_value=client),
-            patch("helpers.files._read_local_file_bytes", return_value=b"pdf"),
             patch("helpers.files.requests.post", return_value=put),
             patch("helpers.files._extract_file_message_ts", return_value="200.0"),
         ):
             upload_files_to_slack(
                 "xoxb",
                 "C1",
-                [{"path": "/tmp/a.pdf", "name": "a.pdf"}],
+                [{"path": str(pdf), "name": "a.pdf"}],
                 after_upload=after,
             )
         assert order == ["after_upload", "complete"]
@@ -378,3 +455,16 @@ class TestExtractFileMessageTs:
             ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1")
         assert ts == "200.000000"
         assert client.conversations_history.call_count == 2
+
+    def test_share_lookup_keeps_going_until_slack_returns_the_ts(self):
+        from helpers.files import _extract_file_message_ts
+
+        client = MagicMock()
+        client.files_info.return_value = {"file": {"id": "F1", "shares": {}}}
+        empty = {"messages": []}
+        found = {"messages": [{"ts": "200.000000", "files": [{"id": "F1"}]}]}
+        client.conversations_history.side_effect = [empty] * 12 + [found]
+        with patch("helpers.files._time.sleep"):
+            ts = _extract_file_message_ts(client, {"file": {"id": "F1"}}, "C1")
+        assert ts == "200.000000"
+        assert client.conversations_history.call_count == 13
