@@ -54,3 +54,8 @@ output "database_backend" {
   description = "mysql, postgresql, or sqlite"
   value       = local.resolved_database_backend
 }
+
+output "use_secret_manager" {
+  description = "true when Slack secrets and DATA_ENCRYPTION_KEY are stored in Secret Manager"
+  value       = var.use_secret_manager
+}

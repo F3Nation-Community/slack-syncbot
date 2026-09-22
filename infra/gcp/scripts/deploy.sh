@@ -26,35 +26,79 @@ source "$REPO_ROOT/deploy.sh"
 source "$REPO_ROOT/infra/aws/scripts/resolve_database_backend.sh"
 
 ensure_gcloud_authenticated() {
-  local active_account adc_ok="false"
-  active_account="$(gcloud auth list --filter=status:ACTIVE --format='value(account)' 2>/dev/null || true)"
-  active_account="${active_account%%$'\n'*}"
-  if gcloud auth application-default print-access-token >/dev/null 2>&1; then
+  local user_ok="false" adc_ok="false" active_account=""
+  if gcloud auth print-access-token --quiet >/dev/null 2>&1; then
+    user_ok="true"
+    active_account="$(gcloud config get-value account 2>/dev/null || true)"
+    active_account="${active_account%%$'\n'*}"
+  fi
+  if gcloud auth application-default print-access-token --quiet >/dev/null 2>&1; then
     adc_ok="true"
   fi
-  if [[ -n "$active_account" && "$adc_ok" == "true" ]]; then
-    echo "gcloud session: $active_account"
+  if [[ "$user_ok" == "true" && "$adc_ok" == "true" ]]; then
+    echo "gcloud session: ${active_account:-ok}"
     return 0
   fi
   echo "Error: no active gcloud session." >&2
+  echo "gcloud CLI needs a user login. Terraform needs Application Default Credentials." >&2
   echo "Log in, then rerun this script:" >&2
-  if [[ -z "$active_account" ]]; then
-    echo "  gcloud auth login" >&2
+  echo "  gcloud auth login" >&2
+  echo "  gcloud auth application-default login" >&2
+  exit 1
+}
+
+ensure_gcloud_project_access() {
+  local project_id="$1"
+  if [[ -z "$project_id" ]]; then
+    echo "Error: GCP project id is empty." >&2
+    exit 1
   fi
-  if [[ "$adc_ok" != "true" ]]; then
-    echo "  gcloud auth application-default login" >&2
+  if gcloud projects describe "$project_id" --format='value(projectId)' >/dev/null 2>&1; then
+    echo "gcloud project: $project_id"
+    return 0
   fi
+  echo "Error: cannot access GCP project $project_id." >&2
+  echo "Check that this account can see the project, then rerun:" >&2
+  echo "  gcloud auth login" >&2
+  echo "  gcloud auth application-default login" >&2
+  echo "  gcloud config set project $project_id" >&2
   exit 1
 }
 
 echo "=== Prerequisites ==="
 prereqs_require_cmd terraform prereqs_hint_terraform
 prereqs_require_cmd gcloud prereqs_hint_gcloud
+prereqs_require_cmd docker prereqs_hint_docker
 prereqs_require_cmd python3 prereqs_hint_python3
 prereqs_require_cmd curl prereqs_hint_curl
 
-prereqs_print_cli_status_matrix "GCP" terraform gcloud python3 curl
+prereqs_print_cli_status_matrix "GCP" terraform gcloud docker python3 curl
 ensure_gcloud_authenticated
+
+wait_for_cloud_run_ready() {
+  local base="${1%/}"
+  if [[ -z "$base" ]]; then
+    echo "Warning: no Cloud Run service URL; skipping GET /health." >&2
+    return 0
+  fi
+  local health="$base/health"
+  local ready="$base/ready"
+  echo "=== Waiting for GET /health ==="
+  local i
+  for i in $(seq 1 60); do
+    if curl -sfS --max-time 30 "$health" | grep -q '"status"'; then
+      echo "Health OK: $health"
+      echo "=== GET /ready (Home republish) ==="
+      if ! curl -sfS --max-time 180 "$ready" | grep -q '"status"'; then
+        echo "Warning: GET /ready failed; Home tabs may stay stale until opened." >&2
+      fi
+      return 0
+    fi
+    sleep 2
+  done
+  echo "Error: GET /health did not become ready at $health" >&2
+  return 1
+}
 
 prompt_line() {
   local p="$1"
@@ -145,6 +189,56 @@ ensure_gh_authenticated() {
   return 1
 }
 
+env_bool() {
+  case "${1:-}" in
+    true | TRUE | True | 1 | yes | YES | y | Y) echo "true" ;;
+    *) echo "false" ;;
+  esac
+}
+
+gcp_data_encryption_secret_id() {
+  echo "syncbot-${STAGE}-data-encryption-key"
+}
+
+read_gcp_sm_data_encryption_key() {
+  local secret_id="$1"
+  gcloud secrets versions access latest \
+    --secret="$secret_id" \
+    --project="$PROJECT_ID" \
+    2>/dev/null || true
+}
+
+# Prefer Secret Manager only when GCP_USE_SECRET_MANAGER=true. Do not probe
+# SM on the default path — gcloud can sit for a long time if the API is off.
+# Otherwise generate and save to the deploy env file, same as AWS.
+ensure_gcp_data_encryption_key() {
+  if [[ "${GCP_USE_SECRET_MANAGER}" == "true" ]]; then
+    local secret_id existing
+    secret_id="$(gcp_data_encryption_secret_id)"
+    echo "Looking up DATA_ENCRYPTION_KEY in Secret Manager ($secret_id)..."
+    existing="$(read_gcp_sm_data_encryption_key "$secret_id")"
+    if [[ -n "$existing" ]]; then
+      DATA_ENCRYPTION_KEY="$existing"
+      echo "Using DATA_ENCRYPTION_KEY from Secret Manager."
+      if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+        update_env_file "$ENV_FILE_PATH" "DATA_ENCRYPTION_KEY" "$DATA_ENCRYPTION_KEY"
+      fi
+      return 0
+    fi
+    echo "No existing Secret Manager value; will generate or use the env file."
+  fi
+  if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
+    DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+    echo "Generated DATA_ENCRYPTION_KEY. Store it for disaster recovery."
+    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
+      update_env_file "$ENV_FILE_PATH" "DATA_ENCRYPTION_KEY" "$DATA_ENCRYPTION_KEY"
+      echo "  (saved to $ENV_FILE_PATH)"
+    fi
+  else
+    echo "Using DATA_ENCRYPTION_KEY from the deploy env file."
+  fi
+}
+
 # Aliases GCP_DATABASE_MODE / DATABASE_ENGINE: resolve_database_backend.sh (remove in 2.0.0).
 
 cloud_run_env_value() {
@@ -176,14 +270,54 @@ print("")
 PY
 }
 
-cloud_run_image_value() {
+# DATABASE_SCHEMA wins. Else the live Cloud Run name. Else syncbot_${STAGE}.
+resolve_gcp_database_schema() {
+  if [[ -n "${DATABASE_SCHEMA:-}" ]]; then
+    return 0
+  fi
+  local live=""
+  live="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "syncbot-${STAGE}" "DATABASE_SCHEMA")"
+  live="${live//$'\r'/}"
+  if [[ -n "$live" ]]; then
+    DATABASE_SCHEMA="$live"
+    return 0
+  fi
+  DATABASE_SCHEMA="syncbot_${STAGE}"
+}
+
+# After Terraform apply, put a real SyncBot image on Cloud Run. GitHub Actions is optional.
+push_cloud_run_syncbot_image() {
   local project_id="$1"
   local region="$2"
-  local service_name="$3"
-  gcloud run services describe "$service_name" \
+  local registry service_name image tag
+  registry="$(terraform output -raw artifact_registry_repository 2>/dev/null || true)"
+  service_name="$(terraform output -raw cloud_run_service_name 2>/dev/null || true)"
+  if [[ -z "$registry" || -z "$service_name" ]]; then
+    echo "Error: Terraform outputs artifact_registry_repository / cloud_run_service_name are missing." >&2
+    exit 1
+  fi
+  echo
+  echo "=== Cloud Run Image ==="
+  if [[ -n "${CLOUD_IMAGE:-}" && "$CLOUD_IMAGE" != *gcr.io/cloudrun/hello* ]]; then
+    image="$CLOUD_IMAGE"
+    echo "Using prebuilt image $image"
+  else
+    tag="$(cd "$REPO_ROOT" && git rev-parse --short HEAD 2>/dev/null || true)"
+    [[ -z "$tag" ]] && tag="$(date -u +%Y%m%d%H%M%S)"
+    image="${registry}/syncbot:${tag}"
+    echo "Building $image (linux/amd64). First build downloads packages and can take several minutes."
+    gcloud auth configure-docker "${region}-docker.pkg.dev" --quiet
+    echo "Running docker build..."
+    DOCKER_BUILDKIT=1 docker build --progress=plain -f "$REPO_ROOT/infra/gcp/Dockerfile" --platform linux/amd64 -t "$image" "$REPO_ROOT"
+    echo "Pushing $image to Artifact Registry..."
+    docker push "$image"
+  fi
+  echo "Updating Cloud Run service $service_name (this can take a minute)..."
+  gcloud run services update "$service_name" \
     --project "$project_id" \
     --region "$region" \
-    --format='value(spec.template.spec.containers[0].image)' 2>/dev/null || true
+    --image "$image"
+  CLOUD_IMAGE="$image"
 }
 
 slack_manifest_json_compact() {
@@ -379,8 +513,9 @@ write_deploy_receipt() {
 ## Configuration
 - GCP_PROJECT_ID=$PROJECT_ID
 - DATABASE_BACKEND=${DATABASE_BACKEND:-}
-- GCP_CLOUD_RUN_MIN_INSTANCES=${GCP_CLOUD_RUN_MIN_INSTANCES:-0}
+- GCP_CLOUD_RUN_MIN_INSTANCES=${GCP_CLOUD_RUN_MIN_INSTANCES:-1}
 - ENABLE_KEEP_WARM=${ENABLE_KEEP_WARM:-true}
+- GCP_USE_SECRET_MANAGER=${GCP_USE_SECRET_MANAGER:-false}
 - GCP_CLOUD_RUN_IMAGE=${CLOUD_IMAGE:-}
 - DATABASE_SCHEMA=${DATABASE_SCHEMA:-}
 - DATABASE_HOST=${DATABASE_HOST:-}
@@ -512,13 +647,20 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
   REGION="${GCP_REGION:-us-central1}"
   STAGE="${STAGE:?STAGE required}"
   CLOUD_IMAGE="${GCP_CLOUD_RUN_IMAGE:-}"
+  echo "Resolving database backend..."
   resolve_database_backend gcp
   require_database_credentials_for_backend
-  GCP_CLOUD_RUN_MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+  GCP_CLOUD_RUN_MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-1}"
   ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
+  GCP_USE_SECRET_MANAGER="$(env_bool "${GCP_USE_SECRET_MANAGER:-false}")"
   GITHUB_REPO="${GITHUB_REPO:-}"
+  echo "Project: $PROJECT_ID  Region: $REGION  Stage: $STAGE"
+  echo "Database: $DATABASE_BACKEND  Min instances: $GCP_CLOUD_RUN_MIN_INSTANCES  Secret Manager: $GCP_USE_SECRET_MANAGER"
 
-  gcloud config set project "$PROJECT_ID" >/dev/null 2>&1 || true
+  ensure_gcloud_authenticated
+  echo "Setting gcloud project..."
+  gcloud config set project "$PROJECT_ID"
+  ensure_gcloud_project_access "$PROJECT_ID"
 
   DATA_ENCRYPTION_KEY="${DATA_ENCRYPTION_KEY:-${TOKEN_ENCRYPTION_KEY:-}}"
   USE_EXISTING="false"
@@ -528,25 +670,19 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     update_env_file "$ENV_FILE_PATH" "DATABASE_BACKEND" "$DATABASE_BACKEND"
   fi
 
-  # Auto-generate DATA_ENCRYPTION_KEY if empty
-  if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
-    DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
-    echo "Generated DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
-    echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
-    if [[ -n "${ENV_FILE_PATH:-}" ]]; then
-      update_env_file "$ENV_FILE_PATH" "DATA_ENCRYPTION_KEY" "$DATA_ENCRYPTION_KEY"
-      echo "  (saved to $ENV_FILE_PATH)"
-    fi
-  fi
+  # DATA_ENCRYPTION_KEY: Secret Manager if enabled and present, else generate and save.
+  ensure_gcp_data_encryption_key
 
   if [[ -n "${ENV_FILE_PATH:-}" ]]; then
     update_env_file "$ENV_FILE_PATH" "GCP_CLOUD_RUN_MIN_INSTANCES" "$GCP_CLOUD_RUN_MIN_INSTANCES"
     update_env_file "$ENV_FILE_PATH" "ENABLE_KEEP_WARM" "$ENABLE_KEEP_WARM"
+    update_env_file "$ENV_FILE_PATH" "GCP_USE_SECRET_MANAGER" "$GCP_USE_SECRET_MANAGER"
   fi
 
   echo "=== Terraform Init ==="
+  echo "Initializing providers in infra/gcp (first run downloads the Google provider)..."
   cd "$GCP_DIR"
-  terraform init
+  terraform init -input=false
 
   VARS=(
     "-var=project_id=$PROJECT_ID"
@@ -560,6 +696,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     "-var=database_backend=$DATABASE_BACKEND"
     "-var=cloud_run_min_instances=${GCP_CLOUD_RUN_MIN_INSTANCES}"
     "-var=enable_keep_warm=${ENABLE_KEEP_WARM}"
+    "-var=use_secret_manager=${GCP_USE_SECRET_MANAGER}"
     "-var=github_repo=${GITHUB_REPO}"
   )
   [[ -n "${DATABASE_PORT:-}" ]] && VARS+=("-var=database_port=$DATABASE_PORT")
@@ -585,19 +722,23 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
       echo "Error: DATABASE_USER is required when DATABASE_BACKEND=${DATABASE_BACKEND}." >&2
       exit 1
     fi
+    resolve_gcp_database_schema
     VARS+=("-var=database_password=$DATABASE_PASSWORD")
     VARS+=("-var=database_host=$DATABASE_HOST")
-    VARS+=("-var=database_schema=${DATABASE_SCHEMA:-syncbot_${STAGE}}")
+    VARS+=("-var=database_schema=$DATABASE_SCHEMA")
     VARS+=("-var=database_user=$DATABASE_USER")
   fi
 
   echo "=== Terraform Plan ==="
-  terraform plan "${VARS[@]}"
+  terraform plan -input=false "${VARS[@]}"
 
   echo "=== Terraform Apply ==="
-  terraform apply -auto-approve "${VARS[@]}"
+  echo "Applying (enabling APIs and Cloud Run can take a few minutes)..."
+  terraform apply -auto-approve -input=false "${VARS[@]}"
+  echo "Terraform apply finished."
 
   SERVICE_URL="$(terraform output -raw service_url 2>/dev/null || true)"
+  push_cloud_run_syncbot_image "$PROJECT_ID" "$REGION"
   SYNCBOT_API_URL=""
   SYNCBOT_INSTALL_URL=""
   if [[ -n "$SERVICE_URL" ]]; then
@@ -605,6 +746,7 @@ if [[ "${ENV_FILE_LOADED:-}" == "true" ]]; then
     SYNCBOT_INSTALL_URL="${SERVICE_URL%/}/slack/install"
   fi
   generate_stage_slack_manifest "$STAGE" "$SYNCBOT_API_URL" "$SYNCBOT_INSTALL_URL"
+  wait_for_cloud_run_ready "$SERVICE_URL"
 
   if [[ "${SETUP_GITHUB:-}" == "true" ]]; then
     echo
@@ -658,14 +800,17 @@ if [[ -z "$PROJECT_ID" ]]; then
 fi
 
 REGION="$(prompt_line "GCP region" "${GCP_REGION:-us-central1}")"
-gcloud config set project "$PROJECT_ID" >/dev/null 2>&1 || true
+ensure_gcloud_authenticated
+gcloud config set project "$PROJECT_ID"
+ensure_gcloud_project_access "$PROJECT_ID"
 STAGE="$(prompt_line "Stage (test/prod)" "${STAGE:-test}")"
 if [[ "$STAGE" != "test" && "$STAGE" != "prod" ]]; then
   echo "Error: stage must be 'test' or 'prod'." >&2
   exit 1
 fi
-GCP_CLOUD_RUN_MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+GCP_CLOUD_RUN_MIN_INSTANCES="${GCP_CLOUD_RUN_MIN_INSTANCES:-1}"
 ENABLE_KEEP_WARM="${ENABLE_KEEP_WARM:-true}"
+GCP_USE_SECRET_MANAGER="$(env_bool "${GCP_USE_SECRET_MANAGER:-false}")"
 CLOUD_IMAGE="${GCP_CLOUD_RUN_IMAGE:-}"
 DATABASE_BACKEND="${DATABASE_BACKEND:-sqlite}"
 USE_EXISTING="false"
@@ -722,16 +867,30 @@ DB_BACKEND="$DATABASE_BACKEND"
 
 echo
 echo "=== Cloud Run warmth ==="
-echo "min_instances=0 (default) is free. Cold starts are best-effort: Slack events are queued/retried"
-echo "(sometimes slower). Interactivity may need a second click after a long idle."
-echo "min_instances=1 is the only paid knob (~always-on Cloud Run) and guarantees Slack's 3s budget."
-GCP_CLOUD_RUN_MIN_INSTANCES=0
-if prompt_yn "Keep one Cloud Run instance always on (paid)?" "n"; then
+echo "min_instances=1 (default) keeps Cloud Run always on so Slack's 3s budget is met. This is billed."
+echo "min_instances=0 is free scale-to-zero; Slack events retry on a cold start."
+WARM_DEFAULT="y"
+[[ "${GCP_CLOUD_RUN_MIN_INSTANCES:-1}" == "0" ]] && WARM_DEFAULT="n"
+if prompt_yn "Keep one Cloud Run instance always on (recommended, billed)?" "$WARM_DEFAULT"; then
   GCP_CLOUD_RUN_MIN_INSTANCES=1
+else
+  GCP_CLOUD_RUN_MIN_INSTANCES=0
 fi
 ENABLE_KEEP_WARM="true"
 if ! prompt_yn "Enable keep-warm Scheduler ping of /health every 5 minutes (free, recommended)?" "y"; then
   ENABLE_KEEP_WARM="false"
+fi
+
+echo
+echo "=== Secret Manager ==="
+echo "Secret Manager stores Slack secrets and DATA_ENCRYPTION_KEY in GCP instead of Cloud Run env."
+echo "It is a billed API. Default is off (same as AWS: values from the deploy file)."
+SM_DEFAULT="n"
+[[ "$GCP_USE_SECRET_MANAGER" == "true" ]] && SM_DEFAULT="y"
+if prompt_yn "Store secrets in Secret Manager (optional, billed)?" "$SM_DEFAULT"; then
+  GCP_USE_SECRET_MANAGER="true"
+else
+  GCP_USE_SECRET_MANAGER="false"
 fi
 
 GITHUB_REPO="${GITHUB_REPO:-}"
@@ -774,15 +933,6 @@ if [[ "$USE_EXISTING" == "true" ]]; then
   DB_PORT="$(prompt_line "DATABASE_PORT (optional)" "$DEFAULT_DB_PORT")"
 fi
 
-DETECTED_CLOUD_IMAGE=""
-if [[ -n "$EXISTING_SERVICE_URL" ]]; then
-  DETECTED_CLOUD_IMAGE="$(cloud_run_image_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME")"
-fi
-echo
-echo "=== Container Image ==="
-echo "Blank uses the public hello placeholder. CI replaces the live image (terraform ignores image changes)."
-CLOUD_IMAGE="$(prompt_line "GCP_CLOUD_RUN_IMAGE" "${GCP_CLOUD_RUN_IMAGE:-$DETECTED_CLOUD_IMAGE}")"
-
 DETECTED_LOG_LEVEL=""
 if [[ -n "$EXISTING_SERVICE_URL" ]]; then
   DETECTED_LOG_LEVEL="$(cloud_run_env_value "$PROJECT_ID" "$REGION" "$SERVICE_NAME" "LOG_LEVEL")"
@@ -824,18 +974,17 @@ PRIMARY_WORKSPACE_VAR="$(prompt_primary_workspace "$PRIMARY_WORKSPACE_VAR")"
 
 echo
 echo "=== App Secrets ==="
-echo "Secrets are passed directly as sensitive Terraform variables."
-
-if [[ -z "${DATA_ENCRYPTION_KEY:-}" ]]; then
-  DATA_ENCRYPTION_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
-  echo "Generated DATA_ENCRYPTION_KEY=$DATA_ENCRYPTION_KEY"
-  echo "IMPORTANT: Store this key securely. You need it for disaster recovery."
+if [[ "$GCP_USE_SECRET_MANAGER" == "true" ]]; then
+  echo "Secrets go into Secret Manager. DATA_ENCRYPTION_KEY is reused if that secret already exists."
+else
+  echo "Secrets are passed as sensitive Terraform variables and injected as Cloud Run env."
 fi
+
+ensure_gcp_data_encryption_key
 
 SLACK_SIGNING_SECRET="$(required_from_env_or_prompt "SLACK_SIGNING_SECRET" "SlackSigningSecret" "secret")"
 SLACK_CLIENT_ID="$(required_from_env_or_prompt "SLACK_CLIENT_ID" "SlackClientID")"
 SLACK_CLIENT_SECRET="$(required_from_env_or_prompt "SLACK_CLIENT_SECRET" "SlackClientSecret" "secret")"
-DATA_ENCRYPTION_KEY="$(required_from_env_or_prompt "DATA_ENCRYPTION_KEY" "DataEncryptionKey" "secret")"
 DATABASE_PASSWORD=""
 DATABASE_USER="${DATABASE_USER:-}"
 if [[ "$USE_EXISTING" == "true" ]]; then
@@ -848,9 +997,11 @@ fi
 
 echo
 echo "=== Terraform Init ==="
-echo "Running: terraform init"
+ensure_gcloud_authenticated
+ensure_gcloud_project_access "$PROJECT_ID"
+echo "Initializing providers in infra/gcp (first run downloads the Google provider)..."
 cd "$GCP_DIR"
-terraform init
+terraform init -input=false
 
 VARS=(
   "-var=project_id=$PROJECT_ID"
@@ -864,6 +1015,7 @@ VARS=(
   "-var=database_backend=$DATABASE_BACKEND"
   "-var=cloud_run_min_instances=$GCP_CLOUD_RUN_MIN_INSTANCES"
   "-var=enable_keep_warm=$ENABLE_KEEP_WARM"
+  "-var=use_secret_manager=$GCP_USE_SECRET_MANAGER"
   "-var=github_repo=${GITHUB_REPO:-}"
   "-var=slack_signing_secret=$SLACK_SIGNING_SECRET"
   "-var=slack_client_id=$SLACK_CLIENT_ID"
@@ -896,15 +1048,18 @@ else
 fi
 echo
 echo "=== Terraform Plan ==="
-terraform plan "${VARS[@]}"
+terraform plan -input=false "${VARS[@]}"
 
 echo
 echo "=== Terraform Apply ==="
-terraform apply -auto-approve "${VARS[@]}"
+echo "Applying (enabling APIs and Cloud Run can take a few minutes)..."
+terraform apply -auto-approve -input=false "${VARS[@]}"
+echo "Terraform apply finished."
 
 echo
 echo "=== Apply Complete ==="
 SERVICE_URL="$(terraform output -raw service_url 2>/dev/null || true)"
+push_cloud_run_syncbot_image "$PROJECT_ID" "$REGION"
 
 else
   echo
@@ -924,6 +1079,7 @@ echo
 echo "=== Post-Deploy ==="
 if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
   echo "Deploy complete."
+  wait_for_cloud_run_ready "$SERVICE_URL"
 fi
 
 if [[ "$TASK_SLACK_API" == "true" || "$TASK_BUILD_DEPLOY" == "true" ]]; then
@@ -937,8 +1093,8 @@ fi
 if [[ "$TASK_BUILD_DEPLOY" == "true" ]]; then
   echo
   echo "Next:"
-  echo "  1) Push to test/prod after setting GITHUB_DEPLOY_TARGET=gcp so CI builds infra/gcp/Dockerfile."
-  echo "  2) Run: ./infra/gcp/scripts/print-bootstrap-outputs.sh"
+  echo "  1) Paste slack-manifest_${STAGE}.json into the Slack app (GET /health already ran)."
+  echo "  2) Optional: ./infra/gcp/scripts/print-bootstrap-outputs.sh and GitHub Actions (CI/CD task) if you want image deploys from GitHub."
   bash "$SCRIPT_DIR/print-bootstrap-outputs.sh" || true
 fi
 
@@ -956,8 +1112,9 @@ if [[ "$TASK_BUILD_DEPLOY" == "true" ]] && prompt_yn "Save config to .env.deploy
     echo "GCP_PROJECT_ID=$PROJECT_ID"
     echo "GCP_REGION=$REGION"
     echo "DATABASE_BACKEND=${DATABASE_BACKEND:-sqlite}"
-    echo "GCP_CLOUD_RUN_MIN_INSTANCES=${GCP_CLOUD_RUN_MIN_INSTANCES:-0}"
+    echo "GCP_CLOUD_RUN_MIN_INSTANCES=${GCP_CLOUD_RUN_MIN_INSTANCES:-1}"
     echo "ENABLE_KEEP_WARM=${ENABLE_KEEP_WARM:-true}"
+    echo "GCP_USE_SECRET_MANAGER=${GCP_USE_SECRET_MANAGER:-false}"
     [[ -n "${GITHUB_REPO:-}" ]] && echo "GITHUB_REPO=$GITHUB_REPO"
     echo "GCP_CLOUD_RUN_IMAGE=${CLOUD_IMAGE:-}"
     echo ""

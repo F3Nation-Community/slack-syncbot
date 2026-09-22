@@ -68,7 +68,7 @@ variable "database_host" {
 variable "database_schema" {
   type        = string
   default     = ""
-  description = "DATABASE_SCHEMA. Empty uses existing_db_schema, then syncbot_$${stage}."
+  description = "DATABASE_SCHEMA. Non-empty wins. Empty uses existing_db_schema, then syncbot_$${stage}. ./deploy.sh reuses the live Cloud Run name before that."
 }
 
 # ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ variable "database_schema" {
 variable "cloud_run_image" {
   type        = string
   default     = "gcr.io/cloudrun/hello"
-  description = "Container image URL. Bootstrap default is a public hello image; CI updates the live service (Terraform ignores image changes after apply)."
+  description = "Container image URL. Terraform bootstrap default is a public hello image so the service can be created; deploy.sh (or optional GitHub Actions) then pushes SyncBot and updates Cloud Run. Terraform ignores later image changes."
 }
 
 variable "cloud_run_cpu" {
@@ -95,8 +95,8 @@ variable "cloud_run_memory" {
 
 variable "cloud_run_min_instances" {
   type        = number
-  default     = 0
-  description = "Minimum instances. 0 = free/best-effort scale-to-zero (default). 1 = paid always-on (Slack 3s guarantee)."
+  default     = 1
+  description = "Minimum instances. 1 = paid always-on (default, Slack 3s). 0 = free scale-to-zero."
 
   validation {
     condition     = contains([0, 1], var.cloud_run_min_instances)
@@ -153,8 +153,14 @@ variable "github_repo" {
 }
 
 # ---------------------------------------------------------------------------
-# Sensitive app secrets (passed as Terraform variables; injected as plain env)
+# Sensitive app secrets (Terraform variables; Cloud Run env or Secret Manager)
 # ---------------------------------------------------------------------------
+
+variable "use_secret_manager" {
+  type        = bool
+  default     = false
+  description = "Store Slack secrets and DATA_ENCRYPTION_KEY in Secret Manager (billed). Default false injects them as Cloud Run env from Terraform variables, same as AWS."
+}
 
 variable "slack_signing_secret" {
   type        = string

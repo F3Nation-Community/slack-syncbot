@@ -1,5 +1,6 @@
 # SyncBot on GCP — Cloud Run + SQLite/Litestream (default) or mysql/postgresql.
-# No Cloud SQL. Secrets are Terraform variables injected as Cloud Run env.
+# No Cloud SQL. Secrets are Terraform variables injected as Cloud Run env, or
+# optional Secret Manager when use_secret_manager is true.
 
 terraform {
   required_version = ">= 1.0"
@@ -14,6 +15,10 @@ terraform {
 provider "google" {
   project = var.project_id
   region  = var.region
+}
+
+data "google_project" "current" {
+  project_id = var.project_id
 }
 
 locals {
@@ -44,6 +49,7 @@ locals {
       DATABASE_URL          = "sqlite:////data/syncbot.db"
       LITESTREAM_GCS_BUCKET = try(google_storage_bucket.litestream[0].name, "")
       SLACK_USER_SCOPES     = var.slack_user_scopes
+      SLACK_BOT_SCOPES      = var.slack_bot_scopes
       LOG_LEVEL             = var.log_level
       SLACK_BOT_TOKEN       = "123"
     },
@@ -58,6 +64,7 @@ locals {
       DATABASE_SCHEMA   = local.db_schema
       DATABASE_BACKEND  = local.db_backend
       SLACK_USER_SCOPES = var.slack_user_scopes
+      SLACK_BOT_SCOPES  = var.slack_bot_scopes
       LOG_LEVEL         = var.log_level
       SLACK_BOT_TOKEN   = "123"
     },
@@ -68,18 +75,50 @@ locals {
     trimspace(var.database_port) != "" ? { DATABASE_PORT = trimspace(var.database_port) } : {},
   )
 
-  runtime_plain_env = local.is_sqlite ? local.sqlite_plain_env : local.existing_plain_env
+  runtime_plain_env = merge(
+    local.is_sqlite ? local.sqlite_plain_env : local.existing_plain_env,
+    {
+      # Cloud Run HTTP/1 max is 32 MiB per request. 30 is the same 2 MiB headroom as SAM's 4 under 6 MB.
+      FEDERATION_HTTP_MAX_MB = "30"
+    },
+  )
 
   runtime_secret_env = merge(
     {
       SLACK_SIGNING_SECRET = var.slack_signing_secret
       SLACK_CLIENT_ID      = var.slack_client_id
       SLACK_CLIENT_SECRET  = var.slack_client_secret
-      SLACK_BOT_SCOPES     = var.slack_bot_scopes
       DATA_ENCRYPTION_KEY  = var.data_encryption_key
     },
     local.use_existing_database ? { DATABASE_PASSWORD = var.database_password } : {},
   )
+
+  sm_secret_ids = var.use_secret_manager ? toset(compact([
+    "slack-signing-secret",
+    "slack-client-id",
+    "slack-client-secret",
+    "data-encryption-key",
+    local.use_existing_database ? "database-password" : "",
+  ])) : toset([])
+
+  sm_env_to_secret = var.use_secret_manager ? merge(
+    {
+      SLACK_SIGNING_SECRET = "slack-signing-secret"
+      SLACK_CLIENT_ID      = "slack-client-id"
+      SLACK_CLIENT_SECRET  = "slack-client-secret"
+      DATA_ENCRYPTION_KEY  = "data-encryption-key"
+    },
+    local.use_existing_database ? { DATABASE_PASSWORD = "database-password" } : {},
+  ) : {}
+
+  sm_rotatable_data = var.use_secret_manager ? merge(
+    {
+      slack-signing-secret = var.slack_signing_secret
+      slack-client-id      = var.slack_client_id
+      slack-client-secret  = var.slack_client_secret
+    },
+    local.use_existing_database ? { database-password = var.database_password } : {},
+  ) : {}
 }
 
 # ---------------------------------------------------------------------------
@@ -130,6 +169,13 @@ resource "google_project_service" "scheduler" {
   disable_on_destroy = false
 }
 
+resource "google_project_service" "secretmanager" {
+  count              = var.use_secret_manager ? 1 : 0
+  project            = var.project_id
+  service            = "secretmanager.googleapis.com"
+  disable_on_destroy = false
+}
+
 # ---------------------------------------------------------------------------
 # Artifact Registry
 # ---------------------------------------------------------------------------
@@ -141,6 +187,46 @@ resource "google_artifact_registry_repository" "syncbot" {
   format        = "DOCKER"
 
   depends_on = [google_project_service.artifact_registry]
+}
+
+# ---------------------------------------------------------------------------
+# Secret Manager (optional; GCP_USE_SECRET_MANAGER)
+# ---------------------------------------------------------------------------
+
+resource "google_secret_manager_secret" "app" {
+  for_each  = local.sm_secret_ids
+  project   = var.project_id
+  secret_id = "${local.name_prefix}-${each.key}"
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.secretmanager]
+}
+
+resource "google_secret_manager_secret_version" "rotatable" {
+  for_each    = local.sm_rotatable_data
+  secret      = google_secret_manager_secret.app[each.key].id
+  secret_data = each.value
+}
+
+resource "google_secret_manager_secret_version" "data_encryption_key" {
+  count       = var.use_secret_manager ? 1 : 0
+  secret      = google_secret_manager_secret.app["data-encryption-key"].id
+  secret_data = var.data_encryption_key
+
+  lifecycle {
+    ignore_changes = [secret_data]
+  }
+}
+
+resource "google_secret_manager_secret_iam_member" "cloud_run_accessor" {
+  for_each  = google_secret_manager_secret.app
+  project   = var.project_id
+  secret_id = each.value.secret_id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.cloud_run.email}"
 }
 
 # ---------------------------------------------------------------------------
@@ -189,6 +275,14 @@ resource "google_storage_bucket_iam_member" "cloud_run_litestream" {
   bucket = google_storage_bucket.litestream[0].name
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.cloud_run.email}"
+}
+
+resource "google_artifact_registry_repository_iam_member" "cloud_run_reader" {
+  project    = var.project_id
+  location   = google_artifact_registry_repository.syncbot.location
+  repository = google_artifact_registry_repository.syncbot.repository_id
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${google_service_account.cloud_run.email}"
 }
 
 # ---------------------------------------------------------------------------
@@ -268,10 +362,23 @@ resource "google_cloud_run_v2_service" "syncbot" {
       }
 
       dynamic "env" {
-        for_each = local.runtime_secret_env
+        for_each = var.use_secret_manager ? {} : local.runtime_secret_env
         content {
           name  = env.key
           value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = local.sm_env_to_secret
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.app[env.value].secret_id
+              version = "latest"
+            }
+          }
         }
       }
     }
@@ -287,11 +394,18 @@ resource "google_cloud_run_v2_service" "syncbot" {
       condition     = local.is_sqlite || (local.resolved_database_host != "" && trimspace(var.database_password) != "" && local.db_user != "")
       error_message = "database_host, database_password, and database_user are required when database_backend is mysql or postgresql."
     }
+    precondition {
+      condition     = trimspace(var.data_encryption_key) != ""
+      error_message = "data_encryption_key is required. deploy.sh generates one if it is empty, or reuses the Secret Manager value when GCP_USE_SECRET_MANAGER is true."
+    }
   }
 
   depends_on = [
     google_project_service.run,
     google_storage_bucket_iam_member.cloud_run_litestream,
+    google_secret_manager_secret_version.rotatable,
+    google_secret_manager_secret_version.data_encryption_key,
+    google_secret_manager_secret_iam_member.cloud_run_accessor,
   ]
 }
 
@@ -301,6 +415,24 @@ resource "google_cloud_run_v2_service_iam_member" "public" {
   name     = google_cloud_run_v2_service.syncbot.name
   role     = "roles/run.invoker"
   member   = "allUsers"
+}
+
+resource "google_cloud_run_v2_service_iam_member" "keep_warm" {
+  count    = var.enable_keep_warm ? 1 : 0
+  project  = google_cloud_run_v2_service.syncbot.project
+  location = google_cloud_run_v2_service.syncbot.location
+  name     = google_cloud_run_v2_service.syncbot.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.cloud_run.email}"
+}
+
+resource "google_service_account_iam_member" "scheduler_act_as_cloud_run" {
+  count              = var.enable_keep_warm ? 1 : 0
+  service_account_id = google_service_account.cloud_run.name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:service-${data.google_project.current.number}@gcp-sa-cloudscheduler.iam.gserviceaccount.com"
+
+  depends_on = [google_project_service.scheduler]
 }
 
 # ---------------------------------------------------------------------------
@@ -321,12 +453,15 @@ resource "google_cloud_scheduler_job" "keep_warm" {
     http_method = "GET"
     oidc_token {
       service_account_email = google_service_account.cloud_run.email
+      audience              = google_cloud_run_v2_service.syncbot.uri
     }
   }
 
   depends_on = [
     google_project_service.scheduler,
     google_cloud_run_v2_service.syncbot,
+    google_cloud_run_v2_service_iam_member.keep_warm,
+    google_service_account_iam_member.scheduler_act_as_cloud_run,
   ]
 }
 
