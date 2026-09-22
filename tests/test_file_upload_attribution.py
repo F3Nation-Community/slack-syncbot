@@ -1,9 +1,9 @@
-"""Tests for synced file share notice (from-line display name in code ticks)."""
+"""Tests for synced file shares and the from line."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from helpers.core import format_file_share_notice, format_synced_from_line
+from helpers.core import format_synced_from_line
 from helpers.slack_write import slack_write_create
 from tests.event_fixtures import make_event_context
 
@@ -38,11 +38,7 @@ class TestFromLineUsername:
     def test_blank_falls_back_to_someone(self):
         assert format_synced_from_line("  ", None) == "Someone"
 
-    def test_file_share_notice_never_tags(self):
-        assert format_file_share_notice("Ada Lovelace") == "`Ada Lovelace` shared a file"
-        assert format_file_share_notice("Ada Lovelace", "Workspace A") == "`Ada Lovelace (Workspace A)` shared a file"
-
-    def test_code_ticked_matches_file_share_and_unmapped_mentions(self):
+    def test_code_ticked_matches_unmapped_mentions(self):
         from helpers.core import code_ticked_display_name
         from helpers.user_map import format_unmapped_author_label
 
@@ -53,7 +49,7 @@ class TestFromLineUsername:
 
 
 class TestFileOnlyAuthorAttribution:
-    def test_pdf_uses_single_upload_with_ticked_notice(self):
+    def test_pdf_is_one_share_with_bot_from_line(self):
         ctx = make_event_context(msg_text=" ", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
@@ -68,16 +64,19 @@ class TestFileOnlyAuthorAttribution:
             patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "200.0")) as upload,
         ):
-            ts, split, _posted_as = _write(
+            ts, posted_as = _write(
                 ctx,
                 [{"path": "/tmp/a.pdf", "name": "a.pdf", "mimetype": "application/pdf"}],
                 user_name="Ada Lovelace",
             )
-        assert split is None
+        assert posted_as is None
         assert ts == "200.0"
         post_msg.assert_not_called()
         upload.assert_called_once()
-        assert upload.call_args.kwargs["initial_comment"] == "`Ada Lovelace (Workspace A)` shared a file"
+        assert upload.call_args.kwargs["initial_comment"] is None
+        assert upload.call_args.kwargs["blocks"] is None
+        assert upload.call_args.kwargs["username"] == "Ada Lovelace (Workspace A)"
+        assert upload.call_args.kwargs["icon_url"] == "https://icon"
         assert upload.call_args.kwargs["thread_ts"] is None
 
     def test_file_only_thread_reply_uses_parent_thread_ts(self):
@@ -95,18 +94,20 @@ class TestFileOnlyAuthorAttribution:
             patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "350.0")) as upload,
         ):
-            ts, split, _posted_as = _write(
+            ts, posted_as = _write(
                 ctx,
                 [{"path": "/tmp/a.pdf", "name": "a.pdf", "mimetype": "application/pdf"}],
                 thread_ts="20.000000",
             )
-        assert split is None
+        assert posted_as is None
         assert ts == "350.0"
         post_msg.assert_not_called()
         assert upload.call_args.kwargs["thread_ts"] == "20.000000"
-        assert upload.call_args.kwargs["initial_comment"] == "`Ada` shared a file"
+        assert upload.call_args.kwargs["initial_comment"] is None
+        assert upload.call_args.kwargs["username"] == "Ada"
+        assert upload.call_args.kwargs["icon_url"] == "https://icon"
 
-    def test_image_file_uses_same_notice_as_pdf(self):
+    def test_image_file_uses_the_same_from_line_as_a_pdf(self):
         ctx = make_event_context(msg_text="", user_id="U_SRC", reply_broadcast=False)
         with (
             patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
@@ -123,7 +124,9 @@ class TestFileOnlyAuthorAttribution:
         ):
             _write(ctx, [{"path": "/tmp/a.png", "name": "photo.png", "mimetype": "image/png"}])
         post_msg.assert_not_called()
-        assert upload.call_args.kwargs["initial_comment"] == "`Ada` shared a file"
+        assert upload.call_args.kwargs["initial_comment"] is None
+        assert upload.call_args.kwargs["username"] == "Ada"
+        assert upload.call_args.kwargs["icon_url"] == "https://icon"
         assert upload.call_args.kwargs["thread_ts"] is None
 
 
@@ -143,14 +146,15 @@ class TestTextPlusFileUpload:
             patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "200.0")) as upload_files,
         ):
-            ts, split, _posted = _write(ctx, [{"path": "/tmp/a.pdf", "name": "a.pdf"}])
-        assert (ts, split) == ("200.0", None)
+            ts, posted_as = _write(ctx, [{"path": "/tmp/a.pdf", "name": "a.pdf"}])
+        assert (ts, posted_as) == ("200.0", None)
         post_msg.assert_not_called()
-        assert upload_files.call_args.kwargs["initial_comment"] is None
+        assert upload_files.call_args.kwargs["initial_comment"] == "see attached"
+        assert upload_files.call_args.kwargs["blocks"] is None
         assert upload_files.call_args.kwargs["thread_ts"] is None
         assert upload_files.call_args.kwargs["reply_broadcast"] is False
         assert upload_files.call_args.kwargs["username"] == "Ada"
-        assert upload_files.call_args.kwargs["blocks"][0]["text"]["text"] == "see attached"
+        assert upload_files.call_args.kwargs["icon_url"] == "https://icon"
 
     def test_thread_reply_text_plus_file_uploads_at_parent_thread(self):
         ctx = make_event_context(msg_text="see attached", user_id="U_SRC", reply_broadcast=False)
@@ -174,8 +178,9 @@ class TestTextPlusFileUpload:
             )
         post_msg.assert_not_called()
         assert upload_files.call_args.kwargs["thread_ts"] == "20.000000"
-        assert upload_files.call_args.kwargs["initial_comment"] is None
-        assert upload_files.call_args.kwargs["blocks"][0]["text"]["text"] == "see attached"
+        assert upload_files.call_args.kwargs["initial_comment"] == "see attached"
+        assert upload_files.call_args.kwargs["blocks"] is None
+        assert upload_files.call_args.kwargs["username"] == "Ada"
         assert upload_files.call_args.kwargs["reply_broadcast"] is False
 
 
@@ -206,7 +211,7 @@ class TestUploadReplyBroadcast:
                 "xoxb",
                 "C1",
                 [{"path": str(pdf), "name": "a.pdf"}],
-                initial_comment="notice",
+                initial_comment="see attached",
                 thread_ts="100.0",
                 reply_broadcast=True,
             )
@@ -234,7 +239,7 @@ class TestUploadReplyBroadcast:
                 "xoxb",
                 "C1",
                 [{"path": str(pdf), "name": "a.pdf"}],
-                initial_comment="notice",
+                initial_comment="see attached",
                 blocks=blocks,
                 username="Ada",
                 icon_url="https://icon.example/a.png",
@@ -273,7 +278,7 @@ class TestUploadReplyBroadcast:
                 "xoxb",
                 "C1",
                 [{"path": str(pdf), "name": "a.pdf"}],
-                initial_comment="notice",
+                initial_comment="see attached",
                 thread_ts="100.0",
                 reply_broadcast=True,
             )

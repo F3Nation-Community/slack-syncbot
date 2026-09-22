@@ -240,12 +240,12 @@ class TestHostedFiles:
             download_slack_files(files, client, logger)
         assert dl.call_args.args[0] == "https://files.slack.com/download"
 
-    def test_post_message_empty_text_is_not_shared_a_file(self):
+    def test_post_message_empty_text_stays_blank(self):
         slack = MagicMock()
         slack.chat_postMessage.return_value = {"ts": "1.2"}
         with patch("helpers.slack_api.WebClient", return_value=slack):
             post_message(bot_token="xoxb-test", channel_id="C1", msg_text="  ")
-        assert slack.chat_postMessage.call_args.kwargs["text"] != "Shared a file"
+        assert slack.chat_postMessage.call_args.kwargs["text"] == ""
 
 
 class TestFederationPayloadParity:

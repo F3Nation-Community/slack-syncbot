@@ -1,4 +1,4 @@
-"""Tests for PostMeta rows on split text+file sync (reaction resolution)."""
+"""Origin PostMeta for a message that includes a file."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -9,8 +9,8 @@ from handlers.message import _handle_new_post, _handle_thread_reply
 from tests.event_fixtures import make_event_context
 
 
-class TestSplitMessagePostMeta:
-    def test_new_post_text_plus_file_stores_file_ts_same_post_id(self):
+class TestFileShareOriginPostMeta:
+    def test_new_post_with_file_stores_one_origin_row(self):
         logger = MagicMock()
         client = MagicMock(spec=WebClient)
 
@@ -42,10 +42,7 @@ class TestSplitMessagePostMeta:
             patch("handlers.message.helpers.get_origin_sync_channel", return_value=sc_source),
             patch(
                 "handlers.message.helpers.run_sync_pipeline",
-                return_value=[
-                    SimpleNamespace(post_id="child", sync_channel_id=2, ts=200.0),
-                    SimpleNamespace(post_id="child", sync_channel_id=2, ts=300.0),
-                ],
+                return_value=[SimpleNamespace(post_id="child", sync_channel_id=2, ts=200.0)],
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
             patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
@@ -71,7 +68,7 @@ class TestSplitMessagePostMeta:
         assert envelope["post_id"] == created[0].post_id
         assert envelope["file_refs"] == direct_files
 
-    def test_thread_reply_text_plus_file_stores_file_ts_same_post_id(self):
+    def test_thread_reply_with_file_stores_one_origin_row(self):
         logger = MagicMock()
         client = MagicMock(spec=WebClient)
 
@@ -104,10 +101,7 @@ class TestSplitMessagePostMeta:
             patch("handlers.message.helpers.get_origin_sync_channel", return_value=sc_source),
             patch(
                 "handlers.message.helpers.run_sync_pipeline",
-                return_value=[
-                    SimpleNamespace(post_id="child", sync_channel_id=22, ts=250.0),
-                    SimpleNamespace(post_id="child", sync_channel_id=22, ts=350.0),
-                ],
+                return_value=[SimpleNamespace(post_id="child", sync_channel_id=22, ts=250.0)],
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
             patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),

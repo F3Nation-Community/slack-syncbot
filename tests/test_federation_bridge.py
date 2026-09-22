@@ -1222,32 +1222,31 @@ def test_inbound_edit_and_delete_call_apply_target():
         assert apply.call_args.args[0]["action"] == ACTION_DELETE
 
 
-def test_handle_message_idempotent_create_returns_split_ts(real_db):
+def test_handle_message_idempotent_create_returns_existing_ts(real_db):
     from db import DbManager, schemas
     from federation.api import handle_message
     from helpers.user_action_echo import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
-    DbManager.create_record(schemas.PostMeta(post_id="pid-split", sync_channel_id=sc.id, ts=post_meta_ts("10.000001")))
-    DbManager.create_record(schemas.PostMeta(post_id="pid-split", sync_channel_id=sc.id, ts=post_meta_ts("10.000002")))
+    DbManager.create_record(schemas.PostMeta(post_id="pid-1", sync_channel_id=sc.id, ts=post_meta_ts("10.000001")))
+    DbManager.create_record(schemas.PostMeta(post_id="pid-1", sync_channel_id=sc.id, ts=post_meta_ts("10.000002")))
     with patch("federation.api.apply_target") as apply:
         status, resp = handle_message(
             {
                 "kind": "message",
                 "action": "create",
-                "post_id": "pid-split",
+                "post_id": "pid-1",
                 "channel_id": "CLOCAL",
             },
             peer["fed"],
         )
         apply.assert_not_called()
         assert status == 200
-        assert resp["ts"] == "10.000001"
-        assert resp["split_ts"] == "10.000002"
+        assert resp == {"ok": True, "ts": "10.000001", "posted_as_user_id": None}
 
         status, resp = handle_message(
-            {"post_id": "pid-split", "channel_id": "CLOCAL", "text": "hi"},
+            {"post_id": "pid-1", "channel_id": "CLOCAL", "text": "hi"},
             peer["fed"],
         )
         assert status == 400
@@ -1782,7 +1781,6 @@ def test_handle_message_returns_apply_outcome_strings_not_expired_post_meta(real
         return_value=ApplyOutcome(
             created=[_Expired()],
             ts="11.000001",
-            split_ts="11.000002",
             posted_as_user_id="UADA",
         ),
     ):
@@ -1797,9 +1795,7 @@ def test_handle_message_returns_apply_outcome_strings_not_expired_post_meta(real
             peer["fed"],
         )
     assert status == 200
-    assert resp["ts"] == "11.000001"
-    assert resp["split_ts"] == "11.000002"
-    assert resp["posted_as_user_id"] == "UADA"
+    assert resp == {"ok": True, "ts": "11.000001", "posted_as_user_id": "UADA"}
 
 
 def test_home_hash_changes_when_remote_stub_paused(real_db):
