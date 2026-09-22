@@ -19,11 +19,10 @@ Typical flow: develop a fix or new feature on a branch in your repo → test and
 
 Format: `<type>/<description>` or `<type>/<ticket>-<description>`
 
-Types:
+Types match the commit subject (`feat:`, `fix:`, and the rest):
 
-- feature/ New functionality
-- bugfix/ Bug fixes for existing features
-- hotfix/ Urgent production issues
+- feat/ New functionality
+- fix/ A bug fix, including an urgent one
 - refactor/ Code improvements without behavior changes
 - docs/ Documentation only changes
 - chore/ Build process, dependency updates, etc.
@@ -33,7 +32,7 @@ Rules:
 - Use lowercase
 - Separate words with hyphens
 - Keep descriptions under 50 characters
-- Be specific: feature/user-auth not feature/auth
+- Be specific: feat/user-auth not feat/auth
 
 ## Workflow
 
