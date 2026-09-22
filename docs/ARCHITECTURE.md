@@ -505,8 +505,7 @@ flowchart LR
 To keep database and Slack API usage low on Home and User Mapping:
 
 - **Home content hash** — A minimal set of DB queries computes a hash of the data that drives Home (groups and their names, members, syncs and their titles, pending invites, External Connections — peers, allowlists, remote stubs, waiting codes — and whether that person has authorized SyncBot). If the hash matches the last full refresh, the app skips expensive work. Completing OAuth also publishes Home for that user (same `views.publish` path as a successful Refresh). For non-managers the hash is only that authorize payload, not groups and syncs, so a member clicking **Refresh** does not rebuild the whole workspace.
-- **Cached Home blocks** — After a full refresh, the built Block Kit payload is cached under `home_tab_hash:{team_id}:{user_id}` / `home_tab_blocks:{team_id}:{user_id}`. When the hash matches, the app re-publishes that cached view with one `views.publish` instead of re-running all DB and Slack calls.
-- **60-second Home cooldown** — If the user clicks Refresh again within 60 seconds and the hash is unchanged, the app re-publishes the cached view with a message: "No new data. Wait __ seconds before refreshing again."
+- **Cached Home blocks** — After a full refresh, the built Block Kit payload is cached under `home_tab_hash:{team_id}:{user_id}` / `home_tab_blocks:{team_id}:{user_id}`. Opening Home re-publishes that cached view with one `views.publish` when the hash matches. Refresh does nothing when the hash matches.
 - **Home push is acting user + invalidation** — `refresh_home_tab_for_workspace` invalidates the Home hash/blocks prefix for that Slack workspace, then (when `user_id` is set) publishes Home for that person only.
   - It does **not** call `get_admin_ids` / `users.list` to fan out to every admin.
   - Other people rebuild on the next `app_home_opened` or their own Refresh.

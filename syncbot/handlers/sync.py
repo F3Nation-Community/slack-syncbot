@@ -1,12 +1,10 @@
 """Sync management handlers — Home tab, auth, membership leave, DB reset."""
 
-import time
 from logging import Logger
 
 from slack_sdk.web import WebClient
 
 import builders
-import constants
 import helpers
 from db import DbManager, schemas
 from logger import log_critical, log_info, log_warning
@@ -93,12 +91,11 @@ def handle_refresh_home(
     """Handle the Refresh button on the Home tab.
 
     Available to everyone so a non-admin can reload Home after revoking
-    Authorize SyncBot. Uses content hash and cached blocks: full refresh only
-    when data changed. When hash matches and within 60s cooldown, re-publishes
-    with a cooldown message. Rebuilds this user's Home from the DB; workspace
-    names refresh at most daily when a workspace is loaded, not via an
-    instance-wide ``team_info`` sweep. After Home is published, pulses External
-    Connections (allowlist/snapshot) so Refresh is not Home-only.
+    Authorize SyncBot. When the content hash matches the cached Home, Refresh
+    does nothing. Otherwise it rebuilds this user's Home from the DB.
+    Workspace names refresh at most daily when a workspace is loaded, not via
+    an instance-wide ``team_info`` sweep. After Home is published, pulses
+    External Connections (allowlist/snapshot) so Refresh is not Home-only.
     """
     team_id = helpers.get_team_id_from_body(body)
     user_id = helpers.get_user_id_from_body(body)
@@ -121,25 +118,8 @@ def handle_refresh_home(
     )
     hash_key = builders.home_tab_hash_key(team_id, user_id)
     blocks_key = f"home_tab_blocks:{team_id}:{user_id}"
-    refresh_at_key = f"refresh_at:home:{team_id}:{user_id}"
 
-    action, cached_blocks, remaining = helpers.refresh_cooldown_check(
-        current_hash, hash_key, blocks_key, refresh_at_key
-    )
-    cooldown_sec = getattr(constants, "REFRESH_COOLDOWN_SECONDS", 60)
-
-    if action == "cooldown" and cached_blocks is not None and remaining is not None:
-        refresh_idx = helpers.index_of_block_with_action(cached_blocks, actions.CONFIG_REFRESH_HOME)
-        blocks_with_message = helpers.inject_cooldown_message(cached_blocks, refresh_idx, remaining)
-        client.views_publish(user_id=user_id, view={"type": "home", "blocks": blocks_with_message})
-        helpers.remember_home_viewer(team_id, user_id)
-        _pulse_after_home()
-        return
-    if action == "cached" and cached_blocks is not None:
-        client.views_publish(user_id=user_id, view={"type": "home", "blocks": cached_blocks})
-        helpers.remember_home_viewer(team_id, user_id)
-        helpers._cache_set(refresh_at_key, time.monotonic(), ttl=cooldown_sec * 2)
-        _pulse_after_home()
+    if helpers.cached_home_blocks(current_hash, hash_key, blocks_key) is not None:
         return
 
     # Names refresh at most daily in get_workspace_record / _maybe_refresh_workspace_name.
@@ -157,7 +137,7 @@ def handle_refresh_home(
     if block_dicts is None:
         return
     client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})
-    helpers.refresh_after_full(hash_key, blocks_key, refresh_at_key, current_hash, block_dicts)
+    helpers.refresh_after_full(hash_key, blocks_key, current_hash, block_dicts)
     _pulse_after_home()
 
 

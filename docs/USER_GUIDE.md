@@ -140,7 +140,7 @@ In synced messages (same-instance and External Connections):
 
 ## Refresh Behavior
 
-The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. It rebuilds this Home tab first, then refreshes External Connection allowlists (the same pulse keep-warm uses). To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again." After a deploy, remembered Home tabs update on their own; you should not need to click Refresh twice to wake the app. User Mapping’s **Refresh List** only reloads that modal from saved mappings.
+The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. It rebuilds this Home tab when something has changed, then refreshes External Connection allowlists (the same pulse keep-warm uses). When nothing has changed, Refresh does nothing. After a deploy, remembered Home tabs update on their own; you should not need to click Refresh twice to wake the app. User Mapping’s **Refresh List** only reloads that modal from saved mappings.
 
 ## Media Sync
 

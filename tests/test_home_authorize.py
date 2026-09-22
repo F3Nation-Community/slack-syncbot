@@ -407,14 +407,31 @@ class TestRefreshUsesThePerUserKey:
             patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
-            patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("cached", [], None)) as check,
-            patch("handlers.sync.helpers._cache_set"),
+            patch("handlers.sync.helpers.cached_home_blocks", return_value=[]) as check,
             patch("handlers.sync.helpers.remember_home_viewer"),
-            patch("handlers.sync._pulse_after_home"),
+            patch("handlers.sync._pulse_after_home") as pulse,
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
         assert check.call_args.args[1] == "home_tab_hash:T1:U1"
+        client.views_publish.assert_not_called()
+        pulse.assert_not_called()
+
+    def test_cached_home_blocks_matches_only_the_same_hash(self):
+        from helpers.refresh import cached_home_blocks
+
+        cached = [{"type": "section"}]
+
+        def _get(key):
+            if key == "home_tab_hash:T1:U1":
+                return "same"
+            if key == "home_tab_blocks:T1:U1":
+                return cached
+            return None
+
+        with patch("helpers.refresh._cache_get", side_effect=_get):
+            assert cached_home_blocks("same", "home_tab_hash:T1:U1", "home_tab_blocks:T1:U1") == cached
+            assert cached_home_blocks("other", "home_tab_hash:T1:U1", "home_tab_blocks:T1:U1") is None
 
 
 class TestRefreshIsAllowedForEveryone:
@@ -430,7 +447,7 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.helpers.is_workspace_admin", return_value=False),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
-            patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("rebuild", None, None)),
+            patch("handlers.sync.helpers.cached_home_blocks", return_value=None),
             patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]) as build,
             patch("handlers.sync.helpers.refresh_after_full"),
@@ -456,7 +473,7 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
-            patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("rebuild", None, None)),
+            patch("handlers.sync.helpers.cached_home_blocks", return_value=None),
             patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]),
             patch("handlers.sync.helpers.refresh_after_full"),

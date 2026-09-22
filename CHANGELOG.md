@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Button modals open in the ack and fill in afterward
+- Refresh should do nothing when Home has not changed
 
 ## [1.7.0] - 2026-09-22
 

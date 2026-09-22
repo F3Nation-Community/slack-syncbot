@@ -122,11 +122,8 @@ from helpers.post_meta import (
     post_meta_exists_for_channel_ts,
 )
 from helpers.refresh import (
-    cooldown_message_block,
-    index_of_block_with_action,
-    inject_cooldown_message,
+    cached_home_blocks,
     refresh_after_full,
-    refresh_cooldown_check,
 )
 from helpers.settings import (
     federation_enabled,
@@ -258,8 +255,8 @@ __all__ = [
     "request_scope_set",
     "_upsert_single_user_to_directory",
     "apply_mentioned_users",
+    "cached_home_blocks",
     "cleanup_temp_files",
-    "cooldown_message_block",
     "decrypt_bot_token",
     "delete_message",
     "download_slack_files",
@@ -332,8 +329,6 @@ __all__ = [
     "get_workspace_by_id",
     "get_bot_token",
     "get_workspace_record",
-    "index_of_block_with_action",
-    "inject_cooldown_message",
     "is_backup_visible_for_workspace",
     "is_settings_visible_for_workspace",
     "is_db_reset_visible_for_workspace",
@@ -387,7 +382,6 @@ __all__ = [
     "resolve_channel_references",
     "rewrite_envelope_channel_refs",
     "refresh_after_full",
-    "refresh_cooldown_check",
     "resolve_mention_for_workspace",
     "resolve_workspace_name",
     "soft_delete_workspace",
