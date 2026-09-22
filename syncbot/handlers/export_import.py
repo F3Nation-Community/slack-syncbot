@@ -140,8 +140,9 @@ def handle_backup_restore(
     modal_blocks = view.as_form_field()
     modal_blocks.append(restore_block)
 
-    orm.open_or_push_view(
+    orm.update_opened_view(
         client,
+        body,
         trigger_id,
         {
             "type": "modal",
@@ -151,7 +152,6 @@ def handle_backup_restore(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": modal_blocks,
         },
-        body=body,
     )
 
 
@@ -484,8 +484,9 @@ def handle_data_migration(
     modal_blocks = view.as_form_field()
     modal_blocks.append(import_block)
 
-    orm.open_or_push_view(
+    orm.update_opened_view(
         client,
+        body,
         trigger_id,
         {
             "type": "modal",
@@ -495,7 +496,6 @@ def handle_data_migration(
             "close": {"type": "plain_text", "text": "Cancel"},
             "blocks": modal_blocks,
         },
-        body=body,
     )
 
 

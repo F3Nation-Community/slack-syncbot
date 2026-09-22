@@ -75,7 +75,7 @@ class TestLeaveSyncConfirmModal:
             patch("handlers.channel_sync._format_channel_ref", return_value="#c"),
         ):
             handle_leave_sync(body, client, MagicMock(), context={})
-        return client.views_open.call_args.kwargs["view"]
+        return client.views_update.call_args.kwargs["view"]
 
     def test_has_a_red_button_and_no_submit_button(self):
         view = self._view()
@@ -97,7 +97,7 @@ class TestPauseSyncConfirmModal:
         client = MagicMock()
         body = {"actions": [{"action_id": f"{actions.CONFIG_PAUSE_SYNC}_42", "value": "42"}], "trigger_id": "tr"}
         handle_pause_sync(body, client, MagicMock(), context={})
-        view = client.views_open.call_args.kwargs["view"]
+        view = client.views_update.call_args.kwargs["view"]
         assert "submit" not in view
         assert _danger_buttons(view) == []
         buttons = [
@@ -132,7 +132,7 @@ class TestLeaveGroupConfirmModal:
             patch("handlers.group_manage.helpers.can_workspace_leave", return_value=(True, "")),
         ):
             group_manage.handle_leave_group(body, client, MagicMock(), context={})
-        return client.views_open.call_args.kwargs["view"]
+        return client.views_update.call_args.kwargs["view"]
 
     def test_has_a_red_button_and_no_submit_button(self):
         view = self._view()
@@ -165,7 +165,7 @@ class TestSoleOwnerBlockedModal:
             patch("handlers.group_manage.helpers.can_workspace_leave", return_value=(False, "sole_owner")),
         ):
             group_manage.handle_leave_group(body, client, MagicMock(), context={})
-        return client.views_open.call_args.kwargs["view"]
+        return client.views_update.call_args.kwargs["view"]
 
     def test_has_exactly_one_dismiss_button(self):
         view = self._view()
@@ -194,7 +194,7 @@ class TestDisbandGroupConfirmModal:
             patch("handlers.group_manage.helpers.get_active_members", return_value=[]),
         ):
             group_manage.handle_disband_group(body, client, MagicMock(), context={})
-        return client.views_open.call_args.kwargs["view"]
+        return client.views_update.call_args.kwargs["view"]
 
     def test_has_a_red_button_and_no_submit_button(self):
         view = self._view()
@@ -221,7 +221,7 @@ class TestCancelPendingConnectionConfirmModal:
             patch("handlers.federation_cmds.DbManager.get_record", return_value=pairing),
         ):
             handle_cancel_pending_external_connection(body, client, MagicMock(), {})
-        return client.views_open.call_args.kwargs["view"]
+        return client.views_update.call_args.kwargs["view"]
 
     def test_has_a_red_button_and_no_submit_button(self):
         view = self._view()

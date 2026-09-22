@@ -1,43 +1,36 @@
+import contextvars
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from helpers import format_error_dm, get_user_id_from_body, safe_get
+from helpers import get_team_id_from_body, safe_get
 from helpers.slack_api import slack_error_code as _slack_error_code
-from logger import log_debug, log_error, log_warning
+from logger import log_debug, log_error
+from slack.actions import MODAL_DENIED_CALLBACK
 
-_MODAL_EXPIRED_TRIGGER_DM = "SyncBot could not open that window in time. Please click the button again."
+_MODAL_UPDATED: contextvars.ContextVar[bool] = contextvars.ContextVar("modal_updated", default=False)
+_EXTERNAL_ID_SAFE = re.compile(r"[^A-Za-z0-9_]")
 
 
-def _notify_expired_trigger(
-    client: Any,
-    exc: BaseException,
-    body: dict | None,
-    *,
-    callback_id: str | None,
-    mode: str,
-) -> None:
-    """DM the acting user when ``views.open`` lost the 3s trigger_id window."""
-    code = _slack_error_code(exc)
-    if code != "expired_trigger_id" and "expired_trigger_id" not in str(exc):
-        return
-    user_id = get_user_id_from_body(body) if body else None
-    if not user_id:
-        return
-    action_id = safe_get(body, "actions", 0, "action_id") if body else None
-    text = format_error_dm(
-        _MODAL_EXPIRED_TRIGGER_DM,
-        {
-            "error": code or "expired_trigger_id",
-            "window": callback_id,
-            "open": "push" if mode == "add" else "open",
-            "button": action_id,
-        },
-    )
-    try:
-        client.chat_postMessage(channel=user_id, text=text)
-    except Exception as dm_exc:
-        log_warning("modal_open_timeout_dm_failed", error=str(dm_exc))
+def build_modal_external_id(team_id: str, trigger_id: str) -> str:
+    """Slack ``external_id`` for this click. Unique per team, at most 255 characters."""
+    raw = f"{team_id}_{trigger_id}"
+    return _EXTERNAL_ID_SAFE.sub("_", raw)[:255]
+
+
+def reset_modal_updated() -> None:
+    """Clear the work-phase flag before a modal handler runs."""
+    _MODAL_UPDATED.set(False)
+
+
+def modal_was_updated() -> bool:
+    """True after this request's work phase called ``views.update``."""
+    return _MODAL_UPDATED.get()
+
+
+def _mark_modal_updated() -> None:
+    _MODAL_UPDATED.set(True)
 
 
 def open_or_push_view(
@@ -46,22 +39,63 @@ def open_or_push_view(
     view: dict,
     *,
     new_or_add: str = "new",
-    body: dict | None = None,
 ) -> Any | None:
-    """Open or push a Slack modal, logging and DMing on ``expired_trigger_id``.
-
-    Returns the Slack API response on success, or ``None`` on failure.
-    """
+    """Open or push a Slack modal. Returns the Slack API response, or ``None`` on failure."""
     callback_id = view.get("callback_id") if isinstance(view, dict) else None
     try:
         if new_or_add == "add":
             return client.views_push(trigger_id=trigger_id, view=view)
         return client.views_open(trigger_id=trigger_id, view=view)
     except Exception as e:
+        if _slack_error_code(e) == "duplicate_external_id":
+            return None
         log_error("modal_open_or_push_failed", callback_id=callback_id, mode=new_or_add, error=str(e))
         log_debug("modal_view_payload", view=json.dumps(view, indent=2))
-        _notify_expired_trigger(client, e, body, callback_id=callback_id, mode=new_or_add)
         return None
+
+
+def _update_by_external_id(client: Any, external_id: str, view: dict) -> Any | None:
+    """Replace the loading view. ``not_found`` is quiet."""
+    payload = {**view, "external_id": external_id}
+    try:
+        result = client.views_update(external_id=external_id, view=payload)
+    except Exception as exc:
+        if _slack_error_code(exc) == "not_found":
+            log_debug("modal_update_not_found")
+            _mark_modal_updated()
+            return None
+        log_error("modal_update_failed", error=str(exc))
+        log_debug("modal_view_payload", view=json.dumps(payload, indent=2))
+        return None
+    _mark_modal_updated()
+    return result
+
+
+def update_opened_view(client: Any, body: dict | None, trigger_id: str, view: dict) -> Any | None:
+    """Replace the loading view for this click."""
+    team_id = (get_team_id_from_body(body) if body else "") or ""
+    return _update_by_external_id(client, build_modal_external_id(team_id, trigger_id), view)
+
+
+def update_denied_modal(client: Any, body: dict | None, trigger_id: str) -> None:
+    """Replace the loading view when the handler does not fill a modal."""
+    update_opened_view(
+        client,
+        body,
+        trigger_id,
+        {
+            "type": "modal",
+            "callback_id": MODAL_DENIED_CALLBACK,
+            "title": {"type": "plain_text", "text": "SyncBot"},
+            "close": {"type": "plain_text", "text": "Close"},
+            "blocks": [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": ":lock: You can't open that."},
+                }
+            ],
+        },
+    )
 
 
 @dataclass
@@ -619,27 +653,21 @@ class BlockView:
         parent_metadata: dict = None,
         close_button_text: str = "Close",
         notify_on_close: bool = False,
-        new_or_add: str = "new",
         body: dict | None = None,
     ) -> Any | None:
-        """Open or push this form as a modal. Returns the Slack API response or ``None``."""
-        blocks = self.as_form_field()
-
-        view = {
-            "type": "modal",
-            "callback_id": callback_id,
-            "title": {"type": "plain_text", "text": title_text},
-            "close": {"type": "plain_text", "text": close_button_text},
-            "notify_on_close": notify_on_close,
-            "blocks": blocks,
-        }
-        if parent_metadata:
-            view["private_metadata"] = json.dumps(parent_metadata)
-
-        if submit_button_text:
-            view["submit"] = {"type": "plain_text", "text": submit_button_text}
-
-        return open_or_push_view(client, trigger_id, view, new_or_add=new_or_add, body=body)
+        """Fill the loading modal opened for this ``trigger_id``."""
+        team_id = (get_team_id_from_body(body) if body else "") or ""
+        return self.update_modal(
+            client,
+            None,
+            title_text,
+            callback_id,
+            submit_button_text=submit_button_text,
+            parent_metadata=parent_metadata,
+            close_button_text=close_button_text,
+            notify_on_close=notify_on_close,
+            external_id=build_modal_external_id(team_id, trigger_id),
+        )
 
     def publish_home_tab(self, client: Any, user_id: str):
         """Publish a Home tab view for the given user."""
@@ -652,13 +680,14 @@ class BlockView:
     def update_modal(
         self,
         client: Any,
-        view_id: str,
+        view_id: str | None,
         title_text: str,
         callback_id: str,
         submit_button_text: str | None = "Submit",
         parent_metadata: dict = None,
         close_button_text: str = "Close",
         notify_on_close: bool = False,
+        external_id: str | None = None,
     ):
         blocks = self.as_form_field()
 
@@ -675,7 +704,10 @@ class BlockView:
         if parent_metadata:
             view["private_metadata"] = json.dumps(parent_metadata)
 
+        if external_id:
+            return _update_by_external_id(client, external_id, view)
         client.views_update(view_id=view_id, view=view)
+        return None
 
     def as_ack_update(
         self,

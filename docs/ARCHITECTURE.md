@@ -512,7 +512,8 @@ To keep database and Slack API usage low on Home and User Mapping:
   - Other people rebuild on the next `app_home_opened` or their own Refresh.
   - Partner workspaces in the same group are invalidate-only unless the handler has a user on that workspace.
   - Inbound federation is invalidate-only (no `views.publish`). `/teams` pauses this peer's stubs that left the allowlist.
-- **User Mapping is a modal** — Opening User Mapping `views.open`s the current DB mapping list only (no seed/map/crawl on the `trigger_id` path). Mapping never replaces the Home tab with `views.publish`.
+- **Button modals** — The ack opens a close-only Loading view, with no database read and no `users.info`. The work phase fills that view. Edit Mapping is the only push. If the handler does not fill the view, it becomes a close-only denial. A failed open does not DM the user.
+- **User Mapping is a modal** — The work phase fills the Loading view from the current DB mapping list. There is no seed, map, or directory crawl on open. Mapping never replaces the Home tab with `views.publish`.
   - Slack caps modals at 100 blocks, so the list paginates with Previous/Next.
   - **Auto Map Now** is a lazy job: cheap `views.update` to **Mapping users...**, seed from existing `user_directory` rows, map with `allow_slack_email_lookup=False` (no per-user Slack lookups), store `last_auto_map` on `workspace_settings`, then `views.update` the list and last-run line via `view_id`.
   - **Refresh List** rebuilds from DB only and always restores Auto Map Now.

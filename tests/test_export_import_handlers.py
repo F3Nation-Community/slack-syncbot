@@ -134,7 +134,7 @@ class TestHandleBackupRestorePrimaryWorkspace:
         ):
             handle_backup_restore(body, client, MagicMock(), {})
 
-        client.views_open.assert_not_called()
+        client.views_update.assert_not_called()
 
 
 class TestDataMigrationModal:
@@ -149,7 +149,7 @@ class TestDataMigrationModal:
             patch("handlers.export_import._primary_workspace_code_tick", return_value="`Workspace A`"),
         ):
             handle_data_migration(body, client, MagicMock(), {})
-        view = client.views_open.call_args.kwargs["view"]
+        view = client.views_update.call_args.kwargs["view"]
         text = str(view)
         assert ":outbox_tray: Export" in text
         assert ":link: Export and Request Connection" in text

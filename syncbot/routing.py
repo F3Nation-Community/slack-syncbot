@@ -71,6 +71,40 @@ ACTION_MAPPER = {
 }
 """Block-action ``action_id`` -> handler."""
 
+MODAL_OPEN_ACTIONS = {
+    actions.CONFIG_MANAGE_USER_MAPPING,
+    actions.CONFIG_USER_MAPPING_EDIT,
+    actions.CONFIG_CREATE_GROUP,
+    actions.CONFIG_JOIN_GROUP,
+    actions.CONFIG_INVITE_WORKSPACE,
+    actions.CONFIG_LEAVE_GROUP,
+    actions.CONFIG_DISBAND_GROUP,
+    actions.CONFIG_CREATE_SYNC,
+    actions.CONFIG_LEAVE_SYNC,
+    actions.CONFIG_PAUSE_SYNC,
+    actions.CONFIG_RESUME_SYNC,
+    actions.CONFIG_JOIN_SYNC,
+    actions.CONFIG_EDIT_SYNC,
+    actions.CONFIG_BACKUP_RESTORE,
+    actions.CONFIG_DATA_MIGRATION,
+    actions.CONFIG_OPEN_SETTINGS,
+    actions.CONFIG_DB_RESET,
+    actions.CONFIG_CREATE_EXTERNAL_CONNECTION,
+    actions.CONFIG_SHOW_EXTERNAL_CONNECTION_CODE,
+    actions.CONFIG_EDIT_PENDING_EXTERNAL_CONNECTION,
+    actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION,
+    actions.CONFIG_JOIN_EXTERNAL_CONNECTION,
+    actions.CONFIG_EDIT_EXTERNAL_CONNECTION,
+    actions.CONFIG_VERIFY_EXTERNAL_CONNECTION,
+    actions.CONFIG_LEAVE_EXTERNAL_CONNECTION,
+}
+"""Home and in-modal buttons that open or push a view. Folded ``action_id`` values."""
+
+MODAL_PUSH_ACTIONS = {
+    actions.CONFIG_USER_MAPPING_EDIT,
+}
+"""Subset of :data:`MODAL_OPEN_ACTIONS` that ``views.push`` onto the current modal."""
+
 EVENT_MAPPER = {
     "app_home_opened": handlers.handle_app_home_opened,
     "member_joined_channel": handlers.handle_member_joined_channel,

@@ -229,8 +229,9 @@ def handle_db_reset(
     if not trigger_id:
         return
 
-    orm.open_or_push_view(
+    orm.update_opened_view(
         client,
+        body,
         trigger_id,
         {
             "type": "modal",
@@ -263,7 +264,6 @@ def handle_db_reset(
                 },
             ],
         },
-        body=body,
     )
 
 

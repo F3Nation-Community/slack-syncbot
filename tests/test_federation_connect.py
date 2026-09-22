@@ -465,7 +465,7 @@ class TestFedWsCacheInvalidation:
             handle_leave_external_connection(body, client, MagicMock(), {})
         update.assert_not_called()
         pause.assert_not_called()
-        client.views_open.assert_not_called()
+        client.views_update.assert_not_called()
 
     def test_inbound_pair_invalidates_fed_ws_cache(self):
         from federation import api as federation_api
@@ -708,7 +708,7 @@ class TestExternalConnectionModals:
             patch("handlers.federation_cmds.DbManager.get_record", return_value=None),
         ):
             handle_show_external_connection_code(body, client, MagicMock(), {})
-        view = client.views_open.call_args.kwargs["view"]
+        view = client.views_update.call_args.kwargs["view"]
         assert view["title"]["text"] == "Connection Code"
         assert "submit" not in view
         assert "no longer available" in json.dumps(view)
@@ -817,7 +817,7 @@ class TestExternalConnectionModals:
             patch("handlers.federation_cmds._local_workspace_options", return_value=[]),
         ):
             handle_edit_pending_external_connection(body, client, MagicMock(), {})
-        view = client.views_open.call_args.kwargs["view"]
+        view = client.views_update.call_args.kwargs["view"]
         assert view["title"]["text"] == "Edit Connection"
         assert json.loads(view["private_metadata"]) == {"pairing_id": 3}
         assert "edit_external_connection_name" in json.dumps(view)

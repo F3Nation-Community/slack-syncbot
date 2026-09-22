@@ -249,7 +249,7 @@ def test_invite_workspace_modal_has_one_invite_code_section():
         patch("handlers.group.helpers.resolve_workspace_name", return_value="Other"),
     ):
         handle_invite_workspace(body, client, MagicMock(), {})
-    view = client.views_open.call_args.kwargs["view"]
+    view = client.views_update.call_args.kwargs["view"]
     text = repr(view)
     assert text.count("*Invite Code*") == 1
     assert "External Workspace" not in text

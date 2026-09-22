@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [Unreleased]
+
+### Fixed
+
+- Button modals open in the ack and fill in afterward
 
 ## [1.7.0] - 2026-09-22
 

@@ -368,6 +368,5 @@ def build_user_mapping_edit_modal(
         submit_button_text="Save",
         close_button_text="Cancel",
         parent_metadata=meta,
-        new_or_add="add",
         body=body,
     )
