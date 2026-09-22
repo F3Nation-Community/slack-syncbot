@@ -117,9 +117,9 @@ Parameters:
   DatabaseSchema:
     Description: >
       Database name (DATABASE_SCHEMA). A non-empty value wins. Empty becomes
-      syncbot_${Stage} in the Lambda env (syncbot_test or syncbot_prod). Deploy
-      scripts pass the live stack value when the env file is empty. Create this
-      database before first migrate. Unused for sqlite.
+      syncbot_test or syncbot_prod in the Lambda env. Deploy scripts pass the
+      live stack value when the env file is empty. Create this database before
+      first migrate. Unused for sqlite.
     Type: String
     Default: ""
 
