@@ -38,7 +38,7 @@ def _action_body(prefix, target_id):
 
 class TestPromoteToOwner:
     def _run(self, *, acting_is_owner, target_eligible=True):
-        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", deleted_at=None)
         # get_record is mocked for both the member and the group lookup, so this
         # stands in for either; `name` is the group's.
         target = SimpleNamespace(id=MEMBER_ID, group_id=GROUP_ID, workspace_id=OTHER_WS_ID, role="member", name="G")
@@ -73,7 +73,7 @@ class TestPromoteToOwner:
 
 class TestDemoteSelf:
     def _run(self, *, target_workspace_id, owner_count):
-        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", deleted_at=None)
         target = SimpleNamespace(
             id=MEMBER_ID, group_id=GROUP_ID, workspace_id=target_workspace_id, role="owner", name="G"
         )
@@ -107,7 +107,7 @@ class TestDemoteSelf:
 
 class TestDisbandConfirm:
     def _run(self, *, can_disband, blocked=False):
-        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", deleted_at=None, workspace_name="Workspace A")
         group = SimpleNamespace(id=GROUP_ID, name="G")
         meta = {"group_id": GROUP_ID}
         if blocked:
@@ -144,7 +144,7 @@ class TestDisbandConfirm:
 
 class TestLeaveGroupConfirmOwnerGuard:
     def _run(self, *, can_leave, blocked=False):
-        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=ACTING_WS_ID, team_id="T1", deleted_at=None)
         meta = {"group_id": GROUP_ID}
         if blocked:
             meta["blocked"] = True

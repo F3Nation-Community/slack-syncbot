@@ -14,6 +14,7 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from handlers.group import (  # noqa: E402
     handle_accept_group_invite,
+    handle_create_group_submit,
     handle_decline_group_invite,
     handle_join_group_submit,
 )
@@ -51,7 +52,7 @@ class TestAcceptGroupInviteAuthorization:
     def _run(self, acting_workspace_id):
         member = _pending_member()
         group = SimpleNamespace(id=GROUP_ID, name="Test Group")
-        acting = SimpleNamespace(id=acting_workspace_id, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=acting_workspace_id, team_id="T1", deleted_at=None)
 
         with (
             patch("handlers.group._get_authorized_workspace", return_value=("U1", acting)),
@@ -79,7 +80,7 @@ class TestAcceptGroupInviteAuthorization:
         assert not self._run(INVITER_WS_ID).called
 
     def test_unauthorized_user_is_rejected(self):
-        """When REQUIRE_ADMIN is on, _get_authorized_workspace returns None and nothing happens."""
+        """When the user is not authorized, the handler returns without reading the invite."""
         with (
             patch("handlers.group._get_authorized_workspace", return_value=None),
             patch("handlers.group.DbManager.get_record") as get_record,
@@ -99,7 +100,7 @@ class TestDeclineGroupInviteAuthorization:
     def _run(self, action_id, acting_workspace_id):
         member = _pending_member()
         group = SimpleNamespace(id=GROUP_ID, name="Test Group")
-        acting = SimpleNamespace(id=acting_workspace_id, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=acting_workspace_id, team_id="T1", deleted_at=None)
 
         with (
             patch("handlers.group._get_authorized_workspace", return_value=("U1", acting)),
@@ -135,7 +136,7 @@ class TestDeclineGroupInviteAuthorization:
         """A group owner has standing over membership, so it may cancel a pending invite."""
         member = _pending_member()
         group = SimpleNamespace(id=GROUP_ID, name="Test Group")
-        acting = SimpleNamespace(id=THIRD_PARTY_WS_ID, team_id="T1", bot_token=None, deleted_at=None)
+        acting = SimpleNamespace(id=THIRD_PARTY_WS_ID, team_id="T1", deleted_at=None)
 
         with (
             patch("handlers.group._get_authorized_workspace", return_value=("U1", acting)),
@@ -212,14 +213,68 @@ class TestJoinGroupSubmit:
             patch("handlers.group.helpers._cache_set"),
             patch("handlers.group.DbManager.find_records", return_value=[]),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
-            patch("handlers.group._logger.warning") as warn_log,
+            patch("handlers.group.log_warning") as warn_log,
         ):
             handle_join_group_submit(body, client, logger, context={})
 
         matched = [call for call in warn_log.call_args_list if call.args and call.args[0] == "group_code_invalid"]
         assert matched, "Expected group_code_invalid warning"
-        extra = matched[0].kwargs["extra"]
+        extra = matched[0].kwargs
         assert "code" not in extra
         assert extra["workspace_id"] == workspace.id
         assert extra["attempt"] == 1
         assert "code_length" in extra
+
+
+def test_invite_workspace_modal_has_one_invite_code_section():
+    from handlers.group import handle_invite_workspace
+
+    client = MagicMock()
+    workspace = SimpleNamespace(id=1, team_id="T1")
+    group = SimpleNamespace(id=5, invite_code="GRP-ABC")
+    other = SimpleNamespace(id=2, team_id="T2", workspace_name="Other")
+    body = {
+        "trigger_id": "tr",
+        "actions": [{"value": "5"}],
+        "user": {"id": "U1"},
+        "team": {"id": "T1"},
+    }
+    with (
+        patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+        patch("handlers.group.DbManager.get_record", return_value=group),
+        patch("handlers.group.DbManager.find_records", side_effect=[[], [other]]),
+        patch("handlers.group.helpers.federation_enabled", return_value=True),
+        patch("helpers.workspace_kind.is_deliverable_workspace", return_value=True),
+        patch("helpers.workspace_kind.is_stub_workspace", return_value=False),
+        patch("handlers.group.helpers.resolve_workspace_name", return_value="Other"),
+    ):
+        handle_invite_workspace(body, client, MagicMock(), {})
+    view = client.views_open.call_args.kwargs["view"]
+    text = repr(view)
+    assert text.count("*Invite Code*") == 1
+    assert "External Workspace" not in text
+
+
+class TestCreateGroupSubmitMintsUid:
+    def test_create_group_mints_a_uid(self):
+        created = []
+
+        def create_record(record):
+            record.id = 1 + len(created)
+            created.append(record)
+            return record
+
+        workspace = SimpleNamespace(id=10, team_id="T1", deleted_at=None)
+        client = MagicMock()
+        client.conversations_open.return_value = {"channel": {"id": "D1"}}
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.group._get_text_input_value", return_value="Shared"),
+            patch("handlers.group.DbManager.create_record", side_effect=create_record),
+            patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_create_group_submit({"view": {"team_id": "T1"}}, client, MagicMock(), {})
+
+        assert created[0].__class__.__name__ == "WorkspaceGroup"
+        assert created[0].uid
+        assert len(created[0].uid) == 36
