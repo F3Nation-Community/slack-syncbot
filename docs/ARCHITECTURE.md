@@ -217,7 +217,7 @@ Bolt OAuth (not in `schemas.py`) keys off Slack `team_id` / `user_id` strings, n
 
 | Table | Role |
 |-------|------|
-| `post_meta` | One row per copy (or split half, or Hybrid notice) on a `sync_channel`. Shared `post_id` ties origin and copies. `ts` is `DECIMAL(16,6)` — write and compare with `post_meta_ts()`, never `float`. `kind` distinguishes messages vs reaction notices. `posted_as_user_id` is the target user token that created the copy. `source_workspace_id` FKs `workspaces.id`. |
+| `post_meta` | One row per copy (or Hybrid notice) on a `sync_channel`. Shared `post_id` ties origin and copies. `ts` is `DECIMAL(16,6)` — write and compare with `post_meta_ts()`, never `float`. `kind` distinguishes messages vs reaction notices. `posted_as_user_id` is the target user token that created the copy. `source_workspace_id` FKs `workspaces.id`. |
 | `user_directory` | Cached profiles per workspace (`slack_user_id`, email, names). Unique `(workspace_id, slack_user_id)`. Used for Auto Map and on-the-fly author map. |
 | `user_mappings` | Map from `(source_workspace_id, source_user_id)` to `target_user_id` (nullable for explicit no-map). Optional `group_id`. |
 
@@ -255,15 +255,15 @@ Bolt OAuth (not in `schemas.py`) keys off Slack `team_id` / `user_id` strings, n
 
 SyncBot builds one source-canonical envelope and sends it through [`run_sync_pipeline`](../syncbot/helpers/sync_pipeline.py#L26). `kind` is `message` or `reaction`. Message actions are `create`, `edit`, or `delete`. Reaction actions are `add` or `remove`. Keys that do not apply are omitted rather than sent empty.
 
-**Same-instance** means the target workspace is live on this install ([`is_local_workspace`](../syncbot/helpers/workspace_kind.py#L56)). **Cross-instance** means the Channel belongs to a workspace on a peer install ([`is_stub_workspace`](../syncbot/helpers/workspace_kind.py#L69)). That workspace is still a stub row in the database; the pipeline talks to the peer instead of posting with a local bot token.
+**Same-instance** means the target workspace is live on this install ([`is_local_workspace`](../syncbot/helpers/workspace_kind.py#L55)). **Cross-instance** means the Channel belongs to a workspace on a peer install ([`is_stub_workspace`](../syncbot/helpers/workspace_kind.py#L68)). That workspace is still a stub row in the database; the pipeline talks to the peer instead of posting with a local bot token.
 
-1. Slack POSTs `/slack/events`. Bolt matches every event in [`app.py`](../syncbot/app.py#L398-L399). [`main_response`](../syncbot/app.py#L317) acks Slack, then [`MAIN_MAPPER`](../syncbot/routing.py#L120-L124) sends `message` to [`respond_to_message_event`](../syncbot/handlers/message.py#L526) and `reaction_added` / `reaction_removed` to [`handle_reaction`](../syncbot/handlers/reaction_event.py#L54). [`run_claimed`](../syncbot/db/event_claims.py#L131) claims Slack `event_id` + `team_id` so a retry does not double-apply.
-2. The handler builds one envelope with [`build_envelope`](../syncbot/helpers/envelope.py#L35) (people, source channel and workspace, body, optional files) and builds origin PostMeta with [`build_origin_post_meta_rows`](../syncbot/helpers/post_meta.py#L134). A new top-level post does that in [`_handle_new_post`](../syncbot/handlers/message.py#L209). A thread reply is [`_handle_thread_reply`](../syncbot/handlers/message.py#L284). A reaction is [`_sync_reaction_records`](../syncbot/handlers/reaction_event.py#L12). Origin rows are persisted after the pipeline returns; copy rows are persisted inside `apply_target`.
-3. [`run_sync_pipeline`](../syncbot/helpers/sync_pipeline.py#L26) calls [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L157). That finds every subscribing Channel in syncs where the origin publishes, and deduplicates by workspace and channel.
+1. Slack POSTs `/slack/events`. Bolt matches every event in [`app.py`](../syncbot/app.py#L403-L404). [`main_response`](../syncbot/app.py#L334) acks Slack, then [`MAIN_MAPPER`](../syncbot/routing.py#L120-L124) sends `message` to [`respond_to_message_event`](../syncbot/handlers/message.py#L517) and `reaction_added` / `reaction_removed` to [`handle_reaction`](../syncbot/handlers/reaction_event.py#L54). [`run_claimed`](../syncbot/db/event_claims.py#L129) claims Slack `event_id` + `team_id` so a retry does not double-apply.
+2. The handler builds one envelope with [`build_envelope`](../syncbot/helpers/envelope.py#L35) (people, source channel and workspace, body, optional files) and builds origin PostMeta with [`build_origin_post_meta_rows`](../syncbot/helpers/post_meta.py#L135). A new top-level post does that in [`_handle_new_post`](../syncbot/handlers/message.py#L200). A thread reply is [`_handle_thread_reply`](../syncbot/handlers/message.py#L275). A reaction is [`_sync_reaction_records`](../syncbot/handlers/reaction_event.py#L12). Origin rows are persisted after the pipeline returns. A same-instance copy is persisted inside `apply_target`. A cross-instance copy on this install is saved from the peer response.
+3. [`run_sync_pipeline`](../syncbot/helpers/sync_pipeline.py#L26) calls [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L153). That finds every subscribing Channel in syncs where the origin publishes, and deduplicates by workspace and channel.
 4. A top-level create keeps every publish target. A thread create (and a file in a thread) goes same-instance only to Channels that already have the parent PostMeta ([`is_thread_create`](../syncbot/helpers/sync_pipeline.py#L54-L65)). Trusted cross-instance Channels still get that envelope; the peer returns 409 if it has no parent.
-5. Same-instance targets run [`apply_target`](../syncbot/helpers/sync_apply.py#L45) in the [local loop](../syncbot/helpers/sync_pipeline.py#L148-L161). Cross-instance targets run [`deliver_remote`](../syncbot/federation/deliver.py#L257) in the [peer loop](../syncbot/helpers/sync_pipeline.py#L170-L200): [`stage_unique_files_for_peer`](../syncbot/federation/deliver.py#L360) first, then the envelope. Origin puts that Channel's Slack ts on the envelope as `target_ts` when it already has the copy row. [`build_remote_envelope`](../syncbot/federation/deliver.py#L64) adds `channel_id` and drops local integer ids.
-6. On the peer, [`handle_message`](../syncbot/federation/api.py#L1015) applies an inbound create. Replies use [`_inbound_thread_ts`](../syncbot/federation/api.py#L139) (`target_ts`, or PostMeta on the resolved SyncChannel). Inbound edits, deletes, and reactions ([`handle_message_edit`](../syncbot/federation/api.py#L1116), [`handle_message_delete`](../syncbot/federation/api.py#L1174), [`handle_message_react`](../syncbot/federation/api.py#L1231)) need that PostMeta row. Missing parent is 409 `parent_missing` ([`_parent_missing`](../syncbot/federation/api.py#L157)). Missing file parts are 409 `incomplete_file`. A complete part set that does not assemble is 409 `assemble_failed` ([materialize loop](../syncbot/federation/api.py#L1060-L1081)).
-7. The copy's inbound create is skipped in [`respond_to_message_event`](../syncbot/handlers/message.py#L627-L665) (user-token echo and copy PostMeta). Follow-ups on a publishing Channel still fan out on that message's shared `post_id`. There is no second hop: [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L160-L162) does not walk the target Channel's other groups.
+5. Same-instance targets run [`apply_target`](../syncbot/helpers/sync_apply.py#L41) in the [local loop](../syncbot/helpers/sync_pipeline.py#L148-L161). Cross-instance targets run [`deliver_remote`](../syncbot/federation/deliver.py#L245) in the [peer loop](../syncbot/helpers/sync_pipeline.py#L170-L200): [`stage_unique_files_for_peer`](../syncbot/federation/deliver.py#L348) first, then the envelope. Origin puts that Channel's Slack ts on the envelope as `target_ts` when it already has the copy row. [`build_remote_envelope`](../syncbot/federation/deliver.py#L64) adds `channel_id` and drops local integer ids.
+6. On the peer, [`handle_message`](../syncbot/federation/api.py#L1014) applies an inbound create. Replies use [`_inbound_thread_ts`](../syncbot/federation/api.py#L139) (`target_ts`, or PostMeta on the resolved SyncChannel). Inbound edits, deletes, and reactions ([`handle_message_edit`](../syncbot/federation/api.py#L1114), [`handle_message_delete`](../syncbot/federation/api.py#L1172), [`handle_message_react`](../syncbot/federation/api.py#L1229)) need that PostMeta row. Missing parent is 409 `parent_missing` ([`_parent_missing`](../syncbot/federation/api.py#L157)). Missing file parts are 409 `incomplete_file`. A complete part set that does not assemble is 409 `assemble_failed` ([materialize loop](../syncbot/federation/api.py#L1060-L1080)).
+7. The copy's inbound create is skipped in [`respond_to_message_event`](../syncbot/handlers/message.py#L618-L657) (user-token echo and copy PostMeta). Follow-ups on a publishing Channel still fan out on that message's shared `post_id`. There is no second hop: [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L158) does not walk the target Channel's other groups.
 
 A thread reply in Workspace A `#general` from Ada Lovelace looks like this before fan-out. Edits, deletes, and reactions use that message `post_id` and do not carry `thread_post_id`. Federation outbound adds `channel_id` and `target_ts`, and drops local integer ids (`source_workspace_id`, `source_sync_channel_id`, `mapped_user_id`).
 
@@ -331,10 +331,11 @@ sequenceDiagram
     loop Each target
         alt Same-instance
             SB->>SB: Re-map @mentions and rewrite #channel
-            opt Files
-                SB->>T: upload v2
+            alt Has files
+                SB->>T: completeUploadExternal
+            else Text only
+                SB->>T: chat.postMessage
             end
-            SB->>T: chat.postMessage
             T-->>SB: ts
             SB->>DB: Save copy PostMeta
         else Cross-instance
@@ -344,10 +345,11 @@ sequenceDiagram
             end
             SB->>P: POST envelope (target_ts if known)
             P->>P: apply_target
-            opt Files
-                P->>C: upload v2
+            alt Has files
+                P->>C: completeUploadExternal
+            else Text only
+                P->>C: chat.postMessage
             end
-            P->>C: chat.postMessage
             C-->>P: ts
             P-->>SB: 200, or 409 if parent or file is missing
             SB->>DB: Save copy PostMeta from peer
@@ -364,15 +366,14 @@ The same envelope path applies to edits (`chat.update`), deletes (`chat.delete`)
 
 **Files**
 
-- User-token file shares are one native upload with the source caption on the same message. When the source has Block Kit, that body is `chat.update`d onto the same share.
-- Bot-token text plus file still posts the text first and uploads the file in that thread. A bot-token file with no source text is one native share; thread replies attach to that share's PostMeta ts.
+- A file share is one native upload for both tokens. The file is the message. Bot posts set the same from line as other messages. Block Kit and a public GIF go on that upload; plain text is the upload comment. A file with no text is just the file.
 - File ids are remembered before the file is shared into the Channel. The copy's `post_meta` row is written when that target write returns, so an inbound `file_share` is not treated as a new origin.
 - When `files.completeUploadExternal` and the first `files.info` omit `shares` (common for bot-token file-only posts), SyncBot retries channel history. If the ts is still missing, it records the ts from the inbound own-bot or user-token `file_share`.
 - Slack `upload` is ignored (share-at-upload-time vs later). A `file_share` is a share.
 - A text reply that lists the parent's files is identified by Slack fields (`thread_ts` differs from `ts`; subtype is not `file_share`; has text). Those files are ignored and the reply is synced. Also-send-to-channel (`thread_broadcast` / `reply_broadcast`) keeps its files.
 - A new file in a thread arrives as `subtype=file_share`, or as a file-only thread message when Slack omits the subtype.
 - Slack-hosted `video` / `image` Block Kit URLs (`files.slack.com`) are not copied; the file bytes still go through `files[]` and `file_refs`.
-- Free-plan files may be `hidden_by_limit` (no private URL). Target upload may return `storage_limit_reached`. Those shares fail loud and DM instead of posting text-only.
+- Free-plan files may be `hidden_by_limit` (no private URL). Target upload may return `storage_limit_reached`. Those shares fail and DM the source author.
 
 **Reactions**
 
@@ -494,7 +495,7 @@ flowchart LR
 | **Network** | TLS to the existing SQL host when used, public HTTPS origin, federation Ed25519 signing with 5-minute replay window |
 | **Database** | `pool_pre_ping=True` for stale connection detection, retry decorator on all operations, `dispose()` only after all retries exhausted |
 | **Encryption** | Bot and user OAuth tokens encrypted at rest with Fernet (PBKDF2-derived key, cached to avoid repeated 600K iterations). Bolt `slack_installations` / `slack_bots` use `EncryptedSQLAlchemyInstallationStore`; compare decrypted plaintext when refreshing bot tokens — never compare two Fernet ciphertexts. |
-| **Downloads** | Streaming within the 120s function timeout, Slack's 1 GB per-file limit, 8 KB chunks. In-flight federation file-part payloads use the same `DATA_ENCRYPTION_KEY`; they are omitted from backup and migration export. |
+| **Downloads** | Streaming, Slack's 1 GB per-file limit, 8 KB chunks. The platform request timeout ends a transfer still in progress. In-flight federation file-part payloads use the same `DATA_ENCRYPTION_KEY`; they are omitted from backup and migration export. |
 | **Slack API** | `slack_retry` decorator with exponential backoff, `Retry-After` header support, user profile caching |
 | **Input** | Platform receive cap for federation JSON and Slack Events POST, `_sanitize_text` on form input |
 | **Authorization** | Slack admins and owners open Settings, Backup, Reset, and External Connections. Extra managers (per-workspace Settings) can configure groups and syncs. Instance Settings, backup, reset, and External Connections are also gated by `PRIMARY_WORKSPACE`. Home and Authorize are open to everyone. Authorize stores that person's own user token for private-channel invite and target writes as them; never another member's token, and never on federation payloads. OAuth starts only at this instance's `/slack/install`. |

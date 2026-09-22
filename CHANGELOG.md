@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Federation returns 400 or 401 before reading an untrusted body
 - File-part and JSON size follow this hop's injected HTTP cap
 - After retention, the earliest-joined remaining local member becomes owner, or the group is disbanded
+- A file share is the message itself, with the same from line as other messages
 
 ### Removed
 
@@ -40,12 +41,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Create Connection and Import keep a wait screen and DM when they finish
 - File copies keep a Slack ts when complete-upload omits it, including External Connections
 - External Connection file parts follow the peer hop's advertised receive cap
-- Cloud Run advertises a 30 MiB part cap, 2 MiB under the 32 MiB HTTP request
-- The HTTP server finishes a Slack listener before the response, so a reply or reaction is not stuck until the next request
+- Cloud Run advertises a 30 MiB part cap
+- The HTTP server finishes a Slack listener before the response
 - A failed External Connection file reassembly returns `assemble_failed` and does not ask for the parts again
-- A bot file share waits for Slack's share timestamp, then also posts the file to the channel
 - A GIF stays on the message when that message also shares a file
-- A bot file share keeps the file on the same message as the text
 
 ## [1.6.2] - 2026-09-11
 

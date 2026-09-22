@@ -147,11 +147,11 @@ The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone,
 On the **same instance**, Slack-hosted files of any type (photos, video, PDFs, audio, zips, and so on) are downloaded from the source and uploaded to each target channel, including files shared in a thread and also-send-to-channel replies. Slack allows files up to 1 GB.
 
 - Slack often uploads the file a moment before it shares it into the Channel. SyncBot still copies that share.
-- If a file cannot be copied, SyncBot DMs you with the error instead of posting a "Shared a file" placeholder. The usual Free-plan stop is a workspace whose file storage is full.
+- If a file cannot be copied, SyncBot DMs you with the error. The usual Free-plan stop is a workspace whose file storage is full.
 - Slack-hosted video and image blocks are not copied as players. The file itself is uploaded so the other workspace can play it.
 - GIFs from the Slack GIF picker or GIPHY stay public image blocks.
-- When the mapped author has authorized SyncBot in the target workspace, ordinary file shares post as that person, with the file on the same message as the caption. If the source used Block Kit, that body stays on that same native message.
-- When they have not authorized, the share posts as SyncBot. Bot posts add a notice that names the original author in code ticks — for example `` `Ada Lovelace` shared a file `` — never as an @mention. For a bot caption-only share the notice sits on the file message. For bot text plus a file, the text is posted first and the file is a thread reply with that notice (also sent to the channel when the text was a top-level post).
+- When the mapped author has authorized SyncBot in the target workspace, the share posts as that person. The file is the message. A caption, Block Kit, or a public GIF stays on that same message.
+- When they have not authorized, the share still posts as one message, with the same from line as other SyncBot posts: the author's name and photo, plus the workspace name when they are not mapped. A file with no text is just the file.
 
 App posts that use Block Kit (for example a form) sync from the layout blocks, so line breaks and emoji stay intact. Slack's "Show more" control is only how the client folds a long message; SyncBot does not stop at the preview. Buttons that belong to the source app (Edit this post, and similar) are not copied, because they would not work in the other workspace.
 
@@ -162,8 +162,8 @@ App posts that use Block Kit (for example a form) sync from the layout blocks, s
 | Text only | Single message with text, shown under the original poster's name and avatar |
 | GIF (Slack picker / GIPHY) | Single message with the GIF embedded inline via image block, under the poster's name |
 | GIF + text | Single message with text and GIF together, under the poster's name |
-| File only (no text) | As the mapped person when they authorized (native share, no extra notice); otherwise as SyncBot with `` `Display Name` shared a file `` |
-| Text + file | As the mapped person: one native share with the caption (and Block Kit, when the source had it) and file together. As SyncBot: text first, then the file in a thread reply with `` `Display Name` shared a file `` (also sent to the channel when the text was a top-level post) |
+| File only (no text) | One message that is just the file, under the same from line as a text post |
+| Text + file | One message with the caption (and Block Kit or a public GIF, when the source had them) and the file together |
 | Multiple files | Same as the matching row above; all files go in one upload |
 
 ## External Connections
