@@ -8,17 +8,20 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 2. Open the **SyncBot** app from the sidebar and click the **Home** tab. Everyone can open it. Workspace admins and owners configure Settings; they can also name extra managers who may create groups, Create Sync, and Join Sync without opening Settings.
 3. The Home tab shows everything in one view:
    - **Authorize SyncBot** — at the top, when this person still needs to grant user permissions. See **Authorize SyncBot** below.
-   - **SyncBot Configuration** — directly under that. **Refresh** is for everyone, so you can reload Home after revoking your authorization. **Settings** is for Slack admins on every installed workspace: extra managers and whether private Channels may be published here. Federation, retention, and the broadcast allow-list stay on the primary workspace (`PRIMARY_WORKSPACE` set and redeployed). **Backup/Restore** is also primary-only. If you do not see those instance options, ask the operator.
+   - **SyncBot Configuration** — directly under Authorize.
+     - **Refresh** is for everyone (including after you revoke your authorization).
+     - **Settings** is for Slack admins on every installed workspace: extra managers and whether private Channels may be published here. Federation, retention, and the Workspace Block List stay on the primary workspace (`PRIMARY_WORKSPACE` set and redeployed). The block list is Slack Team IDs (for example `T0123456789`). A listed Workspace is uninstalled and cannot Add to Slack again until you remove the ID; removing it does not reinstall for them. You cannot block the primary Workspace, or a Workspace that still owns a group, until you promote another Owner. The bottom of Settings lists this install's version and primary Workspace. On the primary Workspace it also shows log level, fingerprint, public URL, and database.
+     - **Backup/Restore** is primary-only. **Data Migration** is on that same row for Slack admins (export or import this Workspace's SyncBot data). If you do not see those instance options, ask the operator.
    - **Workspace Groups** — create or join groups of workspaces that can sync channels together (admins).
-   - **Per-group sections** — for each group you can **Create Sync**, open **User Mapping** (a modal), and see or manage channel syncs inline. Other workspaces in the group see those syncs as **Available Sync Relationships** and can **Join Sync**. Create, Join, and Edit each offer a participation choice, described under **Sync Modes**.
+   - **Per-group sections** — for each group you can **Create Sync**, open **User Mapping** (a modal), and see or manage channel syncs inline. Other workspaces in the group see those syncs as **Available Sync Relationships** and can **Join Sync**. Create, Join, and Edit each offer a participation choice, described under **Create Sync and Join Sync**.
    - **Synced Channels** — each row shows the local channel, then **Status** as Active or Paused with participation in parentheses (for example ``Active (Publish and Subscribe)``), **Members** as each partner `` `#channel (Workspace)` ``, with **Edit Sync**, **Pause Sync** / **Resume Sync**, and **Leave Sync**, a synced-since date, and a tracked message count.
-   - **External Connections** *(when federation is enabled)* — Generate or Enter a Connection Code, and **Data Migration** (export workspace data to another instance, or import a migration file).
+   - **External Connections** *(when federation is enabled)* — **Create External Connection** or **Join External Connection**. A created connection appears as a row (Trust Status `Waiting`, Local Workspaces, Remote Workspaces) before the other side joins, with **Show Connection Code**, **Edit Connection**, and **Cancel Connection**. After they join: **Edit Connection**, **Verify Trust**, or **Leave Connection**.
 
 ## Things to Know
 
 - Workspace **admins and owners** open Settings, Backup/Restore, Reset Database, and External Connections. **Extra managers** (chosen in Settings) can create groups, Create Sync, and Join Sync, but they cannot open those admin-only screens. Everyone can still open the Home tab, authorize SyncBot, and use **Refresh**.
-- Messages, threads, edits, deletes, reactions, images, videos, GIFs, and other hosted files (PDFs, audio, zips) are all synced **between workspaces on this instance**. Federation still carries public GIF/image URLs; Slack-hosted file bytes stay on the same instance.
-- **@mentions and #channel links** in synced messages are rewritten for each target: mapped users are tagged with the local Slack user, and `#channel` mentions become a code-ticked `#name (Workspace)` (for example `` `#ao-bridge-to-nowhere (F3 T-Town Test)` ``). SyncBot does not turn those into the target twin channel, because the author named a place in the source workspace. Links to a specific source message keep that URL. A pasted Slack message becomes `message in #channel (Workspace)`; if the author already labeled the link, that text stays. Unmapped people fall back to a code-ticked display name such as `` `Name (Workspace)` ``.
+- Messages, threads, edits, deletes, reactions, images, videos, GIFs, and other hosted files (PDFs, audio, zips) are all synced between workspaces on this instance and across External Connections the same way.
+- **@mentions and #channel links** in synced messages are rewritten for each target: mapped users are tagged with the local Slack user, and `#channel` mentions become a code-ticked `#name (Workspace)` (for example `` `#announcements (Workspace A)` ``). SyncBot does not turn those into the target twin channel, because the author named a place in the source workspace. Links to a specific source message keep that URL. A pasted Slack message becomes `message in #channel (Workspace)`; if the author already labeled the link, that text stays. Unmapped people fall back to a code-ticked display name such as `` `Name (Workspace)` ``.
 - Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
 - Existing messages are not back-filled; syncing starts from the moment a channel is linked.
 - Do not add SyncBot manually to channels. SyncBot adds itself when you Create Sync or Join Sync. If it detects it was added to an unconfigured channel, it posts a message and leaves automatically.
@@ -76,9 +79,9 @@ Every group has at least one **owner** workspace. The workspace that creates a g
 
 An owner can share that responsibility by clicking **Promote to Owner** next to another workspace in the group. There is no matching "demote" button for other workspaces — an owner can only step down itself, using **Give Up Ownership**, and only when another owner remains. That keeps one workspace from quietly taking a group over by demoting everyone else.
 
-For the same reason, a group can never be left with no owner. If you are the only owner, SyncBot will not let your workspace leave the group until you have promoted another workspace to owner. It explains this instead of failing silently, so you know what to do next.
+For the same reason, a group can never be left with no owner by choice. If you are the only owner and other workspaces are still in the group, SyncBot will not let your workspace leave until you have promoted another workspace to owner. It explains this instead of failing silently, so you know what to do next. If no other workspace has joined yet, Home shows **Disband Group** instead of **Leave Group**. Disband is also offered when you are the sole owner *and* the only workspace publishing a Channel into the group.
 
-Uninstalling SyncBot does not hand your ownership to anyone else. Your membership is only paused, so reinstalling within the retention period gives you the group back exactly as it was. Ownership passes to another workspace only when your data is actually deleted, either because the retention period expired or because an operator purged it. In that case SyncBot promotes the longest-standing remaining member so the group is not stranded.
+Uninstalling SyncBot does not hand your ownership to anyone else. Your membership is only paused, so reinstalling within the retention period gives you the group back exactly as it was. Other workspaces still see the group, with no owner listed. After that window, if another workspace is still in the group, SyncBot promotes the longest-standing remaining member. If nobody is left, the group is disbanded. The primary workspace can join or be invited like any other workspace; it is not added or made owner just because it is primary.
 
 ### Disbanding a group
 
@@ -86,7 +89,7 @@ An owner can **Disband Group** to remove a group entirely, along with its syncs 
 
 Disbanding always asks for confirmation before anything is removed, and tells you how many workspaces, syncs, and channels it will affect. Note that the user mappings scoped to the group go with it, and those took Auto Map Now and manual edits to build, so re-creating the group later means mapping people again.
 
-## Sync Modes
+## Create Sync and Join Sync
 
 Use **Create Sync** to start a new relationship in a group. There is no separate workspace picker: the new Sync is available to the group, and each other workspace decides independently whether to **Join Sync**. There are no sync owners. If the last publisher leaves, the Sync ends (history is removed) and anyone in the group can Create Sync again.
 
@@ -118,25 +121,41 @@ On a Hybrid or Direct target, removing a reaction removes that person's native e
 
 ## Uninstall / Reinstall
 
-If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted), and every stored bot and user token for that workspace is removed. Reinstalling within the retention period (default 30 days, which the operator can change in **Settings**) automatically restores groups and channel syncs, including group ownership. People who had clicked **Authorize SyncBot** will need to do that again for private-channel invitations and for target messages, files, and native reactions to appear as them. Group members are notified via DMs and channel messages.
+If a workspace uninstalls SyncBot, group memberships and syncs are paused (not deleted), and every stored bot and user token for that workspace is removed. Reinstalling within the retention period (default 30 days, which the operator can change in **Settings**) automatically restores groups and channel syncs, including group ownership, unless that Team ID is on the Workspace Block List. The same restore runs if that Workspace had become a remote stub (Leave Connection, or a move to another instance): reinstalling here, or importing that Workspace's migration file, brings it back as a live install and keeps message history. Public Channels are paused with a notice, SyncBot joins them again, then they resume with a notice. Twin Channels on Workspaces that stayed on the original instance also get a resume notice after import. Private Channels stay paused, with a pause notice in that Channel when SyncBot can post there (or on the twin Channel, and a DM, when it cannot). People who had clicked **Authorize SyncBot** will need to do that again, then Resume Sync, before a private Channel is added. Group members are notified via DMs and channel messages.
 
 ## User Mapping
 
-Admins open **User Mapping** from a group on the Home tab; it opens as a modal with the mappings already saved in SyncBot. Unmapped people appear first; use **Edit** and Slack’s native user picker to map someone by hand. **Auto Map Now** compares emails (and unique display names) in the member directory and writes a mapping whenever exactly one person in the other workspace matches — it does not crawl Slack’s full member list. While it runs, the button is replaced with **Mapping users...**; when it finishes, the list and a last-run line update in the same modal (for example, “Last run on September 2, 2026 with 20 new found”). **0 new found** means this run found nothing new in the current directory data, not that every person is mapped. **Refresh List** reloads the list from the database and brings **Auto Map Now** back if the modal stuck on Mapping users... after a timeout. Incomplete lists usually mean the directory is still filling in (for example after a join). The first synced message or reaction from an unmapped author can also create a mapping from that person’s directory email, or one target `users.lookupByEmail` if the directory has no unique hit; **Auto Map Now** still fills in everyone else. In synced messages, a mapped author appears with their **local** display name and profile photo (no workspace suffix in the author line); an unmapped author uses the remote display name and photo, with the source workspace in parentheses. The same applies to messages delivered over **External Connections** (cross-instance federation). In message text, a mapped user is mentioned with a normal `@` tag in the receiving workspace; unmapped users appear as a code-ticked display name such as `` `Name (Workspace)` `` (same style as the file-share notice). `#channel` mentions stay source-side as a code-ticked `` `#name (Workspace)` `` — SyncBot does not turn them into the target twin channel.
+Admins open **User Mapping** from a group on the Home tab. It opens as a modal with the mappings already saved in SyncBot. Unmapped people appear first.
 
-When you **Create Sync**, SyncBot posts a short notice in that Channel right away, even if nobody has joined yet. The second sentence says whether this Channel will send only, or send and receive. When another workspace uses **Join Sync**, SyncBot posts in both Channels who joined and whether messages are one-way or two-way.
+- **Edit** uses Slack’s native user picker to map someone by hand.
+- **Auto Map Now** compares emails (and unique display names) in the member directory and writes a mapping whenever exactly one person in the other workspace matches. It does not crawl Slack’s full member list. While it runs, the button is **Mapping users...**. When it finishes, the list and a last-run line update in the same modal (for example, “Last run on September 2, 2026 with 20 new found”). **0 new found** means this run found nothing new in the current directory data, not that every person is mapped.
+- **Refresh List** reloads the list from the database and brings **Auto Map Now** back if the modal stuck on Mapping users... after a timeout. Incomplete lists usually mean the directory is still filling in (for example after a join).
+- The first synced message or reaction from an unmapped author can also create a mapping from that person’s directory email, or one target `users.lookupByEmail` if the directory has no unique hit. **Auto Map Now** still fills in everyone else.
+
+In synced messages (same-instance and External Connections):
+
+- A mapped author appears with their **local** display name and profile photo (no workspace suffix in the author line). An unmapped author uses the remote display name and photo, with the source workspace in parentheses.
+- A mapped user in the text is a normal `@` tag. An unmapped user is a code-ticked `` `Name (Workspace)` ``.
+- `#channel` mentions stay source-side as a code-ticked `` `#name (Workspace)` ``. SyncBot does not turn them into the target twin channel.
 
 ## Refresh Behavior
 
-The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again." User Mapping’s **Refresh List** only reloads that modal from saved mappings.
+The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. It rebuilds this Home tab first, then refreshes External Connection allowlists (the same pulse keep-warm uses). To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again." After a deploy, remembered Home tabs update on their own; you should not need to click Refresh twice to wake the app. User Mapping’s **Refresh List** only reloads that modal from saved mappings.
 
 ## Media Sync
 
-On the **same instance**, Slack-hosted files of any type (photos, video, PDFs, audio, zips, and so on) are downloaded from the source and uploaded to each target channel. GIFs from the Slack GIF picker or GIPHY stay public image blocks. When the mapped author has authorized SyncBot in the target workspace, ordinary file shares post as that person, with the file on the same message as the caption (the same shape Slack uses on the source). If the source used Block Kit, that body is kept on that same native message. When they have not authorized, the share posts as SyncBot. Bot posts add a notice that names the original author in code ticks — for example `` `Ada Lovelace` shared a file `` — never as an @mention. For a bot caption-only share the notice sits on the file message; for bot text plus a file, the text is posted first and the file is a thread reply with that notice (also sent to the channel when the text was a top-level post).
+On the **same instance**, Slack-hosted files of any type (photos, video, PDFs, audio, zips, and so on) are downloaded from the source and uploaded to each target channel, including files shared in a thread and also-send-to-channel replies. Slack allows files up to 1 GB.
 
-App posts that use Block Kit (for example a Slackblast preblast) sync from the layout blocks, so line breaks and emoji stay intact. Slack's "Show more" control is only how the client folds a long message; SyncBot does not stop at the preview. Buttons that belong to the source app (Edit this preblast, and similar) are not copied, because they would not work in the other workspace.
+- Slack often uploads the file a moment before it shares it into the Channel. SyncBot still copies that share.
+- If a file cannot be copied, SyncBot DMs you with the error instead of posting a "Shared a file" placeholder. The usual Free-plan stop is a workspace whose file storage is full.
+- Slack-hosted video and image blocks are not copied as players. The file itself is uploaded so the other workspace can play it.
+- GIFs from the Slack GIF picker or GIPHY stay public image blocks.
+- When the mapped author has authorized SyncBot in the target workspace, ordinary file shares post as that person, with the file on the same message as the caption. If the source used Block Kit, that body stays on that same native message.
+- When they have not authorized, the share posts as SyncBot. Bot posts add a notice that names the original author in code ticks — for example `` `Ada Lovelace` shared a file `` — never as an @mention. For a bot caption-only share the notice sits on the file message. For bot text plus a file, the text is posted first and the file is a thread reply with that notice (also sent to the channel when the text was a top-level post).
 
-**External Connections** still sync those public GIF/image URLs on new posts, threads, and edits. Slack-hosted file bytes (a private PDF or photo) do not cross federation yet.
+App posts that use Block Kit (for example a form) sync from the layout blocks, so line breaks and emoji stay intact. Slack's "Show more" control is only how the client folds a long message; SyncBot does not stop at the preview. Buttons that belong to the source app (Edit this post, and similar) are not copied, because they would not work in the other workspace.
+
+**External Connections** use the same apply path. Origin posts file parts to the peer first, then the envelope. Those parts stay in the database only while the transfer is in flight (encrypted at rest) and are not included in backup or export.
 
 | Source message | What appears in target workspace |
 |---|---|
@@ -151,12 +170,36 @@ App posts that use Block Kit (for example a Slackblast preblast) sync from the l
 
 *(Opt-in — enable **Federation** in Settings on the primary workspace)*
 
-Workspaces running their own SyncBot deployment can be connected via the "External Connections" section on the Home tab. One admin generates a connection code and shares it out-of-band; the other admin enters it. The code is signed, so the webhook URL cannot be swapped in transit. Each instance identifies itself with a fingerprint of its signing key, not a UUID you set at deploy time. Messages, edits, deletes, reactions, and user mapping work across instances. Public GIF/image URLs travel with new posts, threads, and edits; Slack-hosted file bytes do not. The receiving SyncBot instance rewrites `@` mentions and `#` channel links using the same rules as same-instance sync (native `@` tags when mapped; `#channel` stays a source code-tick).
+Workspaces running their own SyncBot can connect from **External Connections** on the Home tab, using the same Create / Join language as Channel Syncs. Each instance identifies itself with a fingerprint of its signing key, not a UUID you set at deploy time. Trust is that fingerprint. The name is a label only, and a used connection code is not reused.
 
-**Data Migration** in the same section lets you export your workspace data (syncs, channels, post meta, user directory, user mappings) for moving to another instance, or import a migration file after connecting. See [Backup and Migration](BACKUP_AND_MIGRATION.md) for details.
+**Create External Connection** (primary-workspace admin):
+
+1. Name the connection and pick which of this instance's Workspaces the other SyncBot may see. The primary Workspace does not have to be on that list.
+2. SyncBot shows the signed connection code in the modal and DMs a copy (24 hours). The code is signed, so the webhook URL and primary Team ID cannot be swapped in transit. This can take a while (especially **Approve and Create**, which also signs the migration file). The modal asks you to be patient; you can Close and wait for the DM.
+3. Home lists that connection immediately: Trust Status `Waiting`, Local Workspaces as you selected, Remote Workspaces `None yet`. **Show Connection Code**, **Edit Connection**, and **Cancel Connection** sit on that row. After 24 hours without a join, the waiting row drops off.
+
+**Join External Connection:** paste the code, review the name, primary Workspace (display only), Team ID, URL, and fingerprint, pick your own allowed Workspaces, and click **Join**.
+
+Each connected row shows **Trust Status**, **Local Workspaces**, and **Remote Workspaces** as code ticks.
+
+- **Edit Connection** can rename the connection and change the local Workspaces allowed for that peer (or, on a waiting offer, the Workspaces this instance will share after they join). A Workspace that owns a group with members on this connection must **Give Up Ownership** before it can be removed. After they are removed, the other side's Remote Workspaces update on their next Home open or Refresh. That paused stub stays for the Settings retention window (default 30 days) unless it is allowed again.
+- After they join, this instance pushes the allowlist on pair, on Edit, and on keep-warm (every 5 minutes) so the other side's Remote Workspaces and primary Workspace name stay current. Keep-warm also pushes Groups and Sync Channels for Workspaces on that allowlist so a Workspace that imported its own data is not left waiting for those members to join.
+- If Trust Status is `Untrusted` (for example after the other instance reinstalled with a new key), **Verify Trust** shows the primary Workspace, Team ID, URL, fingerprint, and remote Workspaces so you can confirm them out of band before trusting again.
+- **Leave Connection** asks for confirmation, then pauses remote Workspaces on this instance (same retention window as uninstall, default 30 days). Reconnecting that External Connection, or reinstalling SyncBot on the same Workspace, restores groups, Syncs, and message history. After the retention period, that data is deleted. The other instance still lists this connection until they leave too.
+- **Cancel Connection** on a waiting offer deletes the unused code before anyone joins.
+- There is no Pause/Resume on the connection itself. Turning Federation off in Settings stops new traffic without leaving. Untrusted already blocks inbound delivery.
+
+Messages, edits, deletes, reactions, hosted files, and user mapping work across instances.
+
+- Public GIF/image URLs travel with new posts, threads, and edits.
+- Private Slack file bytes are copied over a signed file offer/parts channel before the message envelope.
+- The receiving instance rewrites `@` mentions and `#` channel links using the same rules as same-instance sync (native `@` tags when mapped; `#channel` stays a source code-tick).
+- If you move an instance to a new hostname but keep the same signing key, create a fresh connection code. The peer updates the URL without requiring a new trust decision.
+
+**Data Migration** on SyncBot Configuration lets any workspace admin export or import this Workspace's SyncBot data. See [Backup and Migration](BACKUP_AND_MIGRATION.md) for the Export, Export and Request Connection, and Import steps.
 
 ## Backup / Restore
 
 **Backup/Restore** appears on the Home tab only when the operator has set `PRIMARY_WORKSPACE` to this workspace’s Slack Team ID (env, SAM, Terraform, or GitHub variable) and **redeployed**. When it is unset, backup is hidden everywhere.
 
-Use it to download a full-instance backup (all durable tables as JSON) or restore from a backup file. Intended for disaster recovery (e.g. before rebuilding AWS). See [Backup and Migration](BACKUP_AND_MIGRATION.md).
+Use it to download a full-instance backup (all durable tables as JSON) or restore from a backup file. Intended for disaster recovery (for example after a rebuild). See [Backup and Migration](BACKUP_AND_MIGRATION.md).
