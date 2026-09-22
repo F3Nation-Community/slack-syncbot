@@ -90,7 +90,7 @@ These cannot be set from a PR — configure once on **F3Nation-Community/slack-s
 - **Allow auto-merge**; default merge method **Squash** (use the PR title as the squash commit subject).
 - **Branch protection / ruleset** on `main`: require a pull request; required checks **`ci-gate`** and **`conventional`** (the job name from [pr-title.yml](../.github/workflows/pr-title.yml), not “PR title / conventional”). Do **not** require Code Owners or resolved conversations. Prefer not requiring “branch must be up to date” until Dependabot rebase is confirmed.
 - **Bypass list:** **Organization admin** (humans) and the GitHub App **`f3n-community-automation`** (see below). Do **not** add Dependabot, Write, or Maintain — Dependabot auto-merge already merges *through the PR* when checks pass; a Dependabot bypass would allow pushing to `main` without a PR. The built-in `github-actions[bot]` does **not** appear in the bypass picker (it is not an installable App).
-- Dependabot **version updates** (from `.github/dependabot.yml`) and **security updates** enabled. Disable Dependabot on deploy forks (e.g. `f3-tulsa/syncbot`) so they do not open a second pile of PRs.
+- Dependabot **version updates** (from `.github/dependabot.yml`) and **security updates** enabled. Disable Dependabot on deploy forks so they do not open a second pile of PRs.
 - **Secrets / variables** for deploy environments live on the **fork**, not on F3Nation-Community/slack-syncbot — see [DEPLOY.md](DEPLOY.md).
 
 ### Automation GitHub App (`f3n-community-automation`)

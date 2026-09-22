@@ -395,7 +395,7 @@ GCP-only knobs use a `GCP_` prefix. Shared contract names and portable deploy sw
 
 ### Upgrading GCP (Cloud SQL removal)
 
-If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database. Early Tulsa/sprocktech GCP was unused in production; forks that did apply Cloud SQL must backup before upgrading.
+If you previously applied this module with Cloud SQL (`db-f1-micro`), `terraform apply` **destroys** that instance. Dump/backup first. There is no in-place migrate to SQLite — Litestream is a new database.
 
 ---
 
