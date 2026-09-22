@@ -2,7 +2,6 @@
 
 import contextlib
 import json
-import logging
 from typing import Any
 
 from slack_sdk.web import WebClient
@@ -20,10 +19,10 @@ from helpers.user_map import (
     format_last_auto_map_line,
     get_last_auto_map,
 )
+from logger import log_debug, log_warning
 from slack import actions, orm
 from slack.blocks import actions as blocks_actions, button, context as block_context, divider, header, section
 
-_logger = logging.getLogger(__name__)
 
 _PAGE_SIZE = constants.USER_MAPPING_PAGE_SIZE
 _INTRO = "_Users with the same email across Workspaces can be found by clicking Auto Map Now._"
@@ -99,13 +98,11 @@ def seed_mappings_for_workspace(
             seeded += helpers.seed_user_mappings(source_ws_id, workspace_record.id, group_id=group_id)
             seeded += helpers.seed_user_mappings(workspace_record.id, source_ws_id, group_id=group_id)
         except Exception as exc:
-            _logger.warning(
+            log_warning(
                 "user_mapping_seed_failed",
-                extra={
-                    "workspace_id": workspace_record.id,
-                    "partner_workspace_id": source_ws_id,
-                    "error": str(exc),
-                },
+                workspace_id=workspace_record.id,
+                partner_workspace_id=source_ws_id,
+                error=str(exc),
             )
     return seeded
 
@@ -222,10 +219,7 @@ def update_user_mapping_modal(
             parent_metadata=meta,
         )
     except Exception as exc:
-        _logger.debug(
-            "user_mapping_modal_update_failed",
-            extra={"view_id": view_id, "workspace_id": workspace_record.id, "error": str(exc)},
-        )
+        log_debug("user_mapping_modal_update_failed", view_id=view_id, workspace_id=workspace_record.id, error=str(exc))
 
 
 def build_user_mapping_entry(
@@ -286,7 +280,7 @@ def build_user_mapping_edit_modal(
     try:
         mapping_id = int(mapping_id_str)
     except (TypeError, ValueError):
-        _logger.warning(f"build_user_mapping_edit_modal: invalid mapping_id: {mapping_id_str}")
+        log_warning("build_user_mapping_edit_modal", mapping_id_str=mapping_id_str)
         return
 
     raw_group = helpers.safe_get(body, "actions", 0, "value") or "0"
@@ -297,7 +291,7 @@ def build_user_mapping_edit_modal(
 
     mapping = DbManager.get_record(UserMapping, id=mapping_id)
     if not mapping:
-        _logger.warning(f"build_user_mapping_edit_modal: mapping {mapping_id} not found")
+        log_warning("build_user_mapping_edit_modal", mapping_id=mapping_id)
         return
 
     team_id = helpers.get_team_id_from_body(body)
@@ -306,7 +300,7 @@ def build_user_mapping_edit_modal(
         return
 
     source_ws = helpers.get_workspace_by_id(mapping.source_workspace_id)
-    source_ws_name = helpers.resolve_workspace_name(source_ws) if source_ws else "Partner"
+    source_ws_name = helpers.resolve_workspace_name(source_ws) if source_ws else "Workspace"
     display = helpers.normalize_display_name(mapping.source_display_name or mapping.source_user_id)
 
     parent_view_id = helpers.safe_get(body, "view", "id")
@@ -318,9 +312,9 @@ def build_user_mapping_edit_modal(
             page = int(parsed.get("page") or 0)
 
     avatar_accessory = None
-    if source_ws and source_ws.bot_token:
+    if source_ws and helpers.get_bot_token(source_ws):
         with contextlib.suppress(Exception):
-            member_client = WebClient(token=helpers.decrypt_bot_token(source_ws.bot_token))
+            member_client = WebClient(token=helpers.get_bot_token(source_ws))
             _, avatar_url = helpers.get_user_info(member_client, mapping.source_user_id)
             if avatar_url:
                 avatar_accessory = orm.ImageAccessoryElement(image_url=avatar_url, alt_text=display)

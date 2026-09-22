@@ -8,6 +8,7 @@ delete-ordering bugs at all.
 
 import os
 from datetime import UTC, datetime
+from uuid import uuid4
 
 import pytest
 
@@ -22,6 +23,7 @@ from unittest.mock import patch  # noqa: E402
 from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from db import DbManager, schemas  # noqa: E402
+from federation.core import get_instance_id  # noqa: E402
 
 
 @pytest.fixture
@@ -38,6 +40,12 @@ def real_db(tmp_path):
             db_mod.GLOBAL_ENGINE = None
             db_mod.GLOBAL_SCHEMA = None
             initialize_database()
+            from federation import core as federation_core
+
+            federation_core._INSTANCE_ID = None
+            federation_core._cached_private_key = None
+            federation_core._cached_public_pem = None
+            federation_core.get_or_create_instance_keypair()
             yield
         finally:
             if db_mod.GLOBAL_ENGINE:
@@ -57,10 +65,18 @@ def _build_sync(*, with_soft_deleted_channel=True):
     filter on ``deleted_at IS NULL``, but the row still references ``syncs``.
     """
     workspace = DbManager.create_record(
-        schemas.Workspace(team_id="T_PURGE", workspace_name="Purge WS", bot_token="tok")
+        schemas.Workspace(
+            team_id="T_PURGE",
+            workspace_name="Purge WS",
+            instance_id=get_instance_id(),
+        )
     )
     sync = DbManager.create_record(
-        schemas.Sync(title="Purge Sync", sync_mode="group", publisher_workspace_id=workspace.id)
+        schemas.Sync(
+            title="Purge Sync",
+            sync_mode="group",
+            uid=str(uuid4()),
+        )
     )
 
     active = DbManager.create_record(
@@ -187,7 +203,7 @@ class TestPurgeWorkspace:
         with pytest.raises(IntegrityError):
             DbManager.delete_records(schemas.Workspace, [schemas.Workspace.id == workspace.id])
 
-    def test_purge_removes_the_workspace_and_its_published_syncs(self, real_db):
+    def test_purge_removes_the_workspace_and_its_channels(self, real_db):
         import helpers
 
         workspace, sync, _ = _build_sync()
@@ -195,8 +211,9 @@ class TestPurgeWorkspace:
         helpers.purge_workspace(workspace.id)
 
         assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == workspace.id]) == []
-        assert DbManager.find_records(schemas.Sync, [schemas.Sync.id == sync.id]) == []
-        assert DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.sync_id == sync.id]) == []
+        assert DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.workspace_id == workspace.id]) == []
+        # Sync rows are not deleted solely because this workspace once "published";
+        # empty syncs are cleaned up by Leave Sync / explicit purge_sync.
 
     def test_purge_is_idempotent(self, real_db):
         import helpers
@@ -216,14 +233,19 @@ class TestPurgeWorkspace:
         """
         import helpers
 
-        inviter = DbManager.create_record(schemas.Workspace(team_id="T_INVITER", workspace_name="Inviter"))
-        invitee = DbManager.create_record(schemas.Workspace(team_id="T_INVITEE", workspace_name="Invitee"))
+        inviter = DbManager.create_record(
+            schemas.Workspace(team_id="T_INVITER", workspace_name="Inviter", instance_id=get_instance_id())
+        )
+        invitee = DbManager.create_record(
+            schemas.Workspace(team_id="T_INVITEE", workspace_name="Invitee", instance_id=get_instance_id())
+        )
         group = DbManager.create_record(
             schemas.WorkspaceGroup(
                 name="G",
                 invite_code="ABC-123",
                 status="active",
                 created_at=_now(),
+                uid=str(uuid4()),
             )
         )
         own_membership = DbManager.create_record(
@@ -259,17 +281,43 @@ class TestPurgeWorkspace:
         assert survived[0].workspace_id == invitee.id
         assert survived[0].invited_by_workspace_id is None
 
-    def test_purge_nulls_direct_sync_targets(self, real_db):
+    def test_purge_keeps_syncs_owned_by_other_workspaces(self, real_db):
+        """Purging a workspace removes its channels only, not sibling syncs."""
         import helpers
 
-        publisher = DbManager.create_record(schemas.Workspace(team_id="T_PUB", workspace_name="Pub"))
-        target = DbManager.create_record(schemas.Workspace(team_id="T_TGT", workspace_name="Target"))
+        publisher = DbManager.create_record(
+            schemas.Workspace(team_id="T_PUB", workspace_name="Pub", instance_id=get_instance_id())
+        )
+        target = DbManager.create_record(
+            schemas.Workspace(team_id="T_TGT", workspace_name="Target", instance_id=get_instance_id())
+        )
         sync = DbManager.create_record(
             schemas.Sync(
-                title="Direct",
-                sync_mode="direct",
-                publisher_workspace_id=publisher.id,
-                target_workspace_id=target.id,
+                title="Shared",
+                sync_mode="group",
+                uid=str(uuid4()),
+            )
+        )
+        DbManager.create_record(
+            schemas.SyncChannel(
+                sync_id=sync.id,
+                workspace_id=publisher.id,
+                channel_id="C_PUB",
+                status="active",
+                publishes=True,
+                subscribes=True,
+                created_at=_now(),
+            )
+        )
+        DbManager.create_record(
+            schemas.SyncChannel(
+                sync_id=sync.id,
+                workspace_id=target.id,
+                channel_id="C_TGT",
+                status="active",
+                publishes=False,
+                subscribes=True,
+                created_at=_now(),
             )
         )
 
@@ -277,4 +325,5 @@ class TestPurgeWorkspace:
 
         remaining = DbManager.find_records(schemas.Sync, [schemas.Sync.id == sync.id])
         assert len(remaining) == 1
-        assert remaining[0].target_workspace_id is None
+        channels = DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.sync_id == sync.id])
+        assert [c.workspace_id for c in channels] == [publisher.id]

@@ -19,6 +19,7 @@ from builders.home import (
     build_home_tab,
     home_tab_hash_key,
     refresh_home_tab_for_workspace,
+    republish_remembered_home_tabs,
 )
 from builders.user_mapping import (
     build_user_mapping_edit_modal,
@@ -40,6 +41,7 @@ __all__ = [
     "build_user_mapping_edit_modal",
     "build_user_mapping_entry",
     "refresh_home_tab_for_workspace",
+    "republish_remembered_home_tabs",
     "seed_mappings_for_workspace",
     "update_user_mapping_modal",
 ]

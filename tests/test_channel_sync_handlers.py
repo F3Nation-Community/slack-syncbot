@@ -29,8 +29,8 @@ class TestLeaveSyncConfirm:
         )
 
     def _run(self, *, acting_ws, all_channels, purge_side_effect=None):
-        workspace = SimpleNamespace(id=acting_ws, team_id="T1", bot_token=None, deleted_at=None)
-        sync = SimpleNamespace(id=self.SYNC_ID, publisher_workspace_id=1, group_id=None)
+        workspace = SimpleNamespace(id=acting_ws, team_id="T1", deleted_at=None)
+        sync = SimpleNamespace(id=self.SYNC_ID, group_id=None)
         client = MagicMock()
 
         with (
@@ -45,7 +45,7 @@ class TestLeaveSyncConfirm:
             patch("handlers.channel_sync.helpers.notify_admins_dm") as notify,
             patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace") as refresh,
             patch("handlers.channel_sync._close_modal_done"),
-            patch("handlers.channel_sync._logger.error") as error_log,
+            patch("handlers.channel_sync.log_error") as error_log,
         ):
             handle_leave_sync_confirm({}, client, MagicMock(), context={})
 
@@ -60,6 +60,34 @@ class TestLeaveSyncConfirm:
         purge_sync.assert_called_once_with(self.SYNC_ID)
         assert refresh.called
         assert not error_log.called
+
+    def test_last_publisher_replicates_ended_to_peers(self):
+        mine = self._channel(10, 10, publishes=True)
+        other = self._channel(11, 2, publishes=False)
+        workspace = SimpleNamespace(id=10, team_id="T1", deleted_at=None)
+        sync = SimpleNamespace(id=self.SYNC_ID, group_id=5)
+        client = MagicMock()
+        with (
+            patch("handlers.channel_sync._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.channel_sync._parse_private_metadata", return_value={"sync_id": self.SYNC_ID}),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=sync),
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[mine, other]),
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
+            patch(
+                "handlers.channel_sync.helpers.get_workspace_by_id",
+                return_value=SimpleNamespace(team_id="T2"),
+            ),
+            patch("handlers.channel_sync.helpers.purge_sync"),
+            patch("handlers.channel_sync.helpers.notify_admins_dm"),
+            patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
+            patch("handlers.channel_sync._close_modal_done"),
+            patch("federation.replicate.replicate_sync_ended") as ended,
+        ):
+            handle_leave_sync_confirm({}, client, MagicMock(), context={})
+        ended.assert_called_once()
+        _sync, _group, pairs = ended.call_args.args
+        assert _sync.id == self.SYNC_ID
+        assert len(pairs) == 2
 
     def test_last_publisher_purge_failure_is_logged_and_reported(self):
         mine = self._channel(10, 10, publishes=True)
@@ -225,7 +253,7 @@ class TestJoinSyncModal:
             patch("handlers.channel_sync.DbManager.get_record", return_value=SimpleNamespace(id=55, group_id=5)),
             patch("handlers.channel_sync._publisher_sync_channel", return_value=pub),
             patch("handlers.channel_sync.helpers.get_workspace_by_id", return_value=SimpleNamespace(id=99)),
-            patch("handlers.channel_sync._group_name", return_value="HQ"),
+            patch("handlers.channel_sync._group_name", return_value="Shared"),
             patch("handlers.channel_sync._format_channel_ref", return_value="#source (Other)"),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False),
             patch("handlers.channel_sync.orm.BlockView.post_modal", capture),
@@ -244,7 +272,7 @@ class TestJoinSyncModal:
         assert captured["kwargs"]["callback_id"] == actions.CONFIG_JOIN_SYNC_SUBMIT
         assert captured["kwargs"]["submit_button_text"] == "Join Sync"
         assert captured["kwargs"]["title_text"] == "Join Sync"
-        assert any(text and "HQ" in text and "#source (Other)" in text for text in texts)
+        assert any(text and "Shared" in text and "#source (Other)" in text for text in texts)
 
 
 class TestChannelSyncNotices:
@@ -279,12 +307,12 @@ class TestChannelSyncNotices:
 
         local = _join_notice(
             admin_label="Ada",
-            other_ref="#source (HQ)",
+            other_ref="#source (Workspace A)",
             here_publishes=False,
             here_subscribes=True,
             there_publishes=True,
             there_subscribes=True,
             joined=False,
         )
-        assert "subscribed this Channel to *#source (HQ)*" in local
+        assert "subscribed this Channel to *#source (Workspace A)*" in local
         assert "Messages from that Channel will appear here" in local

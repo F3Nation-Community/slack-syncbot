@@ -64,7 +64,7 @@ class TestDirectoryEmailMatch:
             "U1",
             source,
             client,
-            target_workspace_id=2,
+            1,
             target_candidates=[target],
             target_by_email={"a@ex.com": [target]},
         )
@@ -102,7 +102,6 @@ class TestSeedWithoutPartnerCrawl:
             id=1,
             source_workspace_id=1,
             source_user_id="U_SRC",
-            target_workspace_id=2,
             map_method="none",
         )
         target_dir = SimpleNamespace(
@@ -140,7 +139,6 @@ class TestSeedWithoutPartnerCrawl:
             id=1,
             source_workspace_id=1,
             source_user_id="U_SRC",
-            target_workspace_id=2,
             map_method="none",
         )
         with (
@@ -173,7 +171,7 @@ class TestLastAutoMapStatus:
 
 class TestUserMappingModal:
     def test_open_posts_db_list_without_seed_or_map(self):
-        workspace = SimpleNamespace(id=1, team_id="T1", bot_token="xoxb-1")
+        workspace = SimpleNamespace(id=1, team_id="T1")
         body = {
             "trigger_id": "trig",
             "user": {"id": "U1"},
@@ -353,9 +351,9 @@ class TestLeftoverActionIdsDropped:
 
 class TestJoinSeedsOnly:
     def test_activate_membership_seeds_without_crawl_or_map(self):
-        workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc", deleted_at=None)
+        workspace = SimpleNamespace(id=1, team_id="T1", deleted_at=None)
         group = SimpleNamespace(id=9, name="G")
-        partner = SimpleNamespace(id=2, team_id="T2", bot_token="enc", deleted_at=None)
+        partner = SimpleNamespace(id=2, team_id="T2", deleted_at=None)
         member = SimpleNamespace(workspace_id=2)
 
         with (
@@ -582,18 +580,18 @@ class TestSyncedMessageDisplayName:
         target_client = MagicMock()
         with (
             patch("helpers.user_map.ensure_mapped_target_user_id", return_value="U_DEST"),
-            patch("helpers.user_map.get_user_info", return_value=("Local Nacho", "https://target/n.png")),
+            patch("helpers.user_map.get_user_info", return_value=("Ada Lovelace", "https://target/n.png")),
         ):
             name, icon, mapped, mapped_id = get_display_name_and_icon_for_synced_message(
                 "U_SRC",
                 1,
-                "Remote Alice",
+                "Ada Lovelace",
                 "https://src/a.png",
                 target_client,
                 2,
             )
         assert mapped is True
-        assert name == "Local Nacho"
+        assert name == "Ada Lovelace"
         assert icon == "https://target/n.png"
         assert mapped_id == "U_DEST"
 
@@ -607,13 +605,13 @@ class TestSyncedMessageDisplayName:
             name, _icon, mapped, mapped_id = get_display_name_and_icon_for_synced_message(
                 "U_SRC",
                 1,
-                "Remote Alice",
+                "Ada Lovelace",
                 None,
                 target_client,
                 2,
             )
         assert mapped is True
-        assert name == "Remote Alice"
+        assert name == "Ada Lovelace"
         assert mapped_id == "U_DEST"
 
     def test_display_name_is_not_normalized_for_sync(self):
@@ -622,14 +620,14 @@ class TestSyncedMessageDisplayName:
             name, _icon, mapped, mapped_id = get_display_name_and_icon_for_synced_message(
                 "U_SRC",
                 1,
-                "John Smith (Admin)",
+                "Ada Lovelace (Admin)",
                 None,
                 target_client,
                 2,
             )
         assert mapped is False
         assert mapped_id is None
-        assert name == "John Smith (Admin)"
+        assert name == "Ada Lovelace (Admin)"
 
 
 class TestAuthorBeforeMentions:
@@ -653,7 +651,7 @@ class TestAuthorBeforeMentions:
             reply_broadcast=False,
         )
         with (
-            patch("helpers.slack_write.decrypt_bot_token", return_value="xoxb"),
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb"),
             patch("helpers.slack_write.WebClient"),
             patch("helpers.slack_write.get_display_name_and_icon_for_synced_message", side_effect=_display),
             patch("helpers.slack_write.apply_mentioned_users", side_effect=_mentions),
@@ -670,7 +668,7 @@ class TestAuthorBeforeMentions:
                     "text": ctx["msg_text"],
                 },
                 sync_channel=SimpleNamespace(channel_id="C_TGT", id=2),
-                workspace=SimpleNamespace(id=2, team_id="T2", bot_token="enc"),
+                workspace=SimpleNamespace(id=2, team_id="T2"),
                 source_client=MagicMock(),
             )
         assert order == ["author", "mentions"]

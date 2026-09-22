@@ -4,8 +4,9 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-import helpers
-from helpers.encryption import decrypt_bot_token, encrypt_bot_token
+import pytest
+
+from helpers.encryption import decrypt_bot_token, decrypt_bytes, encrypt_bot_token, encrypt_bytes
 from helpers.workspace import _maybe_refresh_bot_token
 
 
@@ -44,27 +45,76 @@ class TestTokenEncryptionAtRest:
         assert encrypt_bot_token("xoxp-local") == "xoxp-local"
 
 
+class TestBytesEncryptionAtRest:
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "store-test-key-16chars"})
+    def test_payload_encrypted_not_equal_plaintext(self):
+        plain = b"federation-file-part-bytes"
+        enc = encrypt_bytes(plain)
+        assert enc != plain
+        assert enc.startswith(b"gAAAAA")
+        assert decrypt_bytes(enc) == plain
+
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "changeme"})
+    def test_placeholder_key_does_not_encrypt(self):
+        assert encrypt_bytes(b"plain-file-part") == b"plain-file-part"
+
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "store-test-key-16chars"})
+    def test_leftover_plaintext_stays_readable(self):
+        assert decrypt_bytes(b"leftover-plaintext-part") == b"leftover-plaintext-part"
+
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "store-test-key-16chars"})
+    def test_does_not_double_encrypt_fernet(self):
+        once = encrypt_bytes(b"plain-part")
+        twice = encrypt_bytes(once)
+        assert twice == once
+        assert decrypt_bytes(twice) == b"plain-part"
+
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "store-test-key-16chars"})
+    def test_invalid_fernet_raises(self):
+        with pytest.raises(ValueError, match="Payload decryption failed"):
+            decrypt_bytes(b"gAAAAA" + b"A" * 80)
+
+
 class TestBotTokenRefresh:
-    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "refresh-test-key-16"})
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "refresh-test-key-16", "SLACK_CLIENT_ID": "111.222"})
     def test_same_plaintext_does_not_update(self):
         token = "xoxb-same-token-value"
-        encrypted = helpers.encrypt_bot_token(token)
-        workspace = SimpleNamespace(id=1, team_id="T1", bot_token=encrypted)
+        workspace = SimpleNamespace(id=1, team_id="T1", deleted_at=None, instance_id="a" * 64)
         context = {"bot_token": token}
 
-        with patch("helpers.workspace.DbManager.update_records") as update:
+        with (
+            patch("helpers.workspace.get_bot_token", return_value=token),
+            patch("helpers.encryption_installation_store.EncryptedSQLAlchemyInstallationStore") as store_cls,
+        ):
+            store_cls.return_value.save_bot = MagicMock()
             _maybe_refresh_bot_token(workspace, context)
-            update.assert_not_called()
+            store_cls.return_value.save_bot.assert_not_called()
 
-    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "refresh-test-key-16"})
+    @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "refresh-test-key-16", "SLACK_CLIENT_ID": "111.222"})
     def test_different_plaintext_updates_once(self):
-        old = helpers.encrypt_bot_token("xoxb-old")
-        workspace = SimpleNamespace(id=1, team_id="T1", bot_token=old)
+        workspace = SimpleNamespace(id=1, team_id="T1", deleted_at=None, instance_id="a" * 64)
         context = {"bot_token": "xoxb-new"}
+        bot = SimpleNamespace(
+            bot_token="xoxb-old",
+            app_id=None,
+            enterprise_id=None,
+            bot_id=None,
+            bot_user_id=None,
+            bot_scopes=None,
+            bot_refresh_token=None,
+            bot_token_expires_at=None,
+            is_enterprise_install=False,
+            installed_at=None,
+        )
 
-        with patch("helpers.workspace.DbManager.update_records") as update:
+        with (
+            patch("helpers.workspace.get_bot_token", return_value="xoxb-old"),
+            patch("db.get_engine"),
+            patch("helpers.encryption_installation_store.EncryptedSQLAlchemyInstallationStore") as store_cls,
+        ):
+            store_cls.return_value.find_bot.return_value = bot
             _maybe_refresh_bot_token(workspace, context)
-            update.assert_called_once()
+            store_cls.return_value.save_bot.assert_called_once()
 
 
 class TestEncryptedInstallationStore:
@@ -118,11 +168,9 @@ class TestHomeRefreshTokenWrites:
         from builders.home import refresh_home_tab_for_workspace
 
         token = "xoxb-same-token-value"
-        encrypted = helpers.encrypt_bot_token(token)
         workspace = SimpleNamespace(
             id=1,
             team_id="T1",
-            bot_token=encrypted,
             deleted_at=None,
         )
         logger = MagicMock()
@@ -131,7 +179,7 @@ class TestHomeRefreshTokenWrites:
         with (
             patch("helpers.export_import.invalidate_home_tab_caches_for_team"),
             patch("builders.home.build_home_tab", return_value=[]) as build,
-            patch("builders.home.helpers.decrypt_bot_token", return_value=token),
+            patch("builders.home.helpers.get_bot_token", return_value=token),
             patch("builders.home.WebClient"),
             patch("helpers.workspace.DbManager.update_records") as update,
         ):

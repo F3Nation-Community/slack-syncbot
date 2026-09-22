@@ -19,17 +19,11 @@ import json
 import logging
 import os
 import re
-from importlib.metadata import PackageNotFoundError, version
 
 from dotenv import load_dotenv
 
-try:
-    __version__ = version("syncbot")
-except PackageNotFoundError:
-    __version__ = "dev"
-
 # Load .env before any other app imports so env vars are available everywhere.
-# In production (Lambda) there is no .env file and this is a harmless no-op.
+# In production there is no .env file and this is a harmless no-op.
 load_dotenv(os.path.join(os.path.dirname(__file__), "..", ".env"))
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -38,6 +32,7 @@ from slack_bolt import App
 from slack_bolt.request import BoltRequest
 from slack_bolt.response import BoltResponse
 from slack_bolt.util.utils import get_boot_message
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 # Optional: Cloud Run / local images built from requirements.txt do not include boto3.
 try:
@@ -53,6 +48,7 @@ from constants import (
 )
 from db import initialize_database
 from federation.api import dispatch_federation_request
+from federation.core import get_or_create_instance_keypair
 from helpers import (
     capture_public_base,
     federation_enabled,
@@ -65,53 +61,71 @@ from logger import (
     configure_logging,
     emit_metric,
     get_request_duration_ms,
+    log_debug,
+    log_error,
+    log_info,
     set_correlation_id,
 )
-from routing import MAIN_MAPPER, VIEW_ACK_MAPPER, VIEW_MAPPER
-
-_SENSITIVE_KEYS = frozenset(
-    {
-        "token",
-        "bot_token",
-        "user_token",
-        "access_token",
-        "bot_refresh_token",
-        "user_refresh_token",
-        "refresh_token",
-        "shared_secret",
-        "public_key",
-        "private_key",
-        "private_key_encrypted",
-    }
+from logger import (
+    redact_sensitive as _redact_sensitive,
 )
-
-
-def _redact_sensitive(obj, _depth=0):
-    """Return a copy of *obj* with sensitive keys replaced by ``"[REDACTED]"``."""
-    if _depth > 10:
-        return obj
-    if isinstance(obj, dict):
-        return {k: "[REDACTED]" if k in _SENSITIVE_KEYS else _redact_sensitive(v, _depth + 1) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_redact_sensitive(v, _depth + 1) for v in obj]
-    return obj
-
+from routing import MAIN_MAPPER, VIEW_ACK_MAPPER, VIEW_MAPPER
 
 if SlackRequestHandler is not None:
     SlackRequestHandler.clear_all_log_handlers()
 configure_logging()
 
 validate_config()
+
+
+def _ensure_instance_identity() -> None:
+    """Mint the self Instance when the migrated schema is available."""
+    try:
+        get_or_create_instance_keypair()
+    except (OperationalError, ProgrammingError):
+        # ``sqlite:///:memory:`` with NullPool is connection-scoped (used by
+        # import-only unit tests). Real runtimes keep the migrated schema.
+        log_debug("instance_identity_deferred")
+
+
 # On Lambda, defer Alembic to a post-deploy invoke (see handler migrate branch) so cold
 # starts stay under Slack's 3s ack budget. Cloud Run / local still run migrations here.
 if not os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
     initialize_database()
+    _ensure_instance_identity()
+else:
+    # Lambda deploys migrate once post-deploy. On a normal cold start the
+    # schema is already ready, so ensure the self Instance without running
+    # Alembic in Slack's request path.
+    _ensure_instance_identity()
 
 app = App(
     process_before_response=not LOCAL_DEVELOPMENT,
     token_verification_enabled=not LOCAL_DEVELOPMENT or HAS_REAL_BOT_TOKEN,
     oauth_flow=get_oauth_flow(),
 )
+
+
+class _RequestScopedLazyListenerRunner:
+    """Run a lazy listener before ``start`` returns.
+
+    Bolt's default runner queues the listener and returns immediately. This
+    process answers the HTTP request itself, so the listener has to finish on
+    that request. Work queued past the response can run on a later request and
+    land out of order. An adapter may replace this runner when it acks first
+    and continues the listener on its own.
+    """
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self.logger = logger
+
+    def start(self, function, request) -> None:  # noqa: ANN001 — Bolt LazyListenerRunner shape
+        from slack_bolt.lazy_listener.internals import build_runnable_function
+
+        build_runnable_function(func=function, logger=self.logger, request=request)()
+
+
+app.listener_runner.lazy_listener_runner = _RequestScopedLazyListenerRunner(app.logger)
 
 
 @app.middleware
@@ -121,6 +135,24 @@ def _capture_public_base_url(req, resp, next):
     return next()
 
 
+def complete_instance_ready(*, republish_home: bool = False) -> None:
+    """Pulse federation peers; optionally republish remembered Home tabs.
+
+    Keep-warm calls this with ``republish_home=False``. Post-deploy ready
+    sets ``republish_home=True``. Never raises.
+    """
+    from federation.core import refresh_instance
+
+    refresh_instance()
+    if republish_home:
+        try:
+            from builders.home import republish_remembered_home_tabs
+
+            republish_remembered_home_tabs()
+        except Exception:
+            pass
+
+
 def handler(event: dict, context: dict) -> dict:
     """AWS Lambda entry point.
 
@@ -128,18 +160,29 @@ def handler(event: dict, context: dict) -> dict:
     (``/api/federation/*``) are handled directly; everything else
     is delegated to the Slack Bolt request handler.
 
-    Also handles post-deploy ``{"action": "migrate"}`` (Alembic) and EventBridge
-    keep-warm invokes before Slack routing.
+    Also handles post-deploy ``{"action": "migrate"}`` (Alembic),
+    ``{"action": "ready"}`` (federation pulse and Home republish), and
+    EventBridge keep-warm invokes before Slack routing.
     """
     if event.get("action") == "migrate":
         initialize_database()
+        _ensure_instance_identity()
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
             "body": json.dumps({"status": "ok", "action": "migrate"}),
         }
 
+    if event.get("action") == "ready":
+        complete_instance_ready(republish_home=True)
+        return {
+            "statusCode": 200,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"status": "ok", "action": "ready"}),
+        }
+
     if event.get("source") in ("aws.scheduler", "aws.events"):
+        complete_instance_ready(republish_home=False)
         return {
             "statusCode": 200,
             "headers": {"Content-Type": "application/json"},
@@ -226,24 +269,32 @@ def _lambda_federation_handler(event: dict) -> dict:
 
     method = _lambda_http_method(event) or "GET"
     path = event.get("path", "") or event.get("rawPath", "")
-    body_str = event.get("body", "") or ""
-    if event.get("isBase64Encoded") and body_str:
+    body_raw = event.get("body", "") or ""
+    raw_bytes: bytes | None = None
+    body_str = ""
+    if event.get("isBase64Encoded") and body_raw:
         try:
-            body_str = _b64.b64decode(body_str).decode()
+            raw_bytes = _b64.b64decode(body_raw)
+            # JSON routes need a string; /file keeps raw_bytes.
+            try:
+                body_str = raw_bytes.decode("utf-8")
+            except UnicodeDecodeError:
+                body_str = ""
         except Exception:
+            raw_bytes = None
             body_str = ""
+    elif isinstance(body_raw, str):
+        body_str = body_raw
+        raw_bytes = body_raw.encode("utf-8")
     raw_headers = event.get("headers", {}) or {}
     headers = {k: v for k, v in raw_headers.items()}
 
-    status, resp = dispatch_federation_request(method, path, body_str, headers)
+    status, resp = dispatch_federation_request(method, path, body_str, headers, raw_body=raw_bytes)
     return {
         "statusCode": status,
         "headers": {"Content-Type": "application/json"},
         "body": json.dumps(resp),
     }
-
-
-_logger = logging.getLogger(__name__)
 
 
 def view_ack(body: dict, logger, client, ack, context: dict) -> None:
@@ -253,16 +304,14 @@ def view_ack(body: dict, logger, client, ack, context: dict) -> None:
     """
     set_correlation_id()
     request_type, request_id = get_request_type(body)
-    _logger.info(
+    log_info(
         "request_received",
-        extra={
-            "request_type": request_type,
-            "request_id": request_id,
-            "team_id": get_team_id_from_body(body),
-            "phase": "view_ack",
-        },
+        request_type=request_type,
+        request_id=request_id,
+        team_id=get_team_id_from_body(body),
+        phase="view_ack",
     )
-    _logger.debug("request_body", extra={"body": json.dumps(_redact_sensitive(body))})
+    log_debug("request_body", body=json.dumps(_redact_sensitive(body)))
 
     try:
         ack_handler = VIEW_ACK_MAPPER.get(request_id)
@@ -277,10 +326,7 @@ def view_ack(body: dict, logger, client, ack, context: dict) -> None:
     except Exception:
         # Slack shows "not responding" if the ack never arrives. Schema errors
         # (missing migration columns) used to raise here and hang the modal.
-        _logger.exception(
-            "view_ack_failed",
-            extra={"request_type": request_type, "request_id": request_id},
-        )
+        log_error("view_ack_failed", request_type=request_type, request_id=request_id, exc_info=True)
         with contextlib.suppress(Exception):
             ack()
 
@@ -318,15 +364,8 @@ def main_response(body: dict, logger, client, ack, context: dict) -> None:
     else:
         ack()
 
-    _logger.info(
-        "request_received",
-        extra={
-            "request_type": request_type,
-            "request_id": request_id,
-            "team_id": get_team_id_from_body(body),
-        },
-    )
-    _logger.debug("request_body", extra={"body": json.dumps(_redact_sensitive(body))})
+    log_info("request_received", request_type=request_type, request_id=request_id, team_id=get_team_id_from_body(body))
+    log_debug("request_body", body=json.dumps(_redact_sensitive(body)))
 
     run_function = MAIN_MAPPER.get(request_type, {}).get(request_id)
     if run_function:
@@ -347,13 +386,7 @@ def main_response(body: dict, logger, client, ack, context: dict) -> None:
             raise
     else:
         if not (request_type == "view_submission" and request_id in VIEW_ACK_MAPPER and request_id not in VIEW_MAPPER):
-            _logger.error(
-                "no_handler",
-                extra={
-                    "request_type": request_type,
-                    "request_id": request_id,
-                },
-            )
+            log_error("no_handler", request_type=request_type, request_id=request_id)
 
 
 if LOCAL_DEVELOPMENT:
@@ -392,8 +425,9 @@ def run_syncbot_http_server(
 ) -> None:
     """Start the HTTP server used by Cloud Run and ``python app.py``.
 
-    Serves Slack (``bolt_path``), OAuth install/callback, ``/health``, and
-    ``/api/federation/*`` when federation is enabled in Settings.
+    Serves Slack (``bolt_path``), OAuth install/callback, ``/health``,
+    ``/ready`` (post-deploy Home republish), and ``/api/federation/*`` when
+    federation is enabled in Settings.
     Mirrors :class:`slack_bolt.app.app.SlackAppDevelopmentServer` routing with
     extra paths for production parity with Lambda Function URL.
     """
@@ -402,7 +436,6 @@ def run_syncbot_http_server(
     _bolt_oauth_flow = app.oauth_flow
     _bolt_endpoint_path = bolt_path
     _http_log = http_server_logger_enabled
-    _fed_max_body = 1_048_576  # 1 MB
 
     class SyncBotHTTPHandler(BaseHTTPRequestHandler):
         def log_message(self, fmt: str, *args) -> None:
@@ -440,10 +473,19 @@ def run_syncbot_http_server(
         def do_GET(self) -> None:
             path = self._path_no_query()
             if path == "/health":
+                complete_instance_ready(republish_home=False)
                 self._send_raw(
                     200,
                     {"Content-Type": ["application/json"]},
                     json.dumps({"status": "ok"}),
+                )
+                return
+            if path == "/ready":
+                complete_instance_ready(republish_home=True)
+                self._send_raw(
+                    200,
+                    {"Content-Type": ["application/json"]},
+                    json.dumps({"status": "ok", "action": "ready"}),
                 )
                 return
             if federation_enabled() and path.startswith(FEDERATION_API_BASE_PATH):
@@ -485,6 +527,16 @@ def run_syncbot_http_server(
                 content_len = int(self.headers.get("Content-Length") or 0)
             except (TypeError, ValueError):
                 content_len = 0
+            from constants import file_chunk_bytes
+
+            hop_cap = file_chunk_bytes()
+            if hop_cap is not None and content_len > hop_cap:
+                self._send_raw(
+                    413,
+                    {"Content-Type": ["application/json"]},
+                    json.dumps({"error": "payload_too_large"}),
+                )
+                return
             query = self.path.partition("?")[2]
             request_body = self.rfile.read(content_len).decode("utf-8")
             bolt_req = BoltRequest(
@@ -496,16 +548,57 @@ def run_syncbot_http_server(
             self._send_bolt_response(bolt_resp)
 
         def _handle_federation(self, method: str) -> None:
-            try:
-                content_len = min(
-                    int(self.headers.get("Content-Length", 0)),
-                    _fed_max_body,
-                )
-            except (TypeError, ValueError):
-                content_len = 0
-            body_str = self.rfile.read(content_len).decode() if content_len else ""
+            from constants import federation_json_max_bytes, file_chunk_bytes
+            from helpers.files import max_file_bytes
+
+            path = self._path_no_query()
             headers = {k: v for k, v in self.headers.items()}
-            status, resp = dispatch_federation_request(method, self._path_no_query(), body_str, headers)
+            from federation.api import federation_preflight
+
+            early = federation_preflight(method, path, headers)
+            if early is not None:
+                status, resp = early
+                self._send_raw(
+                    status,
+                    {"Content-Type": ["application/json"]},
+                    json.dumps(resp),
+                )
+                return
+            is_file_part = path.endswith("/file") and not path.endswith("/file/offer")
+            try:
+                declared = int(self.headers.get("Content-Length", 0))
+            except (TypeError, ValueError):
+                declared = 0
+            if is_file_part:
+                part_cap = file_chunk_bytes()
+                max_body = part_cap if part_cap is not None else max_file_bytes()
+            else:
+                max_body = federation_json_max_bytes()
+            if max_body is not None and declared > max_body:
+                self._send_raw(
+                    413,
+                    {"Content-Type": ["application/json"]},
+                    json.dumps({"error": "payload_too_large"}),
+                )
+                return
+            if declared > 0:
+                content_len = min(declared, max_body) if max_body is not None else declared
+            else:
+                content_len = 0
+            raw = self.rfile.read(content_len) if content_len else b""
+            body_str = ""
+            if not is_file_part:
+                try:
+                    body_str = raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    body_str = ""
+            status, resp = dispatch_federation_request(
+                method,
+                path,
+                body_str,
+                headers,
+                raw_body=raw,
+            )
             self._send_raw(
                 status,
                 {"Content-Type": ["application/json"]},

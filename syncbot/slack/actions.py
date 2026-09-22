@@ -121,14 +121,14 @@ CONFIG_SETTINGS_ALLOW_PRIVATE_CHANNELS = "settings_allow_private_channels"
 CONFIG_SETTINGS_EXTRA_MANAGERS = "settings_extra_managers"
 """Input: extra user IDs who may configure groups and syncs in this workspace."""
 
-CONFIG_SETTINGS_BROADCAST_WORKSPACES = "settings_broadcast_workspaces"
-"""Input: Workspaces permitted to publish a broadcast. Empty means any."""
-
 CONFIG_SETTINGS_RETENTION_DAYS = "settings_retention_days"
 """Input: days a soft-deleted Workspace is retained before permanent removal."""
 
 CONFIG_SETTINGS_FEDERATION_ENABLED = "settings_federation_enabled"
 """Input: whether External Connections (federation) are enabled."""
+
+CONFIG_SETTINGS_WORKSPACE_BLOCK_LIST = "settings_workspace_block_list"
+"""Input: Slack Team IDs that may not install or reinstall on this instance."""
 
 # ---------------------------------------------------------------------------
 # Channel Sync actions
@@ -220,16 +220,28 @@ CONFIG_BACKUP_RESTORE_JSON_INPUT = "backup_restore_json_input"
 """Input: uploaded JSON file in Backup/Restore modal."""
 
 CONFIG_DATA_MIGRATION = "data_migration"
-"""Action: user clicked "Data Migration" in External Connections (opens modal)."""
+"""Action: user clicked "Data Migration" in SyncBot Configuration (opens modal)."""
 
 CONFIG_DATA_MIGRATION_SUBMIT = "data_migration_submit"
 """Callback: Data Migration modal submitted (import migration file)."""
+
+CONFIG_DATA_MIGRATION_REVIEW = "data_migration_review"
+"""Callback: Data Migration review modal submitted (connect + import)."""
 
 CONFIG_DATA_MIGRATION_PROCEED = "data_migration_proceed"
 """Action: danger button to proceed with import despite warnings."""
 
 CONFIG_DATA_MIGRATION_EXPORT = "data_migration_export"
 """Action: user clicked Export in Data Migration modal."""
+
+CONFIG_DATA_MIGRATION_REQUEST = "data_migration_request"
+"""Action: workspace admin clicked Export and Request Connection."""
+
+CONFIG_PAIRING_REQUEST_APPROVE = "pairing_request_approve"
+"""Action: primary admin approved a migration pairing request (prefix-matched with request ID)."""
+
+CONFIG_PAIRING_REQUEST_DECLINE = "pairing_request_decline"
+"""Action: primary admin declined a migration pairing request (prefix-matched with request ID)."""
 
 CONFIG_DATA_MIGRATION_JSON_INPUT = "data_migration_json_input"
 """Input: uploaded JSON file in Data Migration modal."""
@@ -238,26 +250,68 @@ CONFIG_DATA_MIGRATION_JSON_INPUT = "data_migration_json_input"
 # External Connections (federation) actions
 # ---------------------------------------------------------------------------
 
-CONFIG_GENERATE_FEDERATION_CODE = "generate_federation_code"
-"""Action: user clicked "Generate Connection Code" on the Home tab."""
+CONFIG_CREATE_EXTERNAL_CONNECTION = "create_external_connection"
+"""Action: user clicked "Create External Connection" on the Home tab."""
 
-CONFIG_ENTER_FEDERATION_CODE = "enter_federation_code"
-"""Action: user clicked "Enter Connection Code" on the Home tab."""
+CONFIG_SHOW_EXTERNAL_CONNECTION_CODE = "show_external_connection_code"
+"""Action: Show Connection Code on a waiting connection (prefix-matched with pairing id)."""
 
-CONFIG_FEDERATION_CODE_SUBMIT = "federation_code_submit"
-"""Callback: enter-connection-code modal submitted."""
+CONFIG_EDIT_PENDING_EXTERNAL_CONNECTION = "edit_pending_external_connection"
+"""Action: Edit local Workspaces on a waiting connection (prefix-matched with pairing id)."""
 
-CONFIG_FEDERATION_CODE_INPUT = "federation_code_input"
-"""Input: text field for the connection code in the modal."""
+CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION = "cancel_pending_external_connection"
+"""Action: Cancel a waiting connection (prefix-matched with pairing id)."""
 
-CONFIG_FEDERATION_LABEL_SUBMIT = "federation_label_submit"
-"""Callback: connection label modal submitted (before code generation)."""
+CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION_CONFIRM = "confirm_cancel_pending_external_connection"
+"""Action: red in-modal confirm for Cancel on a waiting connection."""
 
-CONFIG_FEDERATION_LABEL_INPUT = "federation_label_input"
-"""Input: text field for the connection label in the modal."""
+CONFIG_CREATE_EXTERNAL_CONNECTION_SUBMIT = "create_external_connection_submit"
+"""Callback: Create External Connection modal submitted."""
 
-CONFIG_REMOVE_FEDERATION_CONNECTION = "remove_federation_connection"
-"""Action: user clicked "Remove Connection" on an external connection (prefix-matched)."""
+CONFIG_CREATE_EXTERNAL_CONNECTION_NAME = "create_external_connection_name"
+"""Input: connection name on the Create External Connection modal."""
+
+CONFIG_CREATE_EXTERNAL_WORKSPACES = "select_create_external_workspaces"
+"""Input: allowed local workspaces on the Create External Connection modal."""
+
+CONFIG_JOIN_EXTERNAL_CONNECTION = "join_external_connection"
+"""Action: user clicked "Join External Connection" on the Home tab."""
+
+CONFIG_JOIN_EXTERNAL_CONNECTION_SUBMIT = "join_external_connection_submit"
+"""Callback: Join External Connection paste-code modal submitted (ack updates to review)."""
+
+CONFIG_JOIN_EXTERNAL_CONNECTION_CODE = "join_external_connection_code"
+"""Input: pasted connection code on the Join External Connection modal."""
+
+CONFIG_JOIN_EXTERNAL_CONNECTION_REVIEW = "join_external_connection_review"
+"""Callback: Join External Connection review modal submitted."""
+
+CONFIG_JOIN_EXTERNAL_WORKSPACES = "select_join_external_workspaces"
+"""Input: allowed local workspaces on the Join External Connection review modal."""
+
+CONFIG_EDIT_EXTERNAL_CONNECTION = "edit_external_connection"
+"""Action: user clicked "Edit Connection" (prefix-matched with instance_id)."""
+
+CONFIG_EDIT_EXTERNAL_CONNECTION_SUBMIT = "edit_external_connection_submit"
+"""Callback: Edit Connection modal submitted."""
+
+CONFIG_EDIT_EXTERNAL_WORKSPACES = "select_edit_external_workspaces"
+"""Input: allowed local workspaces on the Edit Connection modal."""
+
+CONFIG_EDIT_EXTERNAL_CONNECTION_NAME = "edit_external_connection_name"
+"""Input: connection name on the Edit Connection modal."""
+
+CONFIG_VERIFY_EXTERNAL_CONNECTION = "verify_external_connection"
+"""Action: user clicked "Verify Trust" (prefix-matched with instance_id)."""
+
+CONFIG_VERIFY_EXTERNAL_CONNECTION_SUBMIT = "verify_external_connection_submit"
+"""Callback: Verify Trust modal submitted."""
+
+CONFIG_LEAVE_EXTERNAL_CONNECTION = "leave_external_connection"
+"""Action: user clicked "Leave Connection" (prefix-matched with instance_id)."""
+
+CONFIG_LEAVE_EXTERNAL_CONNECTION_CONFIRM = "confirm_leave_external_connection"
+"""Action: red in-modal confirm for Leave Connection."""
 
 # ---------------------------------------------------------------------------
 # Database Reset (dev/admin tool, gated by PRIMARY_WORKSPACE + ENABLE_DB_RESET)

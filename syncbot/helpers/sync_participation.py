@@ -2,12 +2,8 @@
 
 from __future__ import annotations
 
-import logging
-
 from db import DbManager, schemas
 from helpers._cache import _cache_delete_prefix, _cache_get, _cache_set
-
-_logger = logging.getLogger(__name__)
 
 
 def invalidate_channel_memberships(channel_id: str | None) -> None:
@@ -182,11 +178,6 @@ def iter_publish_targets(
         return []
 
     sync_id_list = list(publish_sync_ids)
-    sync_rows = DbManager.find_records(
-        schemas.Sync,
-        [schemas.Sync.id.in_(sync_id_list)],
-    )
-    sync_by_id = {s.id: s for s in sync_rows}
 
     peers = DbManager.find_join_records2(
         left_cls=schemas.SyncChannel,
@@ -201,14 +192,6 @@ def iter_publish_targets(
     targets: list[tuple[schemas.SyncChannel, schemas.Workspace]] = []
     seen: set[tuple[int, str]] = set()
     for sc, ws in peers:
-        sync = sync_by_id.get(sc.sync_id)
-        allowed_workspaces: set[int] | None = None
-        if sync is not None and getattr(sync, "sync_mode", None) == "direct" and sync.target_workspace_id:
-            allowed_workspaces = {sync.target_workspace_id}
-            if sync.publisher_workspace_id:
-                allowed_workspaces.add(sync.publisher_workspace_id)
-        if allowed_workspaces is not None and ws.id not in allowed_workspaces:
-            continue
         key = (ws.id, sc.channel_id)
         if key in origin_keys or key in seen:
             continue

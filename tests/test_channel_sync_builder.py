@@ -59,8 +59,6 @@ def _render(
         group_id=GROUP_ID,
         title="2nd-f",
         sync_mode=sync_mode,
-        publisher_workspace_id=publisher_ws,
-        target_workspace_id=viewer_ws if sync_mode == "direct" else None,
     )
     group = SimpleNamespace(id=GROUP_ID)
     workspace_record = SimpleNamespace(id=viewer_ws, team_id="T1")
@@ -167,7 +165,7 @@ def test_active_row_edit_is_first_button():
     )
     labels = [label for label, _ in _buttons(blocks)]
     assert labels[0] == ":pencil2: Edit Sync"
-    assert labels == [":pencil2: Edit Sync", ":double_vertical_bar: Pause Sync", ":octagonal_sign: Leave Sync"]
+    assert labels == [":pencil2: Edit Sync", ":double_vertical_bar: Pause Sync", ":wave: Leave Sync"]
     edit_action = _buttons(blocks)[0][1]
     assert edit_action == f"{actions.CONFIG_EDIT_SYNC}_c_10"
 
@@ -179,7 +177,7 @@ def test_subscriber_active_row_edit_then_pause_then_leave():
         channels=[_channel(10, SUBSCRIBER_WS, publishes=False), _channel(11, PUBLISHER_WS)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels == [":pencil2: Edit Sync", ":double_vertical_bar: Pause Sync", ":octagonal_sign: Leave Sync"]
+    assert labels == [":pencil2: Edit Sync", ":double_vertical_bar: Pause Sync", ":wave: Leave Sync"]
 
 
 def test_waiting_publisher_has_edit_then_leave():
@@ -189,7 +187,7 @@ def test_waiting_publisher_has_edit_then_leave():
         channels=[_channel(10, PUBLISHER_WS)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels == [":pencil2: Edit Sync", ":octagonal_sign: Leave Sync"]
+    assert labels == [":pencil2: Edit Sync", ":wave: Leave Sync"]
 
 
 def test_stranded_member_has_leave_without_edit():
@@ -199,7 +197,7 @@ def test_stranded_member_has_leave_without_edit():
         channels=[_channel(10, SUBSCRIBER_WS, publishes=False, subscribes=True)],
     )
     labels = [label for label, _ in _buttons(blocks)]
-    assert labels == [":octagonal_sign: Leave Sync"]
+    assert labels == [":wave: Leave Sync"]
     assert not any(label == "Edit Sync" for label in labels)
 
 
@@ -256,7 +254,7 @@ def test_home_does_not_show_one_to_one_type_label():
     assert not any("1-to-1" in text for text in _context_texts(direct_blocks))
 
 
-def test_orphaned_sync_is_not_advertised_as_available():
+def test_orphaned_sync_is_not_listed_as_available():
     """A sync with no remaining publishers must not be offered as Join Sync."""
     blocks = _render(
         viewer_ws=VIEWER_WS,
@@ -291,13 +289,13 @@ def _context_texts(blocks) -> list[str]:
 
 
 def test_available_channel_label_uses_live_name_not_stored_id():
-    ws = SimpleNamespace(id=1, bot_token="enc")
+    ws = SimpleNamespace(id=1)
     with patch("builders.channel_sync.helpers.lookup_channel_meta", return_value=("2nd-f", False)):
         assert _available_channel_label("C123ABC", ws, "C123ABC") == "2nd-f"
 
 
 def test_available_channel_label_tags_private():
-    ws = SimpleNamespace(id=1, bot_token="enc")
+    ws = SimpleNamespace(id=1)
     with patch("builders.channel_sync.helpers.lookup_channel_meta", return_value=("leadership", True)):
         assert _available_channel_label("CPRIV", ws, "CPRIV") == "leadership (private)"
 
@@ -309,8 +307,6 @@ def test_available_row_shows_name_in_ticks_and_tags_private():
         group_id=GROUP_ID,
         title="C_10",
         sync_mode="group",
-        publisher_workspace_id=PUBLISHER_WS,
-        target_workspace_id=None,
     )
     group = SimpleNamespace(id=GROUP_ID)
     workspace_record = SimpleNamespace(id=VIEWER_WS, team_id="T1")

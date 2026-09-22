@@ -31,6 +31,27 @@ def test_bolt_view_listener_uses_view_ack_when_not_local_dev():
     assert view_ack_listeners, "expected view listener with ack_function=view_ack and lazy main_response"
 
 
+def test_lazy_listener_finishes_on_the_calling_thread():
+    """Listener work finishes inside ``start``, on the request thread."""
+    import threading
+
+    from slack_bolt.request import BoltRequest
+
+    from app import app as bolt_app
+
+    ran: list[bool] = []
+
+    def _listener(body: dict) -> None:
+        ran.append(threading.current_thread() is threading.main_thread())
+        assert body["type"] == "event_callback"
+
+    bolt_app.listener_runner.lazy_listener_runner.start(
+        _listener,
+        BoltRequest(body='{"type": "event_callback"}'),
+    )
+    assert ran == [True]
+
+
 def test_bolt_event_or_action_uses_lazy_main_response_in_prod_mode():
     """When not LOCAL_DEVELOPMENT, event/action listeners should defer work to lazy main_response."""
     import app as app_module

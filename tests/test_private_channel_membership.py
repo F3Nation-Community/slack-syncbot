@@ -398,6 +398,8 @@ class TestCreateSyncWritesRowsBeforeAddingTheBot:
 
         assert [type(record).__name__ for record in created] == ["Sync", "SyncChannel"]
         assert order == ["membership after 2 rows"]
+        assert created[0].uid
+        assert len(created[0].uid) == 36
 
     def test_failed_membership_rolls_back_and_dms_the_admin(self):
         created: list = []
@@ -476,6 +478,7 @@ class TestJoinSyncWritesRowsBeforeAddingTheBot:
             ),
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
+            patch("handlers.channel_sync.helpers.lookup_channel_meta", return_value=("announcements", False)),
             patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Admin", "Admin (WS)")),
             patch("handlers.channel_sync.helpers.resolve_channel_name", return_value="#c"),
             patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),

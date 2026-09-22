@@ -1,13 +1,11 @@
 """Shared handler utilities and types."""
 
 import contextlib
-import logging
 from typing import Any
 
 import helpers
 from db import schemas
-
-_logger = logging.getLogger(__name__)
+from logger import log_debug, log_error, log_warning
 
 try:
     from typing import TypedDict
@@ -38,8 +36,28 @@ def _parse_private_metadata(body: dict) -> dict:
     try:
         return _json.loads(raw)
     except Exception as exc:
-        _logger.debug(f"_parse_private_metadata: bad JSON: {exc}")
+        log_debug("parse_private_metadata_bad_json", error=str(exc))
         return {}
+
+
+def _wait_modal_ack(
+    *,
+    title: str,
+    callback_id: str,
+    text: str,
+    private_metadata: str | None = None,
+) -> dict:
+    """Keep the modal open with Close only while slow work runs, then DM."""
+    view: dict[str, Any] = {
+        "type": "modal",
+        "callback_id": callback_id,
+        "title": {"type": "plain_text", "text": title},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    }
+    if private_metadata is not None:
+        view["private_metadata"] = private_metadata
+    return {"response_action": "update", "view": view}
 
 
 def _close_modal_done(client, body: dict, message: str) -> None:
@@ -65,7 +83,7 @@ def _close_modal_done(client, body: dict, message: str) -> None:
             },
         )
     except Exception as exc:
-        _logger.warning("modal_close_failed", extra={"error": str(exc)})
+        log_warning("modal_close_failed", error=str(exc))
 
 
 def _dm_user(client, user_id: str | None, message: str) -> None:
@@ -74,12 +92,7 @@ def _dm_user(client, user_id: str | None, message: str) -> None:
     Used to report work-phase failures. By then the modal is closed, so a field
     error is no longer possible and silence would look like success.
     """
-    if not user_id:
-        return
-    try:
-        client.chat_postMessage(channel=user_id, text=message)
-    except Exception as exc:
-        _logger.warning("admin_dm_failed", extra={"user_id": user_id, "error": str(exc)})
+    helpers.notify_user_dm(client, user_id, message)
 
 
 def _ensure_membership_or_rollback(
@@ -114,7 +127,7 @@ def _ensure_membership_or_rollback(
         return True
     except helpers.ConversationAccessError as exc:
         message = str(exc)
-        _logger.warning(log_event, extra={**(log_extra or {}), "error": message})
+        log_warning(log_event, **log_extra or {}, error=message)
         details: dict = {"event": log_event, "channel": channel_id}
         cause = exc.__cause__
         slack_code = ""
@@ -125,14 +138,14 @@ def _ensure_membership_or_rollback(
         if slack_code:
             details["error"] = slack_code
     except Exception as exc:
-        _logger.error(log_event, extra={**(log_extra or {}), "error": str(exc)})
+        log_error(log_event, **log_extra or {}, error=str(exc))
         message = "SyncBot could not be added to that Channel. Please try again."
         details = {"error": str(exc), "event": log_event, "channel": channel_id}
 
     try:
         rollback()
     except Exception as rollback_exc:
-        _logger.error(f"{log_event}_rollback_failed", extra={"channel_id": channel_id, "error": str(rollback_exc)})
+        log_error(f"{log_event}_rollback_failed", channel_id=channel_id, error=str(rollback_exc))
 
     _dm_user(
         client,
@@ -153,7 +166,7 @@ def _get_authorized_workspace(
     user_id = helpers.get_user_id_from_body(body)
     team_id = helpers.get_team_id_from_body(body)
     if not user_id or not team_id or not helpers.is_workspace_manager(client, user_id, team_id):
-        _logger.warning("authorization_denied", extra={"user_id": user_id, "action": action_name})
+        log_warning("authorization_denied", user_id=user_id, action=action_name)
         return None
 
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)

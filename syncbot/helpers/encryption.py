@@ -3,19 +3,19 @@
 The DATA_ENCRYPTION_KEY env var (legacy: TOKEN_ENCRYPTION_KEY) is stretched
 to a 32-byte key using PBKDF2-HMAC-SHA256 with 600,000 iterations.  The
 derived Fernet instance is cached so the expensive KDF runs at most once
-per key per process.
+per key per process. Slack tokens use ``encrypt_bot_token`` /
+``decrypt_bot_token`` (UTF-8 strings). Binary payloads such as in-flight
+federation file parts use ``encrypt_bytes`` / ``decrypt_bytes``.
 """
 
 import base64
 import functools
-import logging
 import os
 
 from cryptography.fernet import Fernet, InvalidToken
 
 import constants
-
-_logger = logging.getLogger(__name__)
+from logger import log_error
 
 _PBKDF2_ITERATIONS = 600_000
 _PBKDF2_SALT_PREFIX = b"syncbot-fernet-v1"
@@ -62,6 +62,49 @@ def _looks_like_fernet(value: str) -> bool:
     return value.startswith("gAAAAA")
 
 
+def _looks_like_fernet_bytes(value: bytes) -> bool:
+    return value.startswith(b"gAAAAA")
+
+
+def encrypt_bytes(data: bytes | None) -> bytes | None:
+    """Encrypt binary data before storing it in the database."""
+    if not data:
+        return data
+    if not _encryption_enabled():
+        return data
+    if _looks_like_fernet_bytes(data):
+        key = _resolve_encryption_key()
+        try:
+            _get_fernet(key).decrypt(data)
+            return data
+        except InvalidToken:
+            pass
+    key = _resolve_encryption_key()
+    return _get_fernet(key).encrypt(data)
+
+
+def decrypt_bytes(data: bytes | None) -> bytes | None:
+    """Decrypt binary data read from the database.
+
+    Leftover plaintext (no Fernet prefix) stays readable so in-flight file
+    parts from before encryption was enabled still assemble until TTL.
+    """
+    if not data:
+        return data
+    if not _encryption_enabled():
+        return data
+    if not _looks_like_fernet_bytes(data):
+        return data
+    key = _resolve_encryption_key()
+    try:
+        return _get_fernet(key).decrypt(data)
+    except InvalidToken:
+        log_error("payload_decrypt_failed")
+        raise ValueError(
+            "Payload decryption failed. The data may be plaintext (not yet migrated) or tampered with."
+        ) from None
+
+
 def encrypt_bot_token(token: str | None) -> str | None:
     """Encrypt a token before storing it in the database."""
     if not token:
@@ -94,7 +137,7 @@ def decrypt_bot_token(encrypted: str | None) -> str | None:
     try:
         return _get_fernet(key).decrypt(encrypted.encode()).decode()
     except InvalidToken:
-        _logger.error("Token decryption failed — refusing to use the token.")
+        log_error("token_decrypt_failed")
         raise ValueError(
             "Token decryption failed. The token may be plaintext (not yet migrated) or tampered with."
         ) from None
