@@ -188,8 +188,7 @@ raise SystemExit(1)
 PY
 }
 
-# If DATABASE_SCHEMA is set, keep it. On an existing stack, reuse live CloudFormation
-# DatabaseSchema. On a new stack, infer syncbot_${stage}.
+# DATABASE_SCHEMA wins. Else the live CloudFormation DatabaseSchema. Else syncbot_${stage}.
 resolve_database_schema() {
   local stack="$1"
   local region="$2"

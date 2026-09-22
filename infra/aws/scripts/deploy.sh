@@ -900,10 +900,6 @@ sync_bootstrap_stack_from_repo() {
   github_repo="${github_repo//$'\r'/}"
   github_repo="${github_repo#"${github_repo%%[![:space:]]*}"}"
   github_repo="${github_repo%"${github_repo##*[![:space:]]}"}"
-  if [[ -z "$github_repo" ]]; then
-    echo "Bootstrap stack has no GitHubRepository parameter; skipping bootstrap template sync." >&2
-    return 0
-  fi
 
   create_oidc="$(stack_param_value "$params" "CreateOIDCProvider")"
   bucket_prefix="$(stack_param_value "$params" "DeploymentBucketPrefix")"
@@ -911,14 +907,21 @@ sync_bootstrap_stack_from_repo() {
   [[ -z "$bucket_prefix" ]] && bucket_prefix="syncbot-deploy"
 
   echo
-  echo "Syncing bootstrap stack with repo template..."
+  if [[ -z "$github_repo" ]]; then
+    echo "Syncing bootstrap stack with repo template (GitHub OIDC skipped)..."
+  else
+    echo "Syncing bootstrap stack with repo template..."
+  fi
+  local -a overrides
+  overrides=("CreateOIDCProvider=$create_oidc" "DeploymentBucketPrefix=$bucket_prefix")
+  if [[ -n "$github_repo" ]]; then
+    overrides+=("GitHubRepository=$github_repo")
+  fi
   aws cloudformation deploy \
     --template-file "$BOOTSTRAP_TEMPLATE" \
     --stack-name "$bootstrap_stack" \
     --parameter-overrides \
-      "GitHubRepository=$github_repo" \
-      "CreateOIDCProvider=$create_oidc" \
-      "DeploymentBucketPrefix=$bucket_prefix" \
+      "${overrides[@]}" \
     --capabilities CAPABILITY_NAMED_IAM \
     --no-fail-on-empty-changeset \
     --region "$aws_region"
@@ -1211,11 +1214,6 @@ DEFAULT_REGION="${AWS_REGION:-us-east-1}"
 REGION="$(prompt_default "AWS region" "$DEFAULT_REGION")"
 BOOTSTRAP_STACK="$(prompt_default "Bootstrap stack name" "${AWS_BOOTSTRAP_STACK_NAME:-syncbot-bootstrap}")"
 
-if ! aws cloudformation describe-stacks --stack-name "$BOOTSTRAP_STACK" --region "$REGION" >/dev/null 2>&1; then
-  if [[ -z "${GITHUB_REPO:-}" ]]; then
-    GITHUB_REPO="$(prompt_github_repo_for_actions "$REPO_ROOT")"
-  fi
-fi
 ensure_aws_bootstrap_stack
 
 # Probe bootstrap outputs for suggested app stack names.
