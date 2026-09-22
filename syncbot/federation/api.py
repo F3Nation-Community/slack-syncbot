@@ -715,7 +715,6 @@ def _create_response_from_rows(rows: list) -> dict | None:
     return {
         "ok": True,
         "ts": slack_message_ts(ordered[0].ts),
-        "split_ts": slack_message_ts(ordered[1].ts) if len(ordered) > 1 else None,
         "posted_as_user_id": ordered[0].posted_as_user_id,
     }
 
@@ -1099,7 +1098,6 @@ def handle_message(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
         return 200, {
             "ok": True,
             "ts": outcome.ts,
-            "split_ts": outcome.split_ts,
             "posted_as_user_id": outcome.posted_as_user_id,
         }
 

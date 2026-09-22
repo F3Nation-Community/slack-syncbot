@@ -186,9 +186,8 @@ def complete_copy_ts_from_pending_share(
     ``None`` means this event is not that apply, or the ts was already stored.
 
     The pending row is the apply that already ran: envelope ``post_id``,
-    ``sync_channel_id``, and source fields. A parent row on the same
-    SyncChannel (bot text-plus-file split) is a different ts and must not
-    block this one.
+    ``sync_channel_id``, and source fields. A different ts already stored
+    on this SyncChannel is not this share and must not block it.
     """
     if not team_id or not channel_id or not ts or not file_ids:
         return None

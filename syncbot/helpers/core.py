@@ -46,11 +46,6 @@ def code_ticked_display_name(display_name: str | None, workspace_name: str | Non
     return f"`{format_synced_from_line(display_name, workspace_name)}`"
 
 
-def format_file_share_notice(display_name: str | None, workspace_name: str | None = None) -> str:
-    """Bot notice for who shared a file. Never tags; from-line name in code ticks."""
-    return f"{code_ticked_display_name(display_name, workspace_name)} shared a file"
-
-
 def safe_get(data: Any, *keys: Any) -> Any:
     """Safely traverse nested dicts/lists. Returns None on missing keys."""
     if not data:

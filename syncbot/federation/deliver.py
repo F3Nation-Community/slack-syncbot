@@ -213,18 +213,6 @@ def _postmeta_from_peer_response(
             source_workspace_id=envelope.get("source_workspace_id"),
         )
     ]
-    split_ts = result.get("split_ts")
-    if split_ts:
-        created.append(
-            schemas.PostMeta(
-                post_id=str(envelope.get("post_id") or ""),
-                sync_channel_id=sync_channel.id,
-                ts=post_meta_ts(split_ts),
-                posted_as_user_id=posted_as,
-                source_user_id=envelope.get("source_user_id"),
-                source_workspace_id=envelope.get("source_workspace_id"),
-            )
-        )
     DbManager.create_records(created)
     return created
 

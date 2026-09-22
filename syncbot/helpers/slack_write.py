@@ -9,7 +9,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 from helpers.conversations import get_user_token
-from helpers.core import format_file_share_notice, format_synced_from_line, safe_get
+from helpers.core import format_synced_from_line, safe_get
 from helpers.files import upload_files_to_slack
 from helpers.message_blocks import blocks_include_body, rewrite_content_blocks, trim_target_blocks
 from helpers.notifications import notify_source_user_error
@@ -226,29 +226,6 @@ def _upload_target_files(
     return file_ts
 
 
-def _apply_share_blocks(
-    *,
-    token: str,
-    channel_id: str,
-    ts: str,
-    adapted_text: str,
-    target_blocks: list[dict],
-    reply_broadcast: bool = False,
-) -> None:
-    """Put Block Kit on a native file share so it matches the source body."""
-    try:
-        post_message(
-            bot_token=token,
-            channel_id=channel_id,
-            msg_text=adapted_text,
-            update_ts=slack_message_ts(ts),
-            blocks=target_blocks,
-            reply_broadcast=reply_broadcast,
-        )
-    except Exception as exc:
-        log_warning("slack_write_share_blocks_failed", channel_id=channel_id, error=str(exc))
-
-
 def _post_target_text(
     *,
     token: str,
@@ -264,8 +241,8 @@ def _post_target_text(
     remote_workspace_label: str | None,
     team_id: str | None,
     as_user: str | None,
-) -> tuple[str | None, str | None, str | None]:
-    """Post target text. A file share is its own message, not a reply under this one."""
+) -> tuple[str | None, str | None]:
+    """Post a target message that has no file."""
     post_kwargs: dict[str, Any] = {
         "bot_token": token,
         "channel_id": channel_id,
@@ -283,7 +260,7 @@ def _post_target_text(
     ts = safe_get(res, "ts")
     if as_user and ts:
         remember_message_echo(team_id, as_user, channel_id, ts)
-    return ts, None, as_user
+    return ts, as_user
 
 
 def _mentioned_users_from_envelope(envelope: dict[str, Any]) -> list[dict]:
@@ -313,8 +290,8 @@ def slack_write_create(
     workspace,
     source_client: WebClient | None = None,
     thread_ts: str | None = None,
-) -> tuple[str | None, str | None, str | None]:
-    """Create a message (and optional files) on the target. Returns (ts, split_file_ts, posted_as)."""
+) -> tuple[str | None, str | None]:
+    """Create a message (and optional files) on the target. Returns (ts, posted_as)."""
     from helpers.workspace import get_workspace_by_id
 
     source_workspace_id = envelope.get("source_workspace_id") or 0
@@ -348,7 +325,6 @@ def slack_write_create(
         )
     name_for_target = target_display_name or user_name or "Someone"
     remote_workspace_label = None if author_is_mapped else workspace_name
-    file_notice = format_file_share_notice(name_for_target, remote_workspace_label)
 
     write_token, posted_as = pick_write_token(workspace, mapped_user_id)
     use_customize = posted_as is None
@@ -394,51 +370,19 @@ def slack_write_create(
         "source_workspace_id": envelope.get("source_workspace_id") or None,
     }
 
-    def _write(token: str, customize: bool, as_user: str | None) -> tuple[str | None, str | None, str | None]:
-        # The file share is the message. completeUploadExternal accepts blocks,
-        # username, and icon_url. A comment and blocks together drop the blocks.
-        # User tokens keep the caption as initial_comment, then chat.update blocks.
-        if file_refs and as_user:
-            comment = (adapted_text or "").strip() or None
-            file_ts = _upload_target_files(
-                token=token,
-                channel_id=sync_channel.channel_id,
-                files=file_refs,
-                initial_comment=comment,
-                thread_ts=thread_ts,
-                reply_broadcast=reply_broadcast,
-                team_id=workspace.team_id,
-                as_user=as_user,
-                post_id=post_id,
-                **pending_apply,
-            )
-            if not file_ts:
-                # Share is in Slack; inbound file_share completes PostMeta.
-                return None, None, as_user
-            if target_blocks:
-                _apply_share_blocks(
-                    token=token,
-                    channel_id=sync_channel.channel_id,
-                    ts=file_ts,
-                    adapted_text=adapted_text,
-                    target_blocks=target_blocks,
-                    reply_broadcast=reply_broadcast,
-                )
-            return file_ts, None, as_user
+    def _write(token: str, customize: bool, as_user: str | None) -> tuple[str | None, str | None]:
+        # The file share is the message. Blocks and a comment together drop the blocks.
+        # Bot customize sets the from line on every share, including file-only.
         if file_refs:
-            share_blocks = _blocks_for_file_share(adapted_text, target_blocks)
+            share_blocks = _blocks_for_file_share(adapted_text, target_blocks) if target_blocks else None
             file_ts = _upload_target_files(
                 token=token,
                 channel_id=sync_channel.channel_id,
                 files=file_refs,
-                initial_comment=None if share_blocks else file_notice,
+                initial_comment=None if share_blocks else ((adapted_text or "").strip() or None),
                 blocks=share_blocks,
-                username=(
-                    format_synced_from_line(name_for_target, remote_workspace_label)
-                    if share_blocks and customize
-                    else None
-                ),
-                icon_url=(target_icon_url or user_avatar_url) if share_blocks and customize else None,
+                username=format_synced_from_line(name_for_target, remote_workspace_label) if customize else None,
+                icon_url=(target_icon_url or user_avatar_url) if customize else None,
                 thread_ts=thread_ts,
                 reply_broadcast=reply_broadcast,
                 team_id=workspace.team_id,
@@ -446,9 +390,7 @@ def slack_write_create(
                 post_id=post_id,
                 **pending_apply,
             )
-            if not file_ts:
-                return None, None, as_user
-            return file_ts, None, as_user
+            return file_ts, as_user
         if not (adapted_text or "").strip() and not target_blocks:
             raise RuntimeError("empty_message_create")
         return _post_target_text(
@@ -467,7 +409,7 @@ def slack_write_create(
             as_user=as_user,
         )
 
-    def _fail_create(exc: Exception) -> tuple[None, None, None]:
+    def _fail_create(exc: Exception) -> tuple[None, None]:
         log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=str(exc))
         if file_refs:
             _notify_file_write_failed(
@@ -476,7 +418,7 @@ def slack_write_create(
                 channel_id=sync_channel.channel_id,
                 error=slack_error_code(exc) or str(exc),
             )
-        return None, None, None
+        return None, None
 
     try:
         return _write(write_token, use_customize, posted_as)

@@ -28,14 +28,13 @@ from logger import log_debug, log_warning
 class ApplyOutcome:
     """Result of ``apply_target``. ``reaction_applied`` is True only when a reaction ran.
 
-    ``ts`` / ``split_ts`` / ``posted_as_user_id`` are Slack strings captured before
+    ``ts`` / ``posted_as_user_id`` are Slack strings captured before
     ``create_records`` (expunged ``PostMeta`` attributes are not safe to read).
     """
 
     created: list[schemas.PostMeta] = field(default_factory=list)
     reaction_applied: bool = False
     ts: str | None = None
-    split_ts: str | None = None
     posted_as_user_id: str | None = None
 
 
@@ -64,7 +63,7 @@ def apply_target(
     if kind == KIND_MESSAGE and action == ACTION_CREATE:
         if envelope.get("thread_post_id") and not thread_ts:
             return ApplyOutcome()
-        ts, split_ts, posted_as = slack_write_create(
+        ts, posted_as = slack_write_create(
             envelope=envelope,
             sync_channel=sync_channel,
             workspace=workspace,
@@ -75,7 +74,6 @@ def apply_target(
             "apply_create",
             channel_id=sync_channel.channel_id,
             ts=ts,
-            split_ts=split_ts,
             thread_ts=thread_ts,
             post_id=post_id,
             file_count=len(envelope.get("file_refs") or []),
@@ -95,23 +93,11 @@ def apply_target(
                     source_workspace_id=envelope.get("source_workspace_id"),
                 )
             )
-        if split_ts:
-            created.append(
-                schemas.PostMeta(
-                    post_id=post_id,
-                    sync_channel_id=sync_channel.id,
-                    ts=post_meta_ts(split_ts),
-                    posted_as_user_id=posted_as,
-                    source_user_id=envelope.get("source_user_id"),
-                    source_workspace_id=envelope.get("source_workspace_id"),
-                )
-            )
         if created:
             DbManager.create_records(created)
         return ApplyOutcome(
             created=created,
             ts=ts,
-            split_ts=split_ts,
             posted_as_user_id=posted_as,
         )
 
