@@ -18,6 +18,7 @@ import pytest
 
 from builders.home import (
     _build_authorize_section,
+    _build_group_section,
     _home_tab_content_hash,
     build_home_tab,
     home_tab_hash_key,
@@ -25,7 +26,7 @@ from builders.home import (
 from slack import actions, orm
 from slack_manifest_scopes import USER_PERMISSION_GROUPS
 
-WORKSPACE = SimpleNamespace(id=10, team_id="T1", workspace_name="WS", bot_token=None, deleted_at=None)
+WORKSPACE = SimpleNamespace(id=10, team_id="T1", workspace_name="WS", deleted_at=None)
 AUTHORIZE_URL = "https://syncbot.example.com/slack/install"
 ALL_LABELS = [label for label, _scopes in USER_PERMISSION_GROUPS]
 
@@ -223,6 +224,7 @@ class TestHomeTabAdminGate:
         assert "Create Group" not in text
         assert "Create Sync" not in text
         assert "Settings" not in text
+        assert "Data Migration" not in text
 
     def test_non_manager_who_is_fully_authorized_still_gets_refresh(self):
         rendered = self._build(is_manager=False, needed=False)
@@ -234,11 +236,32 @@ class TestHomeTabAdminGate:
         assert "Refresh" in text
         assert "Create Group" not in text
 
+    def test_admin_gets_data_migration_in_configuration(self):
+        rendered = self._build(is_manager=True, is_admin=True, needed=False)
+        text = _text_of(rendered)
+        assert "Data Migration" in text
+        assert text.index("SyncBot Configuration") < text.index("Data Migration")
+        assert not any(
+            block.get("type") == "section" and block.get("text", {}).get("text") == "*Data Migration*"
+            for block in rendered
+        )
+
     def test_configuration_sits_above_workspace_groups_for_managers(self):
         rendered = self._build(is_manager=True, needed=True)
         text = _text_of(rendered)
         assert text.index("SyncBot Configuration") < text.index("Workspace Groups")
         assert text.index("Refresh") < text.index("Create Group")
+        config_idx = next(
+            i
+            for i, block in enumerate(rendered)
+            if block.get("type") == "header" and "SyncBot Configuration" in (block.get("text") or {}).get("text", "")
+        )
+        groups_idx = next(
+            i
+            for i, block in enumerate(rendered)
+            if block.get("type") == "header" and "Workspace Groups" in (block.get("text") or {}).get("text", "")
+        )
+        assert any(block.get("type") == "divider" for block in rendered[config_idx:groups_idx])
 
     def test_manager_who_still_needs_authorization_gets_both_sections(self):
         rendered = self._build(is_manager=True, needed=True)
@@ -287,12 +310,12 @@ class TestHomeRefreshTargets:
     def test_refresh_publishes_acting_user_only_without_users_list(self):
         from builders.home import refresh_home_tab_for_workspace
 
-        workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc", deleted_at=None)
+        workspace = SimpleNamespace(id=1, team_id="T1", deleted_at=None)
         logger = MagicMock()
         with (
             patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
             patch("builders.home.build_home_tab") as build,
-            patch("builders.home.helpers.decrypt_bot_token", return_value="xoxb"),
+            patch("builders.home.helpers.get_bot_token", return_value="xoxb"),
             patch("builders.home.WebClient"),
         ):
             refresh_home_tab_for_workspace(workspace, logger, context={}, user_id="U1")
@@ -304,7 +327,7 @@ class TestHomeRefreshTargets:
     def test_refresh_without_user_id_invalidates_only(self):
         from builders.home import refresh_home_tab_for_workspace
 
-        workspace = SimpleNamespace(id=1, team_id="T1", bot_token="enc", deleted_at=None)
+        workspace = SimpleNamespace(id=1, team_id="T1", deleted_at=None)
         with (
             patch("helpers.export_import.invalidate_home_tab_caches_for_team") as invalidate,
             patch("builders.home.build_home_tab") as build,
@@ -386,6 +409,8 @@ class TestRefreshUsesThePerUserKey:
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.refresh_cooldown_check", return_value=("cached", [], None)) as check,
             patch("handlers.sync.helpers._cache_set"),
+            patch("handlers.sync.helpers.remember_home_viewer"),
+            patch("handlers.sync._pulse_after_home"),
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
@@ -409,6 +434,8 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]) as build,
             patch("handlers.sync.helpers.refresh_after_full"),
+            patch("handlers.sync.helpers.remember_home_viewer"),
+            patch("handlers.sync._pulse_after_home"),
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
@@ -433,6 +460,7 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]),
             patch("handlers.sync.helpers.refresh_after_full"),
+            patch("handlers.sync._pulse_after_home"),
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
@@ -460,6 +488,7 @@ class TestAppHomeOpenedHashShortCircuit:
                 side_effect=lambda key: "same-hash" if "hash" in key else cached_blocks,
             ),
             patch("handlers.sync.builders.build_home_tab") as build,
+            patch("handlers.sync.helpers.remember_home_viewer"),
         ):
             handle_app_home_opened(body, client, MagicMock(), {})
 
@@ -468,3 +497,291 @@ class TestAppHomeOpenedHashShortCircuit:
             user_id="U1",
             view={"type": "home", "blocks": cached_blocks},
         )
+
+
+class TestFederationSectionOmitsSelf:
+    def test_lists_peers_not_this_install(self):
+        from builders.home import _build_federation_section
+
+        self_row = SimpleNamespace(
+            instance_id="738d79e9" + "0" * 56,
+            name=None,
+            webhook_url=None,
+            private_key_encrypted="gAAAAA",
+            status="active",
+        )
+        peer = SimpleNamespace(
+            instance_id="aabbccdd" + "1" * 56,
+            name="Partner Org",
+            webhook_url="https://peer.example/api/federation",
+            private_key_encrypted=None,
+            status="active",
+            trust_status="trusted",
+        )
+        remote = SimpleNamespace(
+            id=20,
+            instance_id=peer.instance_id,
+            team_id="T_REMOTE",
+            workspace_name="Workspace B",
+            deleted_at=None,
+        )
+        local = SimpleNamespace(
+            id=10,
+            instance_id="self",
+            team_id="T1",
+            workspace_name="Workspace A",
+            deleted_at=None,
+        )
+        allow = SimpleNamespace(instance_id=peer.instance_id, workspace_id=10)
+
+        def _find(model, _filters=None):
+            name = getattr(model, "__name__", "")
+            if name == "Instance":
+                return [self_row, peer]
+            if name == "Workspace":
+                return [remote, local]
+            if name == "FederationWorkspaceAllowlist":
+                return [allow]
+            return []
+
+        blocks: list = []
+        with (
+            patch("builders.home.DbManager.find_records", side_effect=_find),
+            patch("builders.home.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        ):
+            _build_federation_section(blocks, WORKSPACE)
+        rendered = _rendered(blocks)
+        text = _text_of(rendered)
+        action_blocks = [block for block in rendered if block.get("type") == "actions"]
+        create_join_labels = [el["text"]["text"] for el in action_blocks[0]["elements"]]
+        assert create_join_labels == [
+            ":globe_with_meridians: Create External Connection",
+            ":link: Join External Connection",
+        ]
+        assert [el["text"]["text"] for el in action_blocks[1]["elements"]] == [
+            ":pencil2: Edit Connection",
+            ":wave: Leave Connection",
+        ]
+        assert "Partner Org" in text
+        assert "https://peer.example/api/federation" in text
+        assert "Show Connection Code" not in text
+        assert "Trust Status: `Trusted`" in text
+        assert "Local Workspaces: `Workspace A`" in text
+        assert "Remote Workspaces: `Workspace B`" in text
+        assert "Edit Connection" in text
+        assert "Leave Connection" in text
+        assert "Verify Trust" not in text
+        assert "Connection 738d79e9" not in text
+
+    def test_pending_create_is_a_named_row_with_show_code(self):
+        from builders.home import _build_federation_section
+
+        local = SimpleNamespace(
+            id=10,
+            instance_id="self",
+            team_id="T1",
+            workspace_name="Workspace A",
+            deleted_at=None,
+        )
+        pairing = SimpleNamespace(
+            id=3,
+            subject_team_id=None,
+            label="Partner Org",
+            allowed_workspace_ids="[10]",
+            created_at=None,
+        )
+
+        def _find(model, _filters=None):
+            name = getattr(model, "__name__", "")
+            if name == "Workspace":
+                return [local]
+            if name == "FederationPairingCode":
+                return [pairing]
+            return []
+
+        blocks: list = []
+        with (
+            patch("builders.home.DbManager.find_records", side_effect=_find),
+            patch("builders.home.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        ):
+            _build_federation_section(blocks, WORKSPACE)
+        rendered = _rendered(blocks)
+        text = _text_of(rendered)
+        action_blocks = [block for block in rendered if block.get("type") == "actions"]
+        assert [el["text"]["text"] for el in action_blocks[1]["elements"]] == [
+            ":memo: Show Connection Code",
+            ":pencil2: Edit Connection",
+            ":wastebasket: Cancel Connection",
+        ]
+        assert "Partner Org" in text
+        assert "Waiting for the other SyncBot to join." in text
+        assert "Trust Status: `Waiting`" in text
+        assert "Trust Status: `Trusted`" not in text
+        assert "Local Workspaces: `Workspace A`" in text
+        assert "Remote Workspaces: `None yet`" in text
+        assert "Leave Connection" not in text
+        assert "Verify Trust" not in text
+
+    def test_approved_migration_code_is_a_waiting_row(self):
+        from builders.home import _build_federation_section
+
+        local = SimpleNamespace(
+            id=10,
+            instance_id="self",
+            team_id="T_SRC",
+            workspace_name="Workspace B",
+            deleted_at=None,
+        )
+        pairing = SimpleNamespace(
+            id=3,
+            subject_team_id="T_SRC",
+            label="Migration for Workspace B",
+            allowed_workspace_ids="[10]",
+            created_at=None,
+        )
+
+        def _find(model, _filters=None):
+            name = getattr(model, "__name__", "")
+            if name == "Workspace":
+                return [local]
+            if name == "FederationPairingCode":
+                return [pairing]
+            return []
+
+        blocks: list = []
+        with (
+            patch("builders.home.DbManager.find_records", side_effect=_find),
+            patch("builders.home.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        ):
+            _build_federation_section(blocks, WORKSPACE)
+        rendered = _rendered(blocks)
+        text = _text_of(rendered)
+        action_blocks = [block for block in rendered if block.get("type") == "actions"]
+        assert [el["text"]["text"] for el in action_blocks[1]["elements"]] == [
+            ":memo: Show Connection Code",
+            ":pencil2: Edit Connection",
+            ":wastebasket: Cancel Connection",
+        ]
+        assert "Migration for Workspace B" in text
+        assert "Waiting for the other SyncBot to join." in text
+        assert "Trust Status: `Waiting`" in text
+        assert "Local Workspaces: `Workspace B`" in text
+        assert "Remote Workspaces: `None yet`" in text
+
+    def test_pending_create_without_allowlist_shows_none_yet(self):
+        from builders.home import _build_federation_section
+
+        pairing = SimpleNamespace(
+            id=3,
+            subject_team_id=None,
+            label="Partner Org",
+            allowed_workspace_ids=None,
+            created_at=None,
+        )
+
+        def _find(model, _filters=None):
+            name = getattr(model, "__name__", "")
+            if name == "FederationPairingCode":
+                return [pairing]
+            return []
+
+        blocks: list = []
+        with patch("builders.home.DbManager.find_records", side_effect=_find):
+            _build_federation_section(blocks, WORKSPACE)
+        text = _text_of(_rendered(blocks))
+        assert "Trust Status: `Waiting`" in text
+        assert "Local Workspaces: `None yet`" in text
+        assert "Remote Workspaces: `None yet`" in text
+
+    def test_untrusted_peer_offers_verify_trust(self):
+        from builders.home import _build_federation_section
+
+        peer = SimpleNamespace(
+            instance_id="aabbccdd" + "1" * 56,
+            name="Partner Org",
+            webhook_url="https://peer.example/api/federation",
+            private_key_encrypted=None,
+            status="active",
+            trust_status="untrusted",
+        )
+
+        def _find(model, _filters=None):
+            name = getattr(model, "__name__", "")
+            if name == "Instance":
+                return [peer]
+            return []
+
+        blocks: list = []
+        with patch("builders.home.DbManager.find_records", side_effect=_find):
+            _build_federation_section(blocks, WORKSPACE)
+        rendered = _rendered(blocks)
+        text = _text_of(rendered)
+        action_blocks = [block for block in rendered if block.get("type") == "actions"]
+        assert [el["text"]["text"] for el in action_blocks[1]["elements"]] == [
+            ":pencil2: Edit Connection",
+            ":white_check_mark: Verify Trust",
+            ":wave: Leave Connection",
+        ]
+        assert "Trust Status: `Untrusted`" in text
+        assert "Remote Workspaces: `None yet`" in text
+
+
+class TestGroupSectionButtons:
+    def _rendered_group(self, *, members, can_disband=True, is_owner=True, active_owners=None):
+        group = SimpleNamespace(id=5, name="Shared")
+        membership = SimpleNamespace(id=1, workspace_id=10, role="owner" if is_owner else "member")
+        workspace = SimpleNamespace(id=10, team_id="T1")
+        blocks: list = []
+        owners = active_owners if active_owners is not None else (members[:1] if is_owner else [])
+        with (
+            patch("builders.home._get_group_members", return_value=members),
+            patch("builders.home.helpers.is_workspace_owner", return_value=is_owner),
+            patch("builders.home.helpers.get_active_owners", return_value=owners),
+            patch("builders.home.helpers.can_disband", return_value=(can_disband, "")),
+            patch("builders.home.DbManager.find_records", return_value=[]),
+            patch(
+                "builders.home._prefetch_group_channel_and_mapping_counts",
+                return_value=({}, {}, {}),
+            ),
+            patch("builders.home.helpers.get_workspace_by_id", return_value=WORKSPACE),
+            patch("builders.home.helpers.is_stub_workspace", return_value=False),
+            patch("builders.home.helpers.resolve_workspace_name", return_value="Workspace A"),
+            patch("builders.home._get_workspace_info", return_value={}),
+            patch("builders.home.helpers.can_promote", return_value=False),
+        ):
+            _build_group_section(blocks, group, membership, workspace)
+        return _rendered(blocks)
+
+    def _labels(self, *, members, can_disband=True, is_owner=True, active_owners=None):
+        rendered = self._rendered_group(
+            members=members, can_disband=can_disband, is_owner=is_owner, active_owners=active_owners
+        )
+        actions_block = next(block for block in rendered if block.get("type") == "actions")
+        return [el["text"]["text"] for el in actions_block["elements"]]
+
+    def test_sole_member_shows_disband_not_leave(self):
+        me = SimpleNamespace(id=1, workspace_id=10, role="owner", joined_at=None)
+        assert self._labels(members=[me]) == [
+            ":incoming_envelope: Invite Workspace",
+            ":outbox_tray: Create Sync",
+            ":busts_in_silhouette: User Mapping",
+            ":wastebasket: Disband Group",
+        ]
+
+    def test_other_members_show_leave(self):
+        me = SimpleNamespace(id=1, workspace_id=10, role="owner", joined_at=None)
+        other = SimpleNamespace(id=2, workspace_id=20, role="member", joined_at=None)
+        labels = self._labels(members=[me, other], can_disband=False)
+        assert ":wave: Leave Group" in labels
+        assert ":wastebasket: Disband Group" not in labels
+
+    def test_remaining_member_after_owner_uninstall_shows_leave(self):
+        me = SimpleNamespace(id=1, workspace_id=10, role="member", joined_at=None)
+        labels = self._labels(members=[me], can_disband=False, is_owner=False, active_owners=[])
+        assert ":wave: Leave Group" in labels
+        assert ":wastebasket: Disband Group" not in labels
+
+    def test_uninstalled_owner_shows_no_owner_notice(self):
+        me = SimpleNamespace(id=1, workspace_id=10, role="member", joined_at=None)
+        rendered = self._rendered_group(members=[me], can_disband=False, is_owner=False, active_owners=[])
+        assert "no owner right now" in _text_of(rendered)
