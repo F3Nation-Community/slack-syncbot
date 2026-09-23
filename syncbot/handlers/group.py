@@ -210,7 +210,6 @@ def handle_join_group(
         trigger_id=trigger_id,
         callback_id=actions.CONFIG_JOIN_GROUP_SUBMIT,
         title_text="Join Group",
-        new_or_add="new",
         body=body,
     )
 
@@ -388,7 +387,6 @@ def handle_invite_workspace(
             callback_id=actions.CONFIG_INVITE_WORKSPACE_SUBMIT,
             title_text="Oops!",
             submit_button_text=None,
-            new_or_add="new",
             body=body,
         )
         return
@@ -443,7 +441,6 @@ def handle_invite_workspace(
         title_text="Invite Workspace",
         submit_button_text=submit_text,
         parent_metadata={"group_id": group_id},
-        new_or_add="new",
         body=body,
     )
 

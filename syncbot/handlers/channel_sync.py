@@ -519,7 +519,6 @@ def handle_create_sync(
         title_text="Create Sync",
         submit_button_text="Create Sync",
         parent_metadata={"group_id": group_id, "workspace_id": workspace_record.id},
-        new_or_add="new",
         body=body,
     )
 
@@ -1160,7 +1159,6 @@ def handle_join_sync(
         title_text="Join Sync",
         submit_button_text="Join Sync",
         parent_metadata={"sync_id": int(sync_id)},
-        new_or_add="new",
         body=body,
     )
 
@@ -1494,7 +1492,6 @@ def handle_edit_sync(
         title_text="Edit Sync",
         submit_button_text="Save",
         parent_metadata=metadata,
-        new_or_add="new",
         body=body,
     )
 

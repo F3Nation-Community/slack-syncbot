@@ -122,9 +122,6 @@ USER_MAP_TTL_NAME = 14 * 24 * 3600  # 14 days for name-based mappings
 USER_MAP_TTL_NONE = 90 * 24 * 3600  # 90 days for no-map (team_join handles re-checks)
 USER_MAPPING_PAGE_SIZE = 20  # max mapping rows per modal page (Slack 100-block cap)
 
-# Refresh button cooldown (seconds) when content hash unchanged
-REFRESH_COOLDOWN_SECONDS = 60
-
 # ---------------------------------------------------------------------------
 # Federation
 # ---------------------------------------------------------------------------

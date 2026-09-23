@@ -507,7 +507,6 @@ def build_home_tab(
     helpers.refresh_after_full(
         home_tab_hash_key(team_id, user_id),
         f"home_tab_blocks:{team_id}:{user_id}",
-        f"refresh_at:home:{team_id}:{user_id}",
         current_hash,
         block_dicts,
     )

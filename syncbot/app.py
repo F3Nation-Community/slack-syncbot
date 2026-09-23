@@ -7,7 +7,8 @@ or port 3000 by default).
 All incoming Slack events, actions, view submissions, and slash commands are
 dispatched through :func:`main_response`.  In production (non-local), view
 submissions first run :func:`view_ack` for the HTTP response, then :func:`main_response`
-for the work phase (lazy).  Handlers are looked up in :data:`routing.MAIN_MAPPER`
+for the work phase (lazy).  Button modals open in :func:`action_ack` and the work
+phase fills that view.  Handlers are looked up in :data:`routing.MAIN_MAPPER`
 and :data:`routing.VIEW_ACK_MAPPER`.
 
 Federation API endpoints (``/api/federation/*``) handle cross-instance
@@ -69,7 +70,8 @@ from logger import (
 from logger import (
     redact_sensitive as _redact_sensitive,
 )
-from routing import MAIN_MAPPER, VIEW_ACK_MAPPER, VIEW_MAPPER
+from routing import MAIN_MAPPER, MODAL_OPEN_ACTIONS, MODAL_PUSH_ACTIONS, VIEW_ACK_MAPPER, VIEW_MAPPER
+from slack import actions, orm
 
 if SlackRequestHandler is not None:
     SlackRequestHandler.clear_all_log_handlers()
@@ -297,6 +299,45 @@ def _lambda_federation_handler(event: dict) -> dict:
     }
 
 
+def open_loading_modal(body: dict, client) -> None:
+    """Open a close-only Loading view for this click. No database and no ``users.info``."""
+    request_type, request_id = get_request_type(body)
+    if request_type != "block_actions" or request_id not in MODAL_OPEN_ACTIONS:
+        return
+    trigger_id = body.get("trigger_id")
+    if not trigger_id:
+        return
+    team_id = get_team_id_from_body(body) or ""
+    external_id = orm.build_modal_external_id(team_id, trigger_id)
+    view = {
+        "type": "modal",
+        "callback_id": actions.LOADING_MODAL_CALLBACK,
+        "external_id": external_id,
+        "title": {"type": "plain_text", "text": "Loading..."},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": "If this doesn't load, please close and try again."},
+            },
+        ],
+    }
+    orm.open_or_push_view(
+        client,
+        trigger_id,
+        view,
+        new_or_add="add" if request_id in MODAL_PUSH_ACTIONS else "new",
+    )
+
+
+def action_ack(body: dict, client, ack) -> None:
+    """Production ack for button clicks: open the Loading view, then ack."""
+    try:
+        open_loading_modal(body, client)
+    finally:
+        ack()
+
+
 def view_ack(body: dict, logger, client, ack, context: dict) -> None:
     """Production ack handler for ``view_submission``: fast response to Slack (3s budget).
 
@@ -348,6 +389,11 @@ def main_response(body: dict, logger, client, ack, context: dict) -> None:
 
     begin_request_scope()
     request_type, request_id = get_request_type(body)
+    modal_opener = request_type == "block_actions" and request_id in MODAL_OPEN_ACTIONS
+    if modal_opener:
+        orm.reset_modal_updated()
+        if LOCAL_DEVELOPMENT:
+            open_loading_modal(body, client)
 
     if request_type == "view_submission":
         if LOCAL_DEVELOPMENT:
@@ -371,6 +417,10 @@ def main_response(body: dict, logger, client, ack, context: dict) -> None:
     if run_function:
         try:
             run_function(body, client, logger, context)
+            if modal_opener and not orm.modal_was_updated():
+                trigger_id = body.get("trigger_id")
+                if trigger_id:
+                    orm.update_denied_modal(client, body, trigger_id)
             emit_metric(
                 "request_handled",
                 duration_ms=round(get_request_duration_ms(), 1),
@@ -401,7 +451,10 @@ else:
 
 MATCH_ALL_PATTERN = re.compile(".*")
 app.event(MATCH_ALL_PATTERN)(*ARGS, **LAZY_KWARGS)
-app.action(MATCH_ALL_PATTERN)(*ARGS, **LAZY_KWARGS)
+if LOCAL_DEVELOPMENT:
+    app.action(MATCH_ALL_PATTERN)(main_response)
+else:
+    app.action(MATCH_ALL_PATTERN)(ack=action_ack, lazy=[main_response])
 if LOCAL_DEVELOPMENT:
     app.view(MATCH_ALL_PATTERN)(main_response)
 else:

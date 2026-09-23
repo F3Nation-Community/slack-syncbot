@@ -5,6 +5,12 @@ throughout the UI forms and handler routing tables.  Keeping them in one
 place avoids typos and makes refactoring easier.
 """
 
+LOADING_MODAL_CALLBACK = "loading"
+"""Callback on the ack Loading view. Close only; not a view submission."""
+
+MODAL_DENIED_CALLBACK = "modal_denied"
+"""Callback when an opener does not fill the Loading view. Close only; not a view submission."""
+
 # ---------------------------------------------------------------------------
 # User Mapping actions
 # ---------------------------------------------------------------------------

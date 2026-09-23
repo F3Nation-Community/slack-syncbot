@@ -11,7 +11,7 @@ def test_app_py_view_listener_has_ack_and_lazy_in_prod_branch():
     assert "ack=view_ack" in text
     assert "lazy=[main_response]" in text
     assert "app.event(MATCH_ALL_PATTERN)(*ARGS, **LAZY_KWARGS)" in text
-    assert "app.action(MATCH_ALL_PATTERN)(*ARGS, **LAZY_KWARGS)" in text
+    assert "app.action(MATCH_ALL_PATTERN)(ack=action_ack, lazy=[main_response])" in text
 
 
 def test_bolt_view_listener_uses_view_ack_when_not_local_dev():

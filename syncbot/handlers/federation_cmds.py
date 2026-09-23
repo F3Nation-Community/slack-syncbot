@@ -476,10 +476,7 @@ def handle_create_external_connection_submit_ack(body: dict, client: WebClient, 
     return _wait_modal_ack(
         title="Create Connection",
         callback_id=actions.CONFIG_CREATE_EXTERNAL_CONNECTION_SUBMIT,
-        text=(
-            ":globe_with_meridians: Creating the connection. Please be patient, this could take a while. "
-            "You can close this and wait for a DM."
-        ),
+        dm=True,
         private_metadata=json.dumps(payload),
     )
 
@@ -729,7 +726,13 @@ def handle_join_external_connection_review_ack(body: dict, client: WebClient, co
     )
     if not workspace_ids:
         return _allowlist_field_error(actions.CONFIG_JOIN_EXTERNAL_WORKSPACES)
-    return None
+    raw_meta = helpers.safe_get(body, "view", "private_metadata")
+    return _wait_modal_ack(
+        title="Join Connection",
+        callback_id=actions.CONFIG_JOIN_EXTERNAL_CONNECTION_REVIEW,
+        dm=False,
+        private_metadata=raw_meta if isinstance(raw_meta, str) else None,
+    )
 
 
 def handle_join_external_connection_review(
@@ -756,11 +759,11 @@ def handle_join_external_connection_review(
 
     payload = federation.parse_federation_code(code_text)
     if not payload:
-        _dm_actor(
-            client,
-            body,
-            ":warning: That connection code is invalid or was tampered with. Ask the other admin to create a new one.",
+        invalid_code = (
+            ":warning: That connection code is invalid or was tampered with. Ask the other admin to create a new one."
         )
+        _dm_actor(client, body, invalid_code)
+        _close_modal_done(client, body, invalid_code)
         return
 
     remote_url = payload["webhook_url"]
@@ -779,11 +782,11 @@ def handle_join_external_connection_review(
     )
     if not result or not result.get("ok"):
         log_error("federation_connect_failed", remote_url=remote_url, result=result)
-        _dm_actor(
-            client,
-            body,
-            f":warning: Could not connect to `{remote_name}`. Check that federation is enabled there and try again.",
+        connect_failed = (
+            f":warning: Could not connect to `{remote_name}`. Check that federation is enabled there and try again."
         )
+        _dm_actor(client, body, connect_failed)
+        _close_modal_done(client, body, connect_failed)
         return
 
     remote_public_key = result.get("public_key", "")
@@ -832,6 +835,7 @@ def handle_join_external_connection_review(
 
     acting_user_id = helpers.get_user_id_from_body(body)
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=acting_user_id)
+    _close_modal_done(client, body, ":white_check_mark: Connection finished.")
 
 
 def handle_edit_external_connection(

@@ -1,14 +1,13 @@
 """Sync management handlers — Home tab, auth, membership leave, DB reset."""
 
-import time
 from logging import Logger
 
 from slack_sdk.web import WebClient
 
 import builders
-import constants
 import helpers
 from db import DbManager, schemas
+from handlers._common import _update_wait_modal
 from logger import log_critical, log_info, log_warning
 from slack import actions, orm
 
@@ -93,12 +92,11 @@ def handle_refresh_home(
     """Handle the Refresh button on the Home tab.
 
     Available to everyone so a non-admin can reload Home after revoking
-    Authorize SyncBot. Uses content hash and cached blocks: full refresh only
-    when data changed. When hash matches and within 60s cooldown, re-publishes
-    with a cooldown message. Rebuilds this user's Home from the DB; workspace
-    names refresh at most daily when a workspace is loaded, not via an
-    instance-wide ``team_info`` sweep. After Home is published, pulses External
-    Connections (allowlist/snapshot) so Refresh is not Home-only.
+    Authorize SyncBot. When the content hash matches the cached Home, Refresh
+    does nothing. Otherwise it rebuilds this user's Home from the DB.
+    Workspace names refresh at most daily when a workspace is loaded, not via
+    an instance-wide ``team_info`` sweep. After Home is published, pulses
+    External Connections (allowlist/snapshot) so Refresh is not Home-only.
     """
     team_id = helpers.get_team_id_from_body(body)
     user_id = helpers.get_user_id_from_body(body)
@@ -121,25 +119,8 @@ def handle_refresh_home(
     )
     hash_key = builders.home_tab_hash_key(team_id, user_id)
     blocks_key = f"home_tab_blocks:{team_id}:{user_id}"
-    refresh_at_key = f"refresh_at:home:{team_id}:{user_id}"
 
-    action, cached_blocks, remaining = helpers.refresh_cooldown_check(
-        current_hash, hash_key, blocks_key, refresh_at_key
-    )
-    cooldown_sec = getattr(constants, "REFRESH_COOLDOWN_SECONDS", 60)
-
-    if action == "cooldown" and cached_blocks is not None and remaining is not None:
-        refresh_idx = helpers.index_of_block_with_action(cached_blocks, actions.CONFIG_REFRESH_HOME)
-        blocks_with_message = helpers.inject_cooldown_message(cached_blocks, refresh_idx, remaining)
-        client.views_publish(user_id=user_id, view={"type": "home", "blocks": blocks_with_message})
-        helpers.remember_home_viewer(team_id, user_id)
-        _pulse_after_home()
-        return
-    if action == "cached" and cached_blocks is not None:
-        client.views_publish(user_id=user_id, view={"type": "home", "blocks": cached_blocks})
-        helpers.remember_home_viewer(team_id, user_id)
-        helpers._cache_set(refresh_at_key, time.monotonic(), ttl=cooldown_sec * 2)
-        _pulse_after_home()
+    if helpers.cached_home_blocks(current_hash, hash_key, blocks_key) is not None:
         return
 
     # Names refresh at most daily in get_workspace_record / _maybe_refresh_workspace_name.
@@ -157,7 +138,7 @@ def handle_refresh_home(
     if block_dicts is None:
         return
     client.views_publish(user_id=user_id, view={"type": "home", "blocks": block_dicts})
-    helpers.refresh_after_full(hash_key, blocks_key, refresh_at_key, current_hash, block_dicts)
+    helpers.refresh_after_full(hash_key, blocks_key, current_hash, block_dicts)
     _pulse_after_home()
 
 
@@ -229,8 +210,9 @@ def handle_db_reset(
     if not trigger_id:
         return
 
-    orm.open_or_push_view(
+    orm.update_opened_view(
         client,
+        body,
         trigger_id,
         {
             "type": "modal",
@@ -263,7 +245,6 @@ def handle_db_reset(
                 },
             ],
         },
-        body=body,
     )
 
 
@@ -285,30 +266,7 @@ def handle_db_reset_proceed(
     if not user_id or not helpers.is_workspace_admin(client, user_id):
         return
 
-    # Update the modal to a "done" state so the user can close it (Slack only allows
-    # closing modals via view_submission, not block_actions, so we replace the view).
-    view_id = helpers.safe_get(body, "view", "id")
-    if view_id:
-        try:
-            client.views_update(
-                view_id=view_id,
-                view={
-                    "type": "modal",
-                    "title": {"type": "plain_text", "text": "Reset Complete"},
-                    "close": {"type": "plain_text", "text": "Close"},
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": ":skull_and_crossbones: You can close this now.",
-                            },
-                        },
-                    ],
-                },
-            )
-        except Exception as e:
-            log_warning("db_reset_modal_update_failed", error=str(e))
+    _update_wait_modal(client, body, title="Yikes! Reset Database?", dm=False)
 
     log_critical("db_reset_triggered", user_id=user_id)
 
@@ -318,21 +276,29 @@ def handle_db_reset_proceed(
 
     helpers.clear_all_caches()
 
+    reset_done = "*Database Has Been Reset!*\nPlease reinstall SyncBot in your Workspace."
+    view_id = helpers.safe_get(body, "view", "id")
+    if view_id:
+        try:
+            client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "Reset Complete"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": reset_done}}],
+                },
+            )
+        except Exception as e:
+            log_warning("db_reset_modal_update_failed", error=str(e))
+
     if team_id and user_id:
         try:
             client.views_publish(
                 user_id=user_id,
                 view={
                     "type": "home",
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "*Database Has Been Reset!*\nPlease reinstall SyncBot in your Workspace.",
-                            },
-                        }
-                    ],
+                    "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": reset_done}}],
                 },
             )
         except Exception as e:

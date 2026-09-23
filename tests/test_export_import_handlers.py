@@ -89,6 +89,8 @@ class TestBackupRestoreSubmitValidation:
         assert "Unsupported backup version" in resp["errors"][actions.CONFIG_BACKUP_RESTORE_JSON_INPUT]
 
     def test_syncbot_version_label_is_not_a_gate(self):
+        from handlers._common import _STAY_WAIT_TEXT
+
         client = MagicMock()
         body = {
             "user": {"id": "U1"},
@@ -117,7 +119,11 @@ class TestBackupRestoreSubmitValidation:
         ):
             resp = handle_backup_restore_submit_ack(body, client, context={})
 
-        assert resp is None
+        assert resp["response_action"] == "update"
+        assert resp["view"]["title"]["text"] == "Backup / Restore"
+        assert resp["view"]["close"]["text"] == "Close"
+        assert "submit" not in resp["view"]
+        assert resp["view"]["blocks"][0]["text"]["text"] == _STAY_WAIT_TEXT
 
 
 class TestHandleBackupRestorePrimaryWorkspace:
@@ -134,7 +140,7 @@ class TestHandleBackupRestorePrimaryWorkspace:
         ):
             handle_backup_restore(body, client, MagicMock(), {})
 
-        client.views_open.assert_not_called()
+        client.views_update.assert_not_called()
 
 
 class TestDataMigrationModal:
@@ -149,7 +155,7 @@ class TestDataMigrationModal:
             patch("handlers.export_import._primary_workspace_code_tick", return_value="`Workspace A`"),
         ):
             handle_data_migration(body, client, MagicMock(), {})
-        view = client.views_open.call_args.kwargs["view"]
+        view = client.views_update.call_args.kwargs["view"]
         text = str(view)
         assert ":outbox_tray: Export" in text
         assert ":link: Export and Request Connection" in text
@@ -162,6 +168,7 @@ class TestDataMigrationModal:
     def test_export_confirms_in_modal_after_dm(self):
         from types import SimpleNamespace
 
+        from handlers._common import _DM_WAIT_TEXT
         from handlers.export_import import handle_data_migration_export
 
         client = MagicMock()
@@ -178,7 +185,7 @@ class TestDataMigrationModal:
         assert [name for name, _a, _k in client.method_calls[:2]] == ["views_update", "files_upload_v2"]
         view = client.views_update.call_args.kwargs["view"]
         assert view["close"]["text"] == "Close"
-        assert "Check your SyncBot DMs" in view["blocks"][0]["text"]["text"]
+        assert view["blocks"][0]["text"]["text"] == _DM_WAIT_TEXT
         assert view.get("submit") is None
 
 
@@ -483,15 +490,15 @@ class TestDataMigrationImportConnect:
         connect.assert_not_called()
 
     def test_review_ack_keeps_wait_modal(self):
+        from handlers._common import _DM_WAIT_TEXT
         from handlers.export_import import handle_data_migration_review_ack
 
         result = handle_data_migration_review_ack({}, MagicMock(), {})
         assert result["response_action"] == "update"
         assert result["view"]["title"]["text"] == "Confirm Import"
+        assert result["view"]["close"]["text"] == "Close"
         assert "submit" not in result["view"]
-        text = json.dumps(result["view"])
-        assert "Please be patient" in text
-        assert "wait for a DM" in text
+        assert result["view"]["blocks"][0]["text"]["text"] == _DM_WAIT_TEXT
 
     def test_review_import_dms_when_finished(self):
         from types import SimpleNamespace

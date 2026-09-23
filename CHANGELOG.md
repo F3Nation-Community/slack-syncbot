@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [Unreleased]
+
+### Fixed
+
+- Button modals open in the ack and fill in afterward
+- Refresh should do nothing when Home has not changed
+- Slow modals say you can close and SyncBot will DM, or to stay until the work finishes
 
 ## [1.7.0] - 2026-09-22
 

@@ -40,24 +40,85 @@ def _parse_private_metadata(body: dict) -> dict:
         return {}
 
 
+_DM_WAIT_TEXT = "You can close this now. SyncBot will DM you when complete."
+_STAY_WAIT_TEXT = "Please wait for this to complete."
+
+
+def _wait_modal_view(
+    *,
+    title: str,
+    dm: bool,
+    text: str | None = None,
+    callback_id: str | None = None,
+    private_metadata: str | None = None,
+) -> dict[str, Any]:
+    """Close-only modal shown while slow work runs."""
+    body = text if text is not None else (_DM_WAIT_TEXT if dm else _STAY_WAIT_TEXT)
+    view: dict[str, Any] = {
+        "type": "modal",
+        "title": {"type": "plain_text", "text": title},
+        "close": {"type": "plain_text", "text": "Close"},
+        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": body}}],
+    }
+    if callback_id is not None:
+        view["callback_id"] = callback_id
+    if private_metadata is not None:
+        view["private_metadata"] = private_metadata
+    return view
+
+
 def _wait_modal_ack(
     *,
     title: str,
     callback_id: str,
-    text: str,
+    dm: bool,
+    text: str | None = None,
     private_metadata: str | None = None,
 ) -> dict:
-    """Keep the modal open with Close only while slow work runs, then DM."""
-    view: dict[str, Any] = {
-        "type": "modal",
-        "callback_id": callback_id,
-        "title": {"type": "plain_text", "text": title},
-        "close": {"type": "plain_text", "text": "Close"},
-        "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": text}}],
+    """Ack payload that replaces the open modal with the wait view.
+
+    View submissions return this dict. A block action's return value is ignored,
+    so buttons use :func:`_update_wait_modal` instead.
+    """
+    return {
+        "response_action": "update",
+        "view": _wait_modal_view(
+            title=title,
+            dm=dm,
+            text=text,
+            callback_id=callback_id,
+            private_metadata=private_metadata,
+        ),
     }
-    if private_metadata is not None:
-        view["private_metadata"] = private_metadata
-    return {"response_action": "update", "view": view}
+
+
+def _update_wait_modal(
+    client,
+    body: dict,
+    *,
+    title: str,
+    dm: bool,
+    text: str | None = None,
+    callback_id: str | None = None,
+    private_metadata: str | None = None,
+) -> None:
+    """Replace the open modal with the wait view."""
+    view_id = helpers.safe_get(body, "view", "id")
+    if not view_id:
+        return
+    try:
+        client.views_update(
+            view_id=view_id,
+            view=_wait_modal_view(
+                title=title,
+                dm=dm,
+                text=text,
+                callback_id=callback_id,
+                private_metadata=private_metadata,
+            ),
+        )
+    except Exception as exc:
+        log_warning("modal_wait_update_failed", error=str(exc))
 
 
 def _close_modal_done(client, body: dict, message: str) -> None:
@@ -67,7 +128,7 @@ def _close_modal_done(client, body: dict, message: str) -> None:
     rather than using the modal's submit button, which Slack renders in the
     theme colour and cannot be styled red. A block action cannot close a modal
     (only a view submission can), so once the work is done we swap the view for
-    a "you can close this" screen, mirroring the database-reset flow.
+    a close-only screen.
     """
     view_id = helpers.safe_get(body, "view", "id")
     if not view_id:

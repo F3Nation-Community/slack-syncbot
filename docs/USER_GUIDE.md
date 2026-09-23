@@ -128,8 +128,8 @@ If a workspace uninstalls SyncBot, group memberships and syncs are paused (not d
 Admins open **User Mapping** from a group on the Home tab. It opens as a modal with the mappings already saved in SyncBot. Unmapped people appear first.
 
 - **Edit** uses Slack’s native user picker to map someone by hand.
-- **Auto Map Now** compares emails (and unique display names) in the member directory and writes a mapping whenever exactly one person in the other workspace matches. It does not crawl Slack’s full member list. While it runs, the button is **Mapping users...**. When it finishes, the list and a last-run line update in the same modal (for example, “Last run on September 2, 2026 with 20 new found”). **0 new found** means this run found nothing new in the current directory data, not that every person is mapped.
-- **Refresh List** reloads the list from the database and brings **Auto Map Now** back if the modal stuck on Mapping users... after a timeout. Incomplete lists usually mean the directory is still filling in (for example after a join).
+- **Auto Map Now** compares emails (and unique display names) in the member directory and writes a mapping whenever exactly one person in the other workspace matches. It does not crawl Slack’s full member list. While it runs, the modal asks you to wait until it finishes. When it finishes, the list and a last-run line update in the same modal (for example, “Last run on September 2, 2026 with 20 new found”). **0 new found** means this run found nothing new in the current directory data, not that every person is mapped.
+- **Refresh List** reloads the list from the database. Incomplete lists usually mean the directory is still filling in (for example after a join).
 - The first synced message or reaction from an unmapped author can also create a mapping from that person’s directory email, or one target `users.lookupByEmail` if the directory has no unique hit. **Auto Map Now** still fills in everyone else.
 
 In synced messages (same-instance and External Connections):
@@ -140,7 +140,7 @@ In synced messages (same-instance and External Connections):
 
 ## Refresh Behavior
 
-The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. It rebuilds this Home tab first, then refreshes External Connection allowlists (the same pulse keep-warm uses). To keep API usage low, repeated clicks with no data changes are handled lightly: a 60-second cooldown applies, and when nothing has changed the app reuses cached content and shows "No new data. Wait __ seconds before refreshing again." After a deploy, remembered Home tabs update on their own; you should not need to click Refresh twice to wake the app. User Mapping’s **Refresh List** only reloads that modal from saved mappings.
+The Home tab has a **Refresh** button in **SyncBot Configuration** for everyone, not only admins. It rebuilds this Home tab when something has changed, then refreshes External Connection allowlists (the same pulse keep-warm uses). When nothing has changed, Refresh does nothing. After a deploy, remembered Home tabs update on their own; you should not need to click Refresh twice to wake the app. User Mapping’s **Refresh List** only reloads that modal from saved mappings.
 
 ## Media Sync
 
@@ -175,7 +175,7 @@ Workspaces running their own SyncBot can connect from **External Connections** o
 **Create External Connection** (primary-workspace admin):
 
 1. Name the connection and pick which of this instance's Workspaces the other SyncBot may see. The primary Workspace does not have to be on that list.
-2. SyncBot shows the signed connection code in the modal and DMs a copy (24 hours). The code is signed, so the webhook URL and primary Team ID cannot be swapped in transit. This can take a while (especially **Approve and Create**, which also signs the migration file). The modal asks you to be patient; you can Close and wait for the DM.
+2. SyncBot shows the signed connection code in the modal and DMs a copy (24 hours). The code is signed, so the webhook URL and primary Team ID cannot be swapped in transit. Creating the code can be slow (especially **Approve and Create**, which also signs the migration file). The modal stays open with Close, and SyncBot DMs you when the code is ready.
 3. Home lists that connection immediately: Trust Status `Waiting`, Local Workspaces as you selected, Remote Workspaces `None yet`. **Show Connection Code**, **Edit Connection**, and **Cancel Connection** sit on that row. After 24 hours without a join, the waiting row drops off.
 
 **Join External Connection:** paste the code, review the name, primary Workspace (display only), Team ID, URL, and fingerprint, pick your own allowed Workspaces, and click **Join**.

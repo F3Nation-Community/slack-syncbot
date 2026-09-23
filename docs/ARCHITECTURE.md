@@ -505,16 +505,16 @@ flowchart LR
 To keep database and Slack API usage low on Home and User Mapping:
 
 - **Home content hash** — A minimal set of DB queries computes a hash of the data that drives Home (groups and their names, members, syncs and their titles, pending invites, External Connections — peers, allowlists, remote stubs, waiting codes — and whether that person has authorized SyncBot). If the hash matches the last full refresh, the app skips expensive work. Completing OAuth also publishes Home for that user (same `views.publish` path as a successful Refresh). For non-managers the hash is only that authorize payload, not groups and syncs, so a member clicking **Refresh** does not rebuild the whole workspace.
-- **Cached Home blocks** — After a full refresh, the built Block Kit payload is cached under `home_tab_hash:{team_id}:{user_id}` / `home_tab_blocks:{team_id}:{user_id}`. When the hash matches, the app re-publishes that cached view with one `views.publish` instead of re-running all DB and Slack calls.
-- **60-second Home cooldown** — If the user clicks Refresh again within 60 seconds and the hash is unchanged, the app re-publishes the cached view with a message: "No new data. Wait __ seconds before refreshing again."
+- **Cached Home blocks** — After a full refresh, the built Block Kit payload is cached under `home_tab_hash:{team_id}:{user_id}` / `home_tab_blocks:{team_id}:{user_id}`. Opening Home re-publishes that cached view with one `views.publish` when the hash matches. Refresh does nothing when the hash matches.
 - **Home push is acting user + invalidation** — `refresh_home_tab_for_workspace` invalidates the Home hash/blocks prefix for that Slack workspace, then (when `user_id` is set) publishes Home for that person only.
   - It does **not** call `get_admin_ids` / `users.list` to fan out to every admin.
   - Other people rebuild on the next `app_home_opened` or their own Refresh.
   - Partner workspaces in the same group are invalidate-only unless the handler has a user on that workspace.
   - Inbound federation is invalidate-only (no `views.publish`). `/teams` pauses this peer's stubs that left the allowlist.
-- **User Mapping is a modal** — Opening User Mapping `views.open`s the current DB mapping list only (no seed/map/crawl on the `trigger_id` path). Mapping never replaces the Home tab with `views.publish`.
+- **Button modals** — The ack opens a close-only Loading view, with no database read and no `users.info`. The work phase fills that view. Edit Mapping is the only push. If the handler does not fill the view, it becomes a close-only denial. A failed open does not DM the user.
+- **User Mapping is a modal** — The work phase fills the Loading view from the current DB mapping list. There is no seed, map, or directory crawl on open. Mapping never replaces the Home tab with `views.publish`.
   - Slack caps modals at 100 blocks, so the list paginates with Previous/Next.
-  - **Auto Map Now** is a lazy job: cheap `views.update` to **Mapping users...**, seed from existing `user_directory` rows, map with `allow_slack_email_lookup=False` (no per-user Slack lookups), store `last_auto_map` on `workspace_settings`, then `views.update` the list and last-run line via `view_id`.
+  - **Auto Map Now** is a lazy job: cheap `views.update` to a close-only wait view, seed from existing `user_directory` rows, map with `allow_slack_email_lookup=False` (no per-user Slack lookups), store `last_auto_map` on `workspace_settings`, then `views.update` the list and last-run line via `view_id`.
   - **Refresh List** rebuilds from DB only and always restores Auto Map Now.
   - An unmapped author on a synced message or reaction may be mapped on the fly by target directory email, then one `users.lookupByEmail` (`ensure_mapped_target_user_id`) without crawling `users.list`.
   - Scheduled directory crawl / auto-map is future infra. Group join seeds stubs only.
