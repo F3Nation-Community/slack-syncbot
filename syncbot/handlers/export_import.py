@@ -1,6 +1,5 @@
 """Backup/Restore and Data Migration handlers (modals and submissions)."""
 
-import contextlib
 import json
 import logging
 import os
@@ -13,7 +12,7 @@ import builders
 import constants
 import helpers
 from db import DbManager, schemas
-from handlers._common import _close_modal_done, _wait_modal_ack
+from handlers._common import _close_modal_done, _update_wait_modal, _wait_modal_ack
 from helpers import export_import as ei
 from helpers.workspace import invalidate_fed_ws_for_sync_cache
 from logger import log_debug, log_error, log_warning
@@ -167,6 +166,13 @@ def handle_backup_download(
         return
     if not helpers.is_backup_visible_for_workspace(helpers.get_team_id_from_body(body)):
         return
+    _update_wait_modal(
+        client,
+        body,
+        title="Backup / Restore",
+        callback_id=actions.CONFIG_BACKUP_RESTORE_SUBMIT,
+        dm=True,
+    )
     try:
         payload = ei.build_full_backup()
         json_str = json.dumps(payload, default=ei._json_serializer, indent=2)
@@ -179,28 +185,11 @@ def handle_backup_download(
         )
     except Exception as e:
         log_error("backup_download_failed", error=str(e), exc_info=True)
-        return
-
-    view_id = helpers.safe_get(body, "view", "id")
-    if view_id:
-        with contextlib.suppress(Exception):
-            client.views_update(
-                view_id=view_id,
-                view={
-                    "type": "modal",
-                    "title": {"type": "plain_text", "text": "Backup / Restore"},
-                    "close": {"type": "plain_text", "text": "Close"},
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": ":white_check_mark: *Backup Sent!*\n\nCheck your SyncBot DMs to download the backup file.",
-                            },
-                        },
-                    ],
-                },
-            )
+        _close_modal_done(
+            client,
+            body,
+            ":warning: SyncBot could not send the backup file. Try Download again.",
+        )
 
 
 def handle_backup_restore_submit_ack(
@@ -208,7 +197,7 @@ def handle_backup_restore_submit_ack(
     client: WebClient,
     context: dict,
 ) -> dict | None:
-    """Ack phase: validate upload; return errors, push confirm modal, or ``None`` to close."""
+    """Ack phase: validate upload; return errors, push confirm modal, or the wait view."""
     user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return None
@@ -308,7 +297,11 @@ def handle_backup_restore_submit_ack(
             },
         }
 
-    return None
+    return _wait_modal_ack(
+        title="Backup / Restore",
+        callback_id=actions.CONFIG_BACKUP_RESTORE_SUBMIT,
+        dm=False,
+    )
 
 
 def handle_backup_restore_submit_work(
@@ -317,7 +310,7 @@ def handle_backup_restore_submit_work(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Lazy work phase: run restore after modal closed (happy path)."""
+    """Lazy work phase: run restore after the ack shows the wait modal."""
     user_id = helpers.get_user_id_from_body(body)
     if not _is_admin(client, user_id, body):
         return
@@ -354,7 +347,7 @@ def handle_backup_restore_submit_work(
     if not hmac_ok or not key_ok:
         return
 
-    _do_restore(data, client, user_id)
+    _finish_restore(data, client, body, user_id)
 
 
 def handle_backup_restore_proceed(
@@ -375,7 +368,18 @@ def handle_backup_restore_proceed(
     if not data:
         log_warning("backup_restore_proceed", user_id=user_id)
         return
-    _do_restore(data, client, user_id)
+    _update_wait_modal(client, body, title="Confirm Restore", dm=False)
+    _finish_restore(data, client, body, user_id)
+
+
+def _finish_restore(data: dict, client: WebClient, body: dict, user_id: str) -> None:
+    """Run restore, then replace the wait modal with the outcome."""
+    try:
+        _do_restore(data, client, user_id)
+    except Exception:
+        _close_modal_done(client, body, ":warning: Restore failed. Try Backup / Restore again.")
+        return
+    _close_modal_done(client, body, ":white_check_mark: Restore finished.")
 
 
 def _do_restore(data: dict, client: WebClient, user_id: str) -> None:
@@ -513,10 +517,12 @@ def handle_data_migration_export(
     workspace_record = helpers.get_workspace_record(team_id, body, context, client)
     if not workspace_record:
         return
-    _close_modal_done(
+    _update_wait_modal(
         client,
         body,
-        ":outbox_tray: Check your SyncBot DMs for the migration file. You can close this now.",
+        title="Data Migration",
+        callback_id=actions.CONFIG_DATA_MIGRATION_SUBMIT,
+        dm=True,
     )
     try:
         payload = ei.build_migration_export(workspace_record.id, include_source_instance=False)
@@ -1147,9 +1153,6 @@ def handle_data_migration_submit_ack(
     }
 
 
-_IMPORT_WAIT_TEXT = (
-    ":package: Importing. Please be patient, this could take a while. You can close this and wait for a DM."
-)
 _IMPORT_DONE_TEXT = ":white_check_mark: Import finished. Refresh Home to see Groups and Connections."
 _IMPORT_FAIL_TEXT = ":warning: Import failed. Try Data Migration again."
 _IMPORT_EXPIRED_TEXT = ":warning: That import expired. Open Data Migration and upload the file again."
@@ -1160,7 +1163,7 @@ def handle_data_migration_review_ack(body: dict, client: WebClient, context: dic
     return _wait_modal_ack(
         title="Confirm Import",
         callback_id=actions.CONFIG_DATA_MIGRATION_REVIEW,
-        text=_IMPORT_WAIT_TEXT,
+        dm=True,
     )
 
 

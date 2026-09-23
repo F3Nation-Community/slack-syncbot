@@ -247,7 +247,6 @@ class TestUserMappingModal:
         seed.assert_not_called()
         auto_map.assert_not_called()
         update_modal.assert_called_once()
-        assert update_modal.call_args.kwargs.get("mapping_in_progress", False) is False
 
     def test_auto_map_updates_modal_mapping_then_results(self):
         workspace = SimpleNamespace(id=10, team_id="T1")
@@ -269,6 +268,7 @@ class TestUserMappingModal:
             patch("handlers.users.set_last_auto_map") as set_last,
             patch("handlers.users.helpers._cache_delete_prefix"),
             patch("handlers.users.update_user_mapping_modal") as update_modal,
+            patch("handlers.users._update_wait_modal") as wait_modal,
             patch("handlers.users.builders.refresh_home_tab_for_workspace") as refresh_home,
         ):
             handle_user_mapping_auto_map(body, client, MagicMock(), {})
@@ -278,9 +278,9 @@ class TestUserMappingModal:
         assert auto_map.call_args.kwargs.get("allow_slack_email_lookup") is False
         set_last.assert_called_once()
         assert set_last.call_args.kwargs["newly_matched"] == 20
-        assert update_modal.call_count >= 2
-        assert update_modal.call_args_list[0].kwargs.get("mapping_in_progress") is True
-        assert update_modal.call_args_list[-1].kwargs.get("mapping_in_progress", False) is False
+        wait_modal.assert_called_once()
+        assert wait_modal.call_args.kwargs["dm"] is False
+        update_modal.assert_called_once()
         refresh_home.assert_not_called()
         cache_set.assert_called()
 
@@ -296,31 +296,15 @@ class TestUserMappingModal:
             patch("handlers.users.seed_mappings_for_workspace") as seed,
             patch("handlers.users.helpers.run_auto_map_for_workspace") as auto_map,
             patch("handlers.users.update_user_mapping_modal") as update_modal,
+            patch("handlers.users._update_wait_modal") as wait_modal,
         ):
             handle_user_mapping_auto_map(body, MagicMock(), MagicMock(), {})
 
         seed.assert_not_called()
         auto_map.assert_not_called()
-        update_modal.assert_called_once()
-        assert update_modal.call_args.kwargs.get("mapping_in_progress") is True
-
-    def test_mapping_in_progress_is_short_placeholder(self):
-        workspace = SimpleNamespace(id=1, team_id="T1")
-        with (
-            patch("builders.user_mapping.DbManager.find_records", return_value=[]),
-            patch("builders.user_mapping.get_last_auto_map", return_value=None),
-            patch("builders.user_mapping._linked_workspace_ids") as linked,
-            patch("builders.user_mapping._collect_mappings") as collect,
-        ):
-            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5, mapping_in_progress=True)
-
-        linked.assert_not_called()
-        collect.assert_not_called()
-        blob = str(BlockView(blocks=blocks).as_form_field())
-        assert "Mapping users..." in blob
-        assert "user_mapping_auto_map" not in blob
-        assert "Refresh List" in blob
-        assert "Users with the same email across Workspaces can be found by clicking Auto Map Now." in blob
+        update_modal.assert_not_called()
+        wait_modal.assert_called_once()
+        assert wait_modal.call_args.kwargs["dm"] is False
 
     def test_idle_list_uses_map_copy(self):
         workspace = SimpleNamespace(id=1, team_id="T1")
@@ -330,7 +314,7 @@ class TestUserMappingModal:
             patch("builders.user_mapping._linked_workspace_ids", return_value=set()),
             patch("builders.user_mapping._collect_mappings", return_value=[]),
         ):
-            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5, mapping_in_progress=False)
+            blocks, _meta = build_user_mapping_list_blocks(workspace, group_id=5)
 
         blob = str(BlockView(blocks=blocks).as_form_field())
         assert "Auto Map Now" in blob

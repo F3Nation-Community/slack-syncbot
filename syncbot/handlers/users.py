@@ -14,7 +14,7 @@ from builders.user_mapping import (
     update_user_mapping_modal,
 )
 from db import DbManager, schemas
-from handlers._common import _get_authorized_workspace, _parse_private_metadata
+from handlers._common import _get_authorized_workspace, _parse_private_metadata, _update_wait_modal
 from helpers.user_map import (
     _AUTO_MAP_RUNNING_TTL,
     auto_map_running_key,
@@ -164,26 +164,22 @@ def handle_user_mapping_auto_map(
     group_id, page = _group_and_page_from_body(body)
     running_key = auto_map_running_key(workspace_record.id)
     if helpers._cache_get(running_key):
-        update_user_mapping_modal(
+        _update_wait_modal(
             client,
-            view_id,
-            workspace_record,
-            group_id=group_id,
-            page=page,
-            context=context,
-            mapping_in_progress=True,
+            body,
+            title="User Mapping",
+            callback_id=actions.CONFIG_USER_MAPPING_MODAL,
+            dm=False,
         )
         return
 
     helpers._cache_set(running_key, True, ttl=_AUTO_MAP_RUNNING_TTL)
-    update_user_mapping_modal(
+    _update_wait_modal(
         client,
-        view_id,
-        workspace_record,
-        group_id=group_id,
-        page=page,
-        context=context,
-        mapping_in_progress=True,
+        body,
+        title="User Mapping",
+        callback_id=actions.CONFIG_USER_MAPPING_MODAL,
+        dm=False,
     )
 
     newly_matched = 0

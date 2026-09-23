@@ -603,6 +603,7 @@ class TestExternalConnectionModals:
         assert "https://peer.example/api/federation" in text
 
     def test_create_ack_keeps_modal_open(self):
+        from handlers._common import _DM_WAIT_TEXT
         from handlers.federation_cmds import handle_create_external_connection_submit_ack
 
         body = {
@@ -625,11 +626,45 @@ class TestExternalConnectionModals:
         assert result["view"]["title"]["text"] == "Create Connection"
         assert "submit" not in result["view"]
         text = json.dumps(result["view"])
-        assert "Please be patient" in text
-        assert "wait for a DM" in text
+        assert _DM_WAIT_TEXT in text
+        assert result["view"]["close"]["text"] == "Close"
         meta = json.loads(result["view"]["private_metadata"])
         assert meta["label"] == "Partner Org"
         assert meta["workspace_ids"] == [1]
+
+    def test_join_review_ack_keeps_wait_modal(self):
+        from handlers._common import _STAY_WAIT_TEXT
+        from handlers.federation_cmds import handle_join_external_connection_review_ack
+
+        body = {
+            "view": {
+                "private_metadata": json.dumps({"code": "FED-ABCD"}),
+                "state": {
+                    "values": {
+                        "select_join_external_workspaces": {
+                            "select_join_external_workspaces": {"selected_options": [{"value": "1"}]}
+                        }
+                    }
+                },
+            }
+        }
+        with patch("handlers.federation_cmds.helpers.federation_enabled", return_value=True):
+            result = handle_join_external_connection_review_ack(body, MagicMock(), {})
+        assert result["response_action"] == "update"
+        assert result["view"]["title"]["text"] == "Join Connection"
+        assert result["view"]["close"]["text"] == "Close"
+        assert "submit" not in result["view"]
+        assert result["view"]["blocks"][0]["text"]["text"] == _STAY_WAIT_TEXT
+        assert json.loads(result["view"]["private_metadata"])["code"] == "FED-ABCD"
+
+    def test_join_review_ack_still_errors_without_allowlist(self):
+        from handlers.federation_cmds import handle_join_external_connection_review_ack
+
+        body = {"view": {"state": {"values": {}}}}
+        with patch("handlers.federation_cmds.helpers.federation_enabled", return_value=True):
+            result = handle_join_external_connection_review_ack(body, MagicMock(), {})
+        assert result["response_action"] == "errors"
+        assert "select_join_external_workspaces" in result["errors"]
 
     def test_create_ack_preserves_request_id(self):
         from handlers.federation_cmds import handle_create_external_connection_submit_ack

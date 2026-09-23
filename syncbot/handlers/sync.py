@@ -7,6 +7,7 @@ from slack_sdk.web import WebClient
 import builders
 import helpers
 from db import DbManager, schemas
+from handlers._common import _update_wait_modal
 from logger import log_critical, log_info, log_warning
 from slack import actions, orm
 
@@ -265,30 +266,7 @@ def handle_db_reset_proceed(
     if not user_id or not helpers.is_workspace_admin(client, user_id):
         return
 
-    # Update the modal to a "done" state so the user can close it (Slack only allows
-    # closing modals via view_submission, not block_actions, so we replace the view).
-    view_id = helpers.safe_get(body, "view", "id")
-    if view_id:
-        try:
-            client.views_update(
-                view_id=view_id,
-                view={
-                    "type": "modal",
-                    "title": {"type": "plain_text", "text": "Reset Complete"},
-                    "close": {"type": "plain_text", "text": "Close"},
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": ":skull_and_crossbones: You can close this now.",
-                            },
-                        },
-                    ],
-                },
-            )
-        except Exception as e:
-            log_warning("db_reset_modal_update_failed", error=str(e))
+    _update_wait_modal(client, body, title="Yikes! Reset Database?", dm=False)
 
     log_critical("db_reset_triggered", user_id=user_id)
 
@@ -298,21 +276,29 @@ def handle_db_reset_proceed(
 
     helpers.clear_all_caches()
 
+    reset_done = "*Database Has Been Reset!*\nPlease reinstall SyncBot in your Workspace."
+    view_id = helpers.safe_get(body, "view", "id")
+    if view_id:
+        try:
+            client.views_update(
+                view_id=view_id,
+                view={
+                    "type": "modal",
+                    "title": {"type": "plain_text", "text": "Reset Complete"},
+                    "close": {"type": "plain_text", "text": "Close"},
+                    "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": reset_done}}],
+                },
+            )
+        except Exception as e:
+            log_warning("db_reset_modal_update_failed", error=str(e))
+
     if team_id and user_id:
         try:
             client.views_publish(
                 user_id=user_id,
                 view={
                     "type": "home",
-                    "blocks": [
-                        {
-                            "type": "section",
-                            "text": {
-                                "type": "mrkdwn",
-                                "text": "*Database Has Been Reset!*\nPlease reinstall SyncBot in your Workspace.",
-                            },
-                        }
-                    ],
+                    "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": reset_done}}],
                 },
             )
         except Exception as e:

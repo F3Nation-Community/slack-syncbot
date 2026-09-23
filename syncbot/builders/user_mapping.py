@@ -113,25 +113,12 @@ def build_user_mapping_list_blocks(
     group_id: int | None = None,
     page: int = 0,
     context: dict | None = None,
-    mapping_in_progress: bool = False,
 ) -> tuple[list[orm.BaseBlock], dict[str, Any]]:
     """Build list-modal blocks and private_metadata for the current page."""
     group_name = _group_display_name(group_id)
     group_val = str(group_id) if group_id else "0"
     meta = {"group_id": group_id or 0, "page": max(0, page)}
     last_line = format_last_auto_map_line(get_last_auto_map(workspace_record.id))
-
-    if mapping_in_progress:
-        blocks: list[orm.BaseBlock] = [
-            header(f"User Mapping: {group_name}"),
-            block_context(_INTRO),
-            block_context("*Mapping users...*"),
-            blocks_actions(
-                button(":arrows_counterclockwise: Refresh List", actions.CONFIG_USER_MAPPING_REFRESH, value=group_val)
-            ),
-            block_context(last_line),
-        ]
-        return blocks, meta
 
     linked = _linked_workspace_ids(workspace_record.id, group_id)
     all_mappings = _collect_mappings(workspace_record.id, linked)
@@ -198,7 +185,6 @@ def update_user_mapping_modal(
     group_id: int | None = None,
     page: int = 0,
     context: dict | None = None,
-    mapping_in_progress: bool = False,
 ) -> None:
     """Replace the User Mapping modal contents with the current list page."""
     blocks, meta = build_user_mapping_list_blocks(
@@ -206,7 +192,6 @@ def update_user_mapping_modal(
         group_id=group_id,
         page=page,
         context=context,
-        mapping_in_progress=mapping_in_progress,
     )
     try:
         orm.BlockView(blocks=blocks).update_modal(
