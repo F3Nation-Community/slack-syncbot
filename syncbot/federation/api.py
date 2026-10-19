@@ -42,7 +42,7 @@ from helpers.workspace import (
     soft_delete_workspace,
 )
 from helpers.workspace_kind import (
-    heal_workspace_to_stub,
+    convert_workspace_to_stub,
     is_local_workspace,
     mark_peer_untrusted,
     peer_is_trusted,
@@ -87,7 +87,7 @@ def _inbound_channel(
     """
     resolved = _resolve_channel_for_federated(channel_id, fed_ws, require_active=True)
     if not resolved:
-        _heal_inbound_channel_target(channel_id, fed_ws)
+        _convert_pending_target_to_stub(channel_id, fed_ws)
         resolved = _resolve_channel_for_federated(channel_id, fed_ws, require_active=True)
     if not resolved:
         log_debug(
@@ -686,7 +686,7 @@ def _consume_pairing_code(pairing) -> None:
     federation.delete_pairing_code(pairing.id)
 
 
-def _heal_pair_teams(body: dict, pairing, peer: schemas.Instance) -> dict[str, str]:
+def _convert_pair_teams_to_stubs(body: dict, pairing, peer: schemas.Instance) -> dict[str, str]:
     """Heal every team_id in a pair request plus its subject hint."""
     team_ids: list[str] = []
     if isinstance(body.get("team_id"), str):
@@ -696,7 +696,7 @@ def _heal_pair_teams(body: dict, pairing, peer: schemas.Instance) -> dict[str, s
         team_ids.append(str(subject_team_id).strip())
     results: dict[str, str] = {}
     for team_id in dict.fromkeys(team_id for team_id in team_ids if team_id):
-        results[team_id] = heal_workspace_to_stub(team_id, peer.instance_id, source="pair")
+        results[team_id] = convert_workspace_to_stub(team_id, peer.instance_id, source="pair")
     return results
 
 
@@ -719,7 +719,7 @@ def _create_response_from_rows(rows: list) -> dict | None:
     }
 
 
-def _heal_inbound_channel_target(channel_id: str, peer: schemas.Instance) -> None:
+def _convert_pending_target_to_stub(channel_id: str, peer: schemas.Instance) -> None:
     """Heal a pending soft-deleted target before active-channel resolution."""
     channels = DbManager.find_records(
         schemas.SyncChannel,
@@ -739,7 +739,7 @@ def _heal_inbound_channel_target(channel_id: str, peer: schemas.Instance) -> Non
         if not pending:
             continue
         if workspace.deleted_at is not None:
-            heal_workspace_to_stub(workspace.team_id, peer.instance_id, source="inbound")
+            convert_workspace_to_stub(workspace.team_id, peer.instance_id, source="inbound")
 
 
 def _accept_inbound_workspace(workspace: schemas.Workspace, peer: schemas.Instance) -> bool:
@@ -903,7 +903,7 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
                     schemas.Instance.updated_at: datetime.now(UTC).replace(tzinfo=None),
                 },
             )
-            results = _heal_pair_teams(body, pairing, existing)
+            results = _convert_pair_teams_to_stubs(body, pairing, existing)
             _apply_pairing_allowlist(pairing, existing)
             _consume_pairing_code(pairing)
             invalidate_fed_ws_for_sync_cache()
@@ -973,7 +973,7 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
 
     # Heal matching teams. A live install stays live and records a pending stub.
     # subject_team_id is only a hint; process every team_id.
-    results = _heal_pair_teams(body, pairing, fed_ws)
+    results = _convert_pair_teams_to_stubs(body, pairing, fed_ws)
     _apply_pairing_allowlist(pairing, fed_ws)
 
     _consume_pairing_code(pairing)
@@ -1463,7 +1463,7 @@ def handle_teams(body: dict, peer: schemas.Instance) -> tuple[int, dict]:
 
     results: dict[str, str] = {}
     for team_id in dict.fromkeys(seen):
-        result = heal_workspace_to_stub(team_id, peer.instance_id, source="teams")
+        result = convert_workspace_to_stub(team_id, peer.instance_id, source="teams")
         if result == "missing":
             stub = ensure_stub_workspace(
                 team_id=team_id,
@@ -1514,7 +1514,7 @@ def handle_teams(body: dict, peer: schemas.Instance) -> tuple[int, dict]:
             continue
         soft_delete_workspace(workspace)
 
-    log_debug("teams_heal", peer_instance_id=peer.instance_id, heal=results)
+    log_debug("teams_convert", peer_instance_id=peer.instance_id, heal=results)
     invalidate_fed_ws_for_sync_cache()
     _invalidate_local_homes()
     if blocked:

@@ -163,11 +163,11 @@ class TestInstallationStoreBlock:
 
 
 class TestHealBlocked:
-    def test_heal_workspace_to_local_refused_when_blocked(self):
-        from helpers.workspace_kind import heal_workspace_to_local
+    def test_convert_workspace_to_local_refused_when_blocked(self):
+        from helpers.workspace_kind import convert_workspace_to_local
 
         with patch("helpers.settings.team_id_is_blocked", return_value=True):
-            assert heal_workspace_to_local("T0123456789", source="import") == "blocked"
+            assert convert_workspace_to_local("T0123456789", source="import") == "blocked"
 
 
 class TestOAuthFailureBlocked:

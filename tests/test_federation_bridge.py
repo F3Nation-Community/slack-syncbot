@@ -166,16 +166,16 @@ def test_workspace_kind_local_vs_stub(real_db):
     assert not can_promote(peer["stub"])
 
 
-def test_heal_stub_logs_refused_live(real_db, caplog):
+def test_workspace_convert_logs_refused_live(real_db, caplog):
     import logging
 
-    from helpers.workspace_kind import heal_workspace_to_stub
+    from helpers.workspace_kind import convert_workspace_to_stub
 
     peer = _seed_peer()
     with caplog.at_level(logging.DEBUG, logger="syncbot"):
-        result = heal_workspace_to_stub(peer["local"].team_id, peer["fed"].instance_id)
+        result = convert_workspace_to_stub(peer["local"].team_id, peer["fed"].instance_id)
     assert result == "refused_live"
-    assert any(record.message == "heal_stub" for record in caplog.records)
+    assert any(record.message == "workspace_convert" for record in caplog.records)
 
 
 def test_inbound_skip_logs_channel_not_found(real_db, caplog):
@@ -384,14 +384,14 @@ def test_pair_logs_heal_results(real_db, monkeypatch, caplog):
     assert pair_recs[0].__dict__.get("direction") == "inbound"
     assert (pair_recs[0].__dict__.get("heal") or {}).get(peer["local"].team_id) == "refused_live"
     assert any(
-        record.message == "heal_stub"
+        record.message == "workspace_convert"
         and record.__dict__.get("source") == "pair"
         and record.__dict__.get("result") == "refused_live"
         for record in caplog.records
     )
 
 
-def test_teams_heal_logs_source(real_db, caplog):
+def test_teams_convert_logs_source(real_db, caplog):
     import logging
 
     from federation.api import handle_teams
@@ -404,8 +404,10 @@ def test_teams_heal_logs_source(real_db, caplog):
         )
     assert status == 200
     assert resp["results"][peer["local"].team_id] == "refused_live"
-    assert any(record.message == "heal_stub" and record.__dict__.get("source") == "teams" for record in caplog.records)
-    assert any(record.message == "teams_heal" for record in caplog.records)
+    assert any(
+        record.message == "workspace_convert" and record.__dict__.get("source") == "teams" for record in caplog.records
+    )
+    assert any(record.message == "teams_convert" for record in caplog.records)
 
 
 def test_teams_refreshes_stub_name_and_primary_workspace(real_db):
@@ -445,7 +447,8 @@ def test_ensure_stub_logs_created(real_db, caplog):
     assert workspace is not None
     assert workspace.team_id == "TNEWSTUB"
     assert any(
-        record.message == "heal_stub" and record.__dict__.get("result") == "created" for record in caplog.records
+        record.message == "workspace_convert" and record.__dict__.get("result") == "created"
+        for record in caplog.records
     )
 
 
@@ -1596,7 +1599,7 @@ def test_reinstall_reclaims_stub_to_local(real_db):
     peer = _seed_peer()
     _sync, _local_sc, stub_sc = _seed_shared_sync(peer)
     client = MagicMock()
-    with patch("helpers.workspace.heal_restored_sync_channels", return_value={}):
+    with patch("helpers.workspace.resume_restored_sync_channels", return_value={}):
         restored = get_workspace_record(peer["stub"].team_id, {"team": {"id": peer["stub"].team_id}}, {}, client)
     assert is_local_workspace(restored)
     assert restored.deleted_at is None

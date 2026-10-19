@@ -21,8 +21,8 @@ Usage::
     set_correlation_id()         # call at the start of each request
     emit_metric("messages_synced", 3, sync_id="abc")
     log_debug("message_skip", reason="file_echo", channel="C123")
-    log_info("heal_stub", result="converted", team_id="T1")
-    # or log("heal_stub", "INFO", result="converted", team_id="T1")
+    log_info("workspace_convert", result="converted", team_id="T1")
+    # or log("workspace_convert", "INFO", result="converted", team_id="T1")
 """
 
 import json
