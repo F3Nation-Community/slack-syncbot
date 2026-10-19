@@ -659,9 +659,9 @@ def import_migration_data(
     now = datetime.now(UTC)
     this_workspace = get_workspace_by_id(workspace_id)
     if this_workspace and this_workspace.team_id:
-        from helpers.workspace_kind import heal_workspace_to_local
+        from helpers.workspace_kind import convert_workspace_to_local
 
-        heal_workspace_to_local(this_workspace.team_id, source="import")
+        convert_workspace_to_local(this_workspace.team_id, source="import")
         this_workspace = get_workspace_by_id(workspace_id)
         if this_workspace:
             workspace_id = this_workspace.id

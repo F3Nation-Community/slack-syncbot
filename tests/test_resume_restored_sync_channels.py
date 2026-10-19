@@ -19,7 +19,7 @@ def real_db(tmp_path):
     from db import initialize_database
     from helpers._cache import clear_all_caches
 
-    url = f"sqlite:///{tmp_path / 'heal_sync.db'}"
+    url = f"sqlite:///{tmp_path / 'resume_restored_sync.db'}"
     old_engine = db_mod.GLOBAL_ENGINE
     old_session = db_mod.GLOBAL_SESSION
     old_schema = db_mod.GLOBAL_SCHEMA
@@ -117,7 +117,7 @@ def _client_for(is_private: bool, is_member: bool) -> MagicMock:
 
 def test_heal_public_channel_pauses_joins_and_resumes(real_db):
     from db import DbManager, schemas
-    from helpers.workspace import heal_restored_sync_channels
+    from helpers.workspace import resume_restored_sync_channels
 
     local, _other, here, _there = _seed_pair()
     client = _client_for(is_private=False, is_member=False)
@@ -134,7 +134,7 @@ def test_heal_public_channel_pauses_joins_and_resumes(real_db):
         patch("helpers.workspace.WebClient", return_value=MagicMock()),
         patch("federation.replicate.replicate_sync_channel_upsert"),
     ):
-        counts = heal_restored_sync_channels(local, client=client, source="reinstall")
+        counts = resume_restored_sync_channels(local, client=client, source="reinstall")
 
     client.conversations_join.assert_called_once_with(channel="CHERE")
     row = DbManager.get_record(schemas.SyncChannel, id=here.id)
@@ -150,7 +150,7 @@ def test_heal_public_channel_pauses_joins_and_resumes(real_db):
 
 def test_heal_private_channel_stays_paused_with_notice(real_db):
     from db import DbManager, schemas
-    from helpers.workspace import heal_restored_sync_channels
+    from helpers.workspace import resume_restored_sync_channels
 
     local, _other, here, _there = _seed_pair()
     client = _client_for(is_private=True, is_member=False)
@@ -167,7 +167,7 @@ def test_heal_private_channel_stays_paused_with_notice(real_db):
         patch("helpers.workspace.WebClient", return_value=MagicMock()),
         patch("federation.replicate.replicate_sync_channel_upsert"),
     ):
-        counts = heal_restored_sync_channels(local, client=client, source="import")
+        counts = resume_restored_sync_channels(local, client=client, source="import")
 
     client.conversations_join.assert_not_called()
     row = DbManager.get_record(schemas.SyncChannel, id=here.id)
@@ -180,7 +180,7 @@ def test_heal_private_channel_stays_paused_with_notice(real_db):
 
 def test_heal_skips_public_channel_already_joined(real_db):
     from db import DbManager, schemas
-    from helpers.workspace import heal_restored_sync_channels
+    from helpers.workspace import resume_restored_sync_channels
 
     local, _other, here, _there = _seed_pair()
     client = _client_for(is_private=False, is_member=True)
@@ -189,7 +189,7 @@ def test_heal_skips_public_channel_already_joined(real_db):
         patch("helpers.notifications.notify_synced_channels") as notify,
         patch("helpers.notifications.notify_admins_dm") as admin_dm,
     ):
-        counts = heal_restored_sync_channels(local, client=client, source="import")
+        counts = resume_restored_sync_channels(local, client=client, source="import")
 
     client.conversations_join.assert_not_called()
     notify.assert_not_called()

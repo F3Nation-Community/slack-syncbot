@@ -399,7 +399,7 @@ def _set_restored_channel_status(sync_channel: schemas.SyncChannel, status: str,
             replicate_sync_channel_upsert(sync, group, sync_channel, workspace)
     except Exception:
         log_warning(
-            "heal_sync_channels_replicate_failed",
+            "resume_restored_sync_channels_replicate_failed",
             channel_id=sync_channel.channel_id,
             workspace_id=workspace.id,
         )
@@ -438,7 +438,7 @@ def notify_sibling_sync_channels(workspace: schemas.Workspace, sync_id: int, mes
             )
 
 
-def heal_restored_sync_channels(
+def resume_restored_sync_channels(
     workspace: schemas.Workspace,
     *,
     client: WebClient,
@@ -461,7 +461,7 @@ def heal_restored_sync_channels(
     if workspace is None or not is_local_workspace(workspace) or not getattr(workspace, "id", None):
         return counts
     if client is None:
-        log_debug("heal_sync_channels", reason="missing_client", workspace_id=workspace.id, source=source)
+        log_debug("resume_restored_sync_channels", reason="missing_client", workspace_id=workspace.id, source=source)
         return counts
 
     ws_name = resolve_workspace_name(workspace)
@@ -515,7 +515,7 @@ def heal_restored_sync_channels(
                 joined = True
             except ConversationAccessError as exc:
                 log_warning(
-                    "heal_sync_channels_join_failed",
+                    "resume_restored_sync_channels_join_failed",
                     channel_id=channel_id,
                     workspace_id=workspace.id,
                     error=str(exc),
@@ -593,13 +593,13 @@ def heal_restored_sync_channels(
                     notify_admins_dm(WebClient(token=token), admin_msg, team_id=member_ws.team_id)
                 except Exception as exc:
                     log_warning(
-                        "heal_sync_channels_admin_dm_failed",
+                        "resume_restored_sync_channels_admin_dm_failed",
                         workspace_id=peer.workspace_id,
                         error=str(exc),
                     )
 
     log_info(
-        "heal_sync_channels",
+        "resume_restored_sync_channels",
         source=source,
         workspace_id=workspace.id,
         team_id=workspace.team_id,
@@ -618,19 +618,19 @@ def _restore_workspace(
 ) -> schemas.Workspace:
     """Reclaim a paused or stub workspace as a live install on this instance."""
     from helpers.settings import team_id_is_blocked
-    from helpers.workspace_kind import heal_workspace_to_local
+    from helpers.workspace_kind import convert_workspace_to_local
 
     if team_id_is_blocked(workspace_record.team_id):
         log_info("workspace_restore_blocked", team_id=workspace_record.team_id)
         return workspace_record
 
     new_token = safe_get(context, "bot_token")
-    heal_workspace_to_local(workspace_record.team_id, source="reinstall")
+    convert_workspace_to_local(workspace_record.team_id, source="reinstall")
     if new_token:
         _maybe_refresh_bot_token(workspace_record, context)
 
     workspace_record = DbManager.get_record(schemas.Workspace, id=workspace_record.team_id)
-    heal_restored_sync_channels(
+    resume_restored_sync_channels(
         workspace_record,
         client=client,
         context=context,
@@ -892,9 +892,9 @@ def _soft_delete_uninstalled_workspace(team_id: str) -> None:
         peer = DbManager.get_record(schemas.Instance, id=pending.instance_id)
         if not peer or peer.status != "active" or peer.trust_status != "trusted":
             continue
-        from helpers.workspace_kind import heal_workspace_to_stub
+        from helpers.workspace_kind import convert_workspace_to_stub
 
-        if heal_workspace_to_stub(team_id, peer.instance_id, source="uninstall") == "converted":
+        if convert_workspace_to_stub(team_id, peer.instance_id, source="uninstall") == "converted":
             from helpers.sync_participation import invalidate_sync_fanout_for_syncs
 
             invalidate_sync_fanout_for_syncs(c.sync_id for c in my_channels)

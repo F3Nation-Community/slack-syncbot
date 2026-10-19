@@ -17,7 +17,7 @@ from db import DbManager, schemas
 from helpers._cache import _cache_get, _cache_set
 from logger import log_debug, log_error
 
-HealResult = Literal["converted", "refused_live", "missing", "already_stub", "already_local", "blocked"]
+ConvertResult = Literal["converted", "refused_live", "missing", "already_stub", "already_local", "blocked"]
 
 
 def _self_instance_id() -> str:
@@ -247,7 +247,7 @@ def _unpause_memberships_and_channels(workspace_id: int) -> None:
             )
 
 
-def _log_heal(
+def _log_convert(
     result: str,
     team_id: str,
     peer_instance_id: str,
@@ -264,7 +264,7 @@ def _log_heal(
         fields["workspace_id"] = workspace_id
     if source:
         fields["source"] = source
-    log_debug("heal_stub", **fields)
+    log_debug("workspace_convert", **fields)
 
 
 def notify_live_workspace_conflict(team_id: str, peer_instance_id: str) -> None:
@@ -325,32 +325,32 @@ def notify_live_workspace_conflict(team_id: str, peer_instance_id: str) -> None:
     )
 
 
-def heal_workspace_to_local(team_id: str, *, source: str | None = None) -> HealResult:
+def convert_workspace_to_local(team_id: str, *, source: str | None = None) -> ConvertResult:
     """Convert *team_id* to a live install on this instance. PostMeta stays.
 
-    Reverse of :func:`heal_workspace_to_stub`: reinstall, import, or reclaim
+    Reverse of :func:`convert_workspace_to_stub`: reinstall, import, or reclaim
     after Leave Connection.
     """
     team_id = str(team_id).strip()
     if not team_id:
-        _log_heal("missing", team_id, "", source=source)
+        _log_convert("missing", team_id, "", source=source)
         return "missing"
 
     from helpers.settings import team_id_is_blocked
 
     if team_id_is_blocked(team_id):
-        _log_heal("blocked", team_id, "", source=source)
+        _log_convert("blocked", team_id, "", source=source)
         return "blocked"
 
     workspace = DbManager.get_record(schemas.Workspace, id=team_id)
     if not workspace:
-        _log_heal("missing", team_id, "", source=source)
+        _log_convert("missing", team_id, "", source=source)
         return "missing"
 
     self_id = _self_instance_id()
     if is_local_workspace(workspace):
         _clear_pending_stub(workspace.id)
-        _log_heal(
+        _log_convert(
             "already_local",
             team_id,
             self_id,
@@ -369,7 +369,7 @@ def heal_workspace_to_local(team_id: str, *, source: str | None = None) -> HealR
     )
     _unpause_memberships_and_channels(workspace.id)
     _clear_pending_stub(workspace.id)
-    _log_heal(
+    _log_convert(
         "converted",
         team_id,
         self_id,
@@ -379,12 +379,12 @@ def heal_workspace_to_local(team_id: str, *, source: str | None = None) -> HealR
     return "converted"
 
 
-def heal_workspace_to_stub(
+def convert_workspace_to_stub(
     team_id: str,
     peer_instance_id: str,
     *,
     source: str | None = None,
-) -> HealResult:
+) -> ConvertResult:
     """Convert *team_id* to a stub for *peer_instance_id*, or refuse if still live.
 
     Returns:
@@ -396,12 +396,12 @@ def heal_workspace_to_stub(
     team_id = str(team_id).strip()
     peer_instance_id = str(peer_instance_id).strip()
     if not team_id or not peer_instance_id:
-        _log_heal("missing", team_id, peer_instance_id, source=source)
+        _log_convert("missing", team_id, peer_instance_id, source=source)
         return "missing"
 
     workspace = DbManager.get_record(schemas.Workspace, id=team_id)
     if not workspace:
-        _log_heal("missing", team_id, peer_instance_id, source=source)
+        _log_convert("missing", team_id, peer_instance_id, source=source)
         return "missing"
 
     if (
@@ -410,7 +410,7 @@ def heal_workspace_to_stub(
         and peer_instance_id != _self_instance_id()
     ):
         _clear_pending_stub(workspace.id, peer_instance_id)
-        _log_heal(
+        _log_convert(
             "already_stub",
             team_id,
             peer_instance_id,
@@ -422,7 +422,7 @@ def heal_workspace_to_stub(
     if is_local_workspace(workspace):
         _remember_pending_stub(workspace.id, peer_instance_id)
         notify_live_workspace_conflict(team_id, peer_instance_id)
-        _log_heal(
+        _log_convert(
             "refused_live",
             team_id,
             peer_instance_id,
@@ -442,7 +442,7 @@ def heal_workspace_to_stub(
     )
     _unpause_memberships_and_channels(workspace.id)
     _clear_pending_stub(workspace.id, peer_instance_id)
-    _log_heal(
+    _log_convert(
         "converted",
         team_id,
         peer_instance_id,
@@ -469,11 +469,11 @@ def ensure_stub_workspace(
     name = (workspace_name or team_id)[:100]
 
     if existing and is_local_workspace(existing):
-        heal_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub")
+        convert_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub")
         return existing
 
     if existing:
-        result = heal_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub")
+        result = convert_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub")
         if result in ("converted", "already_stub"):
             updates: dict[Any, Any] = {}
             if workspace_name and existing.workspace_name != name:
@@ -490,7 +490,7 @@ def ensure_stub_workspace(
         deleted_at=None,
     )
     created = DbManager.create_record(stub)
-    _log_heal(
+    _log_convert(
         "created",
         team_id,
         peer_instance_id,
@@ -517,5 +517,5 @@ def restore_peer_stubs(peer_instance_id: str, *, source: str = "pair") -> dict[s
         team_id = str(getattr(workspace, "team_id", None) or "").strip()
         if not team_id:
             continue
-        results[team_id] = heal_workspace_to_stub(team_id, peer_instance_id, source=source)
+        results[team_id] = convert_workspace_to_stub(team_id, peer_instance_id, source=source)
     return results

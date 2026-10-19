@@ -1080,7 +1080,7 @@ def _run_migration_import(
         team_id_to_workspace_id=team_id_to_workspace_id,
     )
     restored = helpers.get_workspace_by_id(workspace_record.id) or workspace_record
-    helpers.heal_restored_sync_channels(
+    helpers.resume_restored_sync_channels(
         restored,
         client=client,
         acting_user_id=acting_user_id,
