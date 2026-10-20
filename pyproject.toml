@@ -18,7 +18,7 @@ pymysql = "^1.1.2"
 psycopg2-binary = "^2.9"
 cryptography = "^50.0.0"
 requests = "^2.32.0"
-
+urllib3 = ">=2.8.0,<3" # required by requests and boto3 (through botocore)
 
 [tool.poetry.group.dev.dependencies]
 boto3 = "^1.28.57"
