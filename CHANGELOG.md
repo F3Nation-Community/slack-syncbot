@@ -16,18 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Disband keeps history for the retention period unless its checkbox deletes it now
 - Archive pauses a Sync until the Channel is unarchived, and a privacy change or a deleted Channel ends it for that Workspace
 - A private Sync ends for that Workspace when the manager who added SyncBot leaves the Channel or private Channels are turned off
-- Give Up Ownership, Promote to Owner, and Cancel Invite ask first
 - Every Sync change posts one notice in each active Channel of the Sync, and the acting Workspace's managers get the details
-- Uninstall posts Pause in every other active Channel; Install, Uninstall, and Migration name that Workspace
-- Leave Group, Remove, Disband, retention, and group membership use the SyncBot Action Notice
-- The Action Notice keeps its title, and the lines under it are one code block
-- A move posts Resume once, and uninstall posts Pause and the Uninstall message once
 - A workspace still installed here posts Install when another instance lists it, and that notice names the app that was installed
 - A migration export leaves out a disbanded group, and an older file does not revive it
-- Settings names the soft-delete retention period, and Pause and Archive do not start that timer
-- Leave Connection's confirm says the remote Workspaces are soft-deleted, and Disband's checkbox deletes history now
-- Home shows each Channel's participation or Paused, its privacy, each member's state, and each Workspace's Group Role
-- Synced Channel details match the rest of Home, and an External Connection URL is its own code-ticked line
 - The Slack app manifest adds Channel leave and delete events and drops usergroups:read
 
 ### Fixed
@@ -37,7 +28,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A moved Workspace keeps its group role, is listed once, and its Syncs wait until the old instance releases it
 - A message across an External Connection lands on the same Sync as on one instance, and a retry does not post twice
 - Join Sync and Home Refresh no longer show a connection error while an External Connection syncs
-- A modal Slack rejects shows Slack's error instead of a lock message
 - Leave Group drops the Owner role, so the remaining Owner can disband
 
 ## [1.7.1] - 2026-09-23
