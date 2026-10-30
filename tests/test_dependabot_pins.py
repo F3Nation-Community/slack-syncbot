@@ -66,6 +66,8 @@ def test_body_table_names_mako_until_the_lock_catches_up(tmp_path: Path) -> None
     behind = _run(tmp_path, "list", LOCK, MAKO_BODY, "")
     assert behind.returncode == 0
     assert behind.stdout.split() == ["mako"]
+    behind_check = _run(tmp_path, "check", LOCK, MAKO_BODY, "")
+    assert behind_check.returncode != 0
 
     caught_up = LOCK.replace('name = "mako"\nversion = "1.4.1"', 'name = "mako"\nversion = "1.4.2"')
     done = _run(tmp_path, "list", caught_up, MAKO_BODY, "")
