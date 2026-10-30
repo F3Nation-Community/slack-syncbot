@@ -10,6 +10,7 @@ import helpers
 from db import DbManager, schemas
 from db.event_claims import run_claimed
 from handlers._common import EventContext
+from helpers.sync_lifecycle import leave_channel_without_sync
 from logger import emit_metric, log_debug, log_error, log_info
 from slack import orm
 
@@ -179,22 +180,6 @@ def _attachment_image_url(att: dict) -> str | None:
         if isinstance(blk, dict) and blk.get("type") == "image" and blk.get("image_url"):
             return str(blk["image_url"])
     return None
-
-
-def _leave_unconfigured_channel(client: WebClient, channel_id: str, user_id: str | None, logger: Logger) -> None:
-    """Tell the channel SyncBot is leaving, then leave."""
-    if not user_id:
-        return
-    try:
-        client.chat_postMessage(
-            channel=channel_id,
-            text=":wave: Hello! I'm SyncBot. I was added to this Channel, but this Channel "
-            "doesn't seem to be part of a Channel Sync. I'm leaving now. Please open the SyncBot Home "
-            "tab to Create Sync or Join Sync.",
-        )
-        client.conversations_leave(channel=channel_id)
-    except Exception as e:
-        log_error("failed_to_notify_and_leave_unconfigured_channel", channel_id=channel_id, error=str(e))
 
 
 def _handle_new_post(
@@ -514,6 +499,26 @@ def _try_handle_reaction_notice_delete(
     return True
 
 
+def _handle_channel_state_subtype(ctx: EventContext, event_subtype: str | None) -> None:
+    """Pause an archive, resume an unarchive, or soft-delete a privacy change."""
+    from helpers.leave_sync import soft_delete_sync_channels
+    from helpers.sync_lifecycle import pause_archived_channel, resume_unarchived_channel
+
+    team_id = ctx.get("team_id")
+    channel_id = ctx.get("channel_id")
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id) if team_id else None
+    if not workspace or not channel_id:
+        return
+    if event_subtype == "channel_convert_to_private":
+        soft_delete_sync_channels(workspace, channel_id, "became_private", is_private=True)
+    elif event_subtype == "channel_convert_to_public":
+        soft_delete_sync_channels(workspace, channel_id, "became_public", is_private=False)
+    elif event_subtype in {"channel_archive", "group_archive"}:
+        pause_archived_channel(workspace, channel_id)
+    elif event_subtype in {"channel_unarchive", "group_unarchive"}:
+        resume_unarchived_channel(workspace, channel_id)
+
+
 def respond_to_message_event(
     body: dict,
     client: WebClient,
@@ -543,8 +548,22 @@ def respond_to_message_event(
             "message_deleted",
         }
     )
+    _CHANNEL_STATE_SUBTYPES = frozenset(
+        {
+            "channel_convert_to_private",
+            "channel_convert_to_public",
+            "channel_archive",
+            "group_archive",
+            "channel_unarchive",
+            "group_unarchive",
+        }
+    )
 
     def _sync_message() -> bool | None:
+        if event_subtype in _CHANNEL_STATE_SUBTYPES:
+            _handle_channel_state_subtype(ctx, event_subtype)
+            return
+
         if event_subtype == "message_deleted" and _try_handle_reaction_notice_delete(body, client, context, ctx):
             return
 
@@ -578,8 +597,11 @@ def respond_to_message_event(
             return
 
         if event_subtype not in _SYNCED_SUBTYPES:
-            log_info(
-                "unhandled_message_subtype", subtype=event_subtype, channel=helpers.safe_get(body, "event", "channel")
+            log_debug(
+                "message_skip",
+                reason="unhandled_subtype",
+                subtype=event_subtype,
+                channel=helpers.safe_get(body, "event", "channel"),
             )
             return
 
@@ -587,8 +609,10 @@ def respond_to_message_event(
         user_id = ctx.get("user_id")
         ts = ctx.get("ts")
         team_id = ctx.get("team_id")
-        if not helpers.channel_has_membership(channel_id):
-            _leave_unconfigured_channel(client, channel_id, user_id, logger)
+        if not helpers.has_channel_sync(channel_id):
+            if user_id:
+                workspace = DbManager.get_record(schemas.Workspace, id=team_id) if team_id else None
+                leave_channel_without_sync(client, channel_id, workspace=workspace)
             return
 
         is_reply = bool(ctx.get("thread_ts"))

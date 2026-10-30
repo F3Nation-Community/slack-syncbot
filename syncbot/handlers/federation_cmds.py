@@ -1305,8 +1305,22 @@ def handle_leave_external_connection_confirm(
         schemas.Workspace,
         [schemas.Workspace.instance_id == peer.instance_id],
     )
+    from helpers.leave_sync import group_name_for_sync_id
+    from helpers.sync_lifecycle import deliver_action_notice
+
     for stub in stubs:
-        helpers.soft_delete_workspace(stub)
+        removed = helpers.soft_delete_workspace(stub)
+        seen: set[int] = set()
+        for row in removed or []:
+            if not getattr(row, "sync_id", None) or row.sync_id in seen:
+                continue
+            seen.add(row.sync_id)
+            deliver_action_notice(
+                stub,
+                row,
+                action="Leave Connection",
+                group_name=group_name_for_sync_id(row.sync_id),
+            )
 
     DbManager.delete_records(
         schemas.FederationWorkspaceAllowlist,

@@ -23,10 +23,26 @@ from builders.home import (
     build_home_tab,
     home_tab_hash_key,
 )
+from helpers.synced_by import Viewer
 from slack import actions, orm
 from slack_manifest_scopes import USER_PERMISSION_GROUPS
 
 WORKSPACE = SimpleNamespace(id=10, team_id="T1", workspace_name="WS", deleted_at=None)
+
+
+def _quiet_viewer() -> Viewer:
+    """A viewer that does not ask Slack. Home tests that only care about the hash pass this."""
+    return Viewer(
+        team_id="T1",
+        user_id="U1",
+        workspace_id=10,
+        is_manager=True,
+        allow_private=False,
+        has_user_token=False,
+        private_channel_ids=None,
+    )
+
+
 AUTHORIZE_URL = "https://syncbot.example.com/slack/install"
 ALL_LABELS = [label for label, _scopes in USER_PERMISSION_GROUPS]
 
@@ -210,6 +226,7 @@ class TestHomeTabAdminGate:
             patch("builders.home.helpers.is_db_reset_visible_for_workspace", return_value=False),
             patch("builders.home.helpers.is_primary_workspace", return_value=False),
             patch("builders.home.helpers.federation_enabled", return_value=False),
+            patch("builders.home.viewer_context", return_value=_quiet_viewer()),
         ):
             return build_home_tab(self.BODY, client, MagicMock(), {}, user_id="U1", return_blocks=True)
 
@@ -218,7 +235,7 @@ class TestHomeTabAdminGate:
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" in text
-        assert "This area of SyncBot is limited to Workspace managers" in text
+        assert "This area of SyncBot is limited to Workspace Admins and Managers" in text
         assert "SyncBot Configuration" in text
         assert "Refresh" in text
         assert "Create Group" not in text
@@ -231,7 +248,7 @@ class TestHomeTabAdminGate:
         text = _text_of(rendered)
 
         assert "Authorize SyncBot" not in text
-        assert "This area of SyncBot is limited to Workspace managers" in text
+        assert "This area of SyncBot is limited to Workspace Admins and Managers" in text
         assert "SyncBot Configuration" in text
         assert "Refresh" in text
         assert "Create Group" not in text
@@ -272,7 +289,7 @@ class TestHomeTabAdminGate:
         assert "Create Sync and Join Sync" in text
         assert "Create Sync or Join Sync" in text
         assert "Publish or Subscribe" not in text
-        assert "This area of SyncBot is limited to Workspace managers" not in text
+        assert "This area of SyncBot is limited to Workspace Admins and Managers" not in text
 
     def test_manager_who_is_fully_authorized_sees_no_authorize_section(self):
         rendered = self._build(is_manager=True, needed=False)
@@ -295,6 +312,7 @@ class TestHomeTabAdminGate:
             patch("builders.home.helpers.is_db_reset_visible_for_workspace", return_value=True),
             patch("builders.home.helpers.is_primary_workspace", return_value=True),
             patch("builders.home.helpers.federation_enabled", return_value=True),
+            patch("builders.home.viewer_context", return_value=_quiet_viewer()),
         ):
             rendered = build_home_tab(self.BODY, client, MagicMock(), {}, user_id="U1", return_blocks=True)
 
@@ -386,6 +404,24 @@ class TestContentHashIsPerUser:
         assert first == second
         groups.assert_not_called()
 
+    def test_manager_hash_changes_when_the_private_channel_set_changes(self):
+        with patch("builders.home.helpers.user_permission_lists", return_value=(ALL_LABELS, [])):
+            one = _home_tab_content_hash(WORKSPACE, "U1", is_manager=True, private_channel_ids=("C1", "C2"))
+            still_some = _home_tab_content_hash(WORKSPACE, "U1", is_manager=True, private_channel_ids=("C2",))
+            same = _home_tab_content_hash(WORKSPACE, "U1", is_manager=True, private_channel_ids=("C2", "C1"))
+            empty = _home_tab_content_hash(WORKSPACE, "U1", is_manager=True, private_channel_ids=())
+            unloaded = _home_tab_content_hash(WORKSPACE, "U1", is_manager=True, private_channel_ids=None)
+
+        assert one != still_some
+        assert one == same
+        assert empty != unloaded
+
+    def test_non_manager_hash_ignores_private_channel_ids(self):
+        with patch("builders.home.helpers.user_permission_lists", return_value=([], ALL_LABELS)):
+            plain = _home_tab_content_hash(WORKSPACE, "U1", is_manager=False)
+            with_ids = _home_tab_content_hash(WORKSPACE, "U1", is_manager=False, private_channel_ids=("C1",))
+        assert plain == with_ids
+
     def test_hash_key_is_scoped_to_the_user_under_the_team_prefix(self):
         """Restore-time invalidation deletes by the ``home_tab_hash:{team_id}`` prefix."""
         key = home_tab_hash_key("T1", "U1")
@@ -406,16 +442,15 @@ class TestRefreshUsesThePerUserKey:
             patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
             patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.sync.viewer_context", return_value=_quiet_viewer()),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.cached_home_blocks", return_value=[]) as check,
             patch("handlers.sync.helpers.remember_home_viewer"),
-            patch("handlers.sync._pulse_after_home") as pulse,
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
         assert check.call_args.args[1] == "home_tab_hash:T1:U1"
         client.views_publish.assert_not_called()
-        pulse.assert_not_called()
 
     def test_cached_home_blocks_matches_only_the_same_hash(self):
         from helpers.refresh import cached_home_blocks
@@ -446,13 +481,13 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.helpers.is_workspace_manager", return_value=False),
             patch("handlers.sync.helpers.is_workspace_admin", return_value=False),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.sync.viewer_context", return_value=_quiet_viewer()),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.cached_home_blocks", return_value=None),
             patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]) as build,
             patch("handlers.sync.helpers.refresh_after_full"),
             patch("handlers.sync.helpers.remember_home_viewer"),
-            patch("handlers.sync._pulse_after_home"),
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
@@ -472,12 +507,12 @@ class TestRefreshIsAllowedForEveryone:
             patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
             patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.sync.viewer_context", return_value=_quiet_viewer()),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="hash"),
             patch("handlers.sync.helpers.cached_home_blocks", return_value=None),
             patch("handlers.sync.DbManager.find_records") as find,
             patch("handlers.sync.builders.build_home_tab", return_value=[{"type": "section"}]),
             patch("handlers.sync.helpers.refresh_after_full"),
-            patch("handlers.sync._pulse_after_home"),
         ):
             handle_refresh_home(body, client, MagicMock(), {})
 
@@ -499,6 +534,7 @@ class TestAppHomeOpenedHashShortCircuit:
             patch("handlers.sync.helpers.is_workspace_admin", return_value=True),
             patch("handlers.sync.helpers.is_workspace_manager", return_value=True),
             patch("handlers.sync.helpers.extra_manager_user_ids", return_value=[]),
+            patch("handlers.sync.viewer_context", return_value=_quiet_viewer()),
             patch("handlers.sync.builders._home_tab_content_hash", return_value="same-hash"),
             patch(
                 "handlers.sync.helpers._cache_get",
@@ -580,7 +616,8 @@ class TestFederationSectionOmitsSelf:
             ":wave: Leave Connection",
         ]
         assert "Partner Org" in text
-        assert "https://peer.example/api/federation" in text
+        assert "URL: `https://peer.example/api/federation`" in text
+        assert ":globe_with_meridians: https://" not in text
         assert "Show Connection Code" not in text
         assert "Trust Status: `Trusted`" in text
         assert "Local Workspaces: `Workspace A`" in text
@@ -802,3 +839,42 @@ class TestGroupSectionButtons:
         me = SimpleNamespace(id=1, workspace_id=10, role="member", joined_at=None)
         rendered = self._rendered_group(members=[me], can_disband=False, is_owner=False, active_owners=[])
         assert "no owner right now" in _text_of(rendered)
+
+    def test_globe_row_offers_promote_and_remove_not_give_up(self):
+        me = SimpleNamespace(id=1, workspace_id=10, role="owner", joined_at=None)
+        other = SimpleNamespace(id=2, workspace_id=20, role="member", joined_at=None)
+        local = SimpleNamespace(id=10, team_id="T1", deleted_at=None)
+        stub = SimpleNamespace(id=20, team_id="T2", deleted_at=None)
+        group = SimpleNamespace(id=5, name="Shared")
+        membership = SimpleNamespace(id=1, workspace_id=10, role="owner")
+        workspace = SimpleNamespace(id=10, team_id="T1")
+        blocks: list = []
+        with (
+            patch("builders.home._get_group_members", return_value=[me, other]),
+            patch("builders.home.helpers.is_workspace_owner", return_value=True),
+            patch("builders.home.helpers.get_active_owners", return_value=[me, SimpleNamespace(id=9)]),
+            patch("builders.home.helpers.can_disband", return_value=(False, "co_owner_exists")),
+            patch("builders.home.DbManager.find_records", return_value=[]),
+            patch(
+                "builders.home._prefetch_group_channel_and_mapping_counts",
+                return_value=({}, {}, {}),
+            ),
+            patch(
+                "builders.home.helpers.get_workspace_by_id",
+                side_effect=lambda workspace_id, context=None: stub if workspace_id == 20 else local,
+            ),
+            patch("builders.home.helpers.is_stub_workspace", side_effect=lambda ws: ws is stub),
+            patch("builders.home.helpers.resolve_workspace_name", return_value="Workspace B"),
+            patch("builders.home._get_workspace_info", return_value={}),
+            patch("builders.home.helpers.can_promote", side_effect=lambda ws: ws is stub or ws is local),
+        ):
+            _build_group_section(blocks, group, membership, workspace)
+        action_sets = [
+            [element["text"]["text"] for element in block["elements"]]
+            for block in _rendered(blocks)
+            if block.get("type") == "actions"
+        ]
+        promote_row = next(row for row in action_sets if any("Promote to Owner" in label for label in row))
+        assert ":eject: Remove from Group" in promote_row
+        assert not any("Give Up Ownership" in label for label in promote_row)
+        assert any("Give Up Ownership" in label for row in action_sets for label in row)

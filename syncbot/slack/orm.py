@@ -10,7 +10,9 @@ from logger import log_debug, log_error
 from slack.actions import MODAL_DENIED_CALLBACK
 
 _MODAL_UPDATED: contextvars.ContextVar[bool] = contextvars.ContextVar("modal_updated", default=False)
+_MODAL_SLACK_ERROR: contextvars.ContextVar[str] = contextvars.ContextVar("modal_slack_error", default="")
 _EXTERNAL_ID_SAFE = re.compile(r"[^A-Za-z0-9_]")
+_MODAL_ERROR_LIMIT = 2500
 
 
 def build_modal_external_id(team_id: str, trigger_id: str) -> str:
@@ -22,6 +24,43 @@ def build_modal_external_id(team_id: str, trigger_id: str) -> str:
 def reset_modal_updated() -> None:
     """Clear the work-phase flag before a modal handler runs."""
     _MODAL_UPDATED.set(False)
+    _MODAL_SLACK_ERROR.set("")
+
+
+def _slack_error_messages(exc: BaseException) -> list[str]:
+    """Slack ``response_metadata.messages`` from a failed Web API call."""
+    resp = getattr(exc, "response", None)
+    meta = None
+    if isinstance(resp, dict):
+        meta = resp.get("response_metadata")
+    else:
+        data = getattr(resp, "data", None)
+        if isinstance(data, dict):
+            meta = data.get("response_metadata")
+        elif resp is not None:
+            try:
+                meta = resp.get("response_metadata")
+            except Exception:
+                meta = None
+    if not isinstance(meta, dict):
+        return []
+    raw = meta.get("messages")
+    if not isinstance(raw, list):
+        return []
+    return [str(item).strip() for item in raw if str(item).strip()]
+
+
+def slack_modal_error_text(exc: BaseException) -> str:
+    """The line a modal shows when Slack rejects ``views.update``."""
+    code = _slack_error_code(exc) or "error"
+    lead = f":warning: Slack could not open this view (`{code}`)."
+    messages = _slack_error_messages(exc)
+    if not messages:
+        return lead
+    detail = "\n".join(messages)
+    if len(detail) > _MODAL_ERROR_LIMIT:
+        detail = detail[: _MODAL_ERROR_LIMIT - 1] + "…"
+    return f"{lead}\n\n{detail}"
 
 
 def modal_was_updated() -> bool:
@@ -66,6 +105,7 @@ def _update_by_external_id(client: Any, external_id: str, view: dict) -> Any | N
             return None
         log_error("modal_update_failed", error=str(exc))
         log_debug("modal_view_payload", view=json.dumps(payload, indent=2))
+        _MODAL_SLACK_ERROR.set(slack_modal_error_text(exc))
         return None
     _mark_modal_updated()
     return result
@@ -78,7 +118,12 @@ def update_opened_view(client: Any, body: dict | None, trigger_id: str, view: di
 
 
 def update_denied_modal(client: Any, body: dict | None, trigger_id: str) -> None:
-    """Replace the loading view when the handler does not fill a modal."""
+    """Replace the loading view when the handler does not fill a modal.
+
+    A Slack ``views.update`` failure shows that error. A handler that returned
+    without one still gets the lock line.
+    """
+    text = _MODAL_SLACK_ERROR.get() or ":lock: You can't open that."
     update_opened_view(
         client,
         body,
@@ -91,7 +136,7 @@ def update_denied_modal(client: Any, body: dict | None, trigger_id: str) -> None
             "blocks": [
                 {
                     "type": "section",
-                    "text": {"type": "mrkdwn", "text": ":lock: You can't open that."},
+                    "text": {"type": "mrkdwn", "text": text},
                 }
             ],
         },
@@ -289,6 +334,44 @@ class RadioButtonsElement(BaseElement):
             if initial_option:
                 j["initial_option"] = initial_option
         return j
+
+    def __make_option(self, option: SelectorOption):
+        return {
+            "text": {"type": "plain_text", "text": option.name, "emoji": True},
+            "value": option.value,
+        }
+
+
+@dataclass
+class CheckboxesElement(BaseElement):
+    """One or more checkboxes. A missing ``selected_options`` list means none are ticked.
+
+    ``action_id`` is for an actions block, which does not pass an action into
+    ``as_form_field``. An input block still passes its own action.
+    """
+
+    options: list[SelectorOption] = None
+    action_id: str = None
+    initial_values: list[str] = None
+
+    def get_selected_value(self, input_data, action):
+        selected = safe_get(input_data, action, action, "selected_options") or []
+        return [option.get("value") for option in selected if isinstance(option, dict) and option.get("value")]
+
+    def as_form_field(self, action: str = None):
+        if not self.options:
+            self.options = as_selector_options(["Default"])
+        option_elements = [self.__make_option(option) for option in self.options]
+        element = {
+            "type": "checkboxes",
+            "action_id": action or self.action_id,
+            "options": option_elements,
+        }
+        if self.initial_values:
+            chosen = [option for option in option_elements if option["value"] in self.initial_values]
+            if chosen:
+                element["initial_options"] = chosen
+        return element
 
     def __make_option(self, option: SelectorOption):
         return {

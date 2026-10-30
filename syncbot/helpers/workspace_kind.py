@@ -7,15 +7,11 @@ token presence.
 
 from __future__ import annotations
 
-import os
 from typing import Any, Literal
 
-from slack_sdk import WebClient
-
-import constants
 from db import DbManager, schemas
 from helpers._cache import _cache_get, _cache_set
-from logger import log_debug, log_error
+from logger import log_debug
 
 ConvertResult = Literal["converted", "refused_live", "missing", "already_stub", "already_local", "blocked"]
 
@@ -119,8 +115,51 @@ def can_dm(workspace: schemas.Workspace | None) -> bool:
 
 
 def can_promote(workspace: schemas.Workspace | None) -> bool:
-    """True when *workspace* can be promoted to group owner (live install only)."""
-    return is_local_workspace(workspace)
+    """True for an active workspace on this instance or another one.
+
+    ``deleted_at`` makes both checks false. A pending invite is not an active
+    membership, so it never reaches a promote button.
+    """
+    return is_local_workspace(workspace) or is_stub_workspace(workspace)
+
+
+def _stub_channel_rows(stub_ids: list[int], *, status: str | None = None) -> list:
+    if not stub_ids:
+        return []
+    filters = [
+        schemas.SyncChannel.workspace_id.in_(stub_ids),
+        schemas.SyncChannel.deleted_at.is_(None),
+    ]
+    if status:
+        filters.append(schemas.SyncChannel.status == status)
+    return DbManager.find_records(schemas.SyncChannel, filters)
+
+
+def _announce_stub_rows(rows: list, *, state: str) -> None:
+    """One action notice per Sync, carried to the other Channels and to the peer."""
+    from helpers.leave_sync import group_name_for_sync_id
+    from helpers.sync_lifecycle import announce_sync_channels, replicate_sync_channel_status
+    from helpers.sync_participation import format_action_notice
+    from helpers.workspace import get_workspace_by_id, resolve_workspace_name
+
+    told: set[tuple[int, int]] = set()
+    action = "Resume" if state == "resumed" else "Pause"
+    for row in rows:
+        workspace = get_workspace_by_id(row.workspace_id)
+        if not workspace or not row.sync_id:
+            continue
+        key = (row.sync_id, row.workspace_id)
+        sentence = format_action_notice(
+            action=action,
+            workspace_name=resolve_workspace_name(workspace),
+            group_name=group_name_for_sync_id(row.sync_id),
+            sync_id=row.sync_id,
+        )
+        if key in told:
+            replicate_sync_channel_status(row, workspace)
+        else:
+            announce_sync_channels(workspace, row, sentence)
+            told.add(key)
 
 
 def mark_peer_trusted(peer: schemas.Instance) -> None:
@@ -140,6 +179,7 @@ def mark_peer_trusted(peer: schemas.Instance) -> None:
         ],
     )
     stub_ids = [ws.id for ws in stubs if ws.id]
+    paused = _stub_channel_rows(stub_ids, status="paused")
     if stub_ids:
         DbManager.update_records(
             schemas.SyncChannel,
@@ -150,6 +190,9 @@ def mark_peer_trusted(peer: schemas.Instance) -> None:
             ],
             {schemas.SyncChannel.status: "active"},
         )
+    for row in paused:
+        row.status = "active"
+    _announce_stub_rows(paused, state="resumed")
 
 
 def mark_peer_untrusted(peer: schemas.Instance) -> None:
@@ -169,6 +212,7 @@ def mark_peer_untrusted(peer: schemas.Instance) -> None:
         ],
     )
     stub_ids = [ws.id for ws in stubs if ws.id]
+    live = [row for row in _stub_channel_rows(stub_ids) if getattr(row, "status", None) != "paused"]
     if stub_ids:
         DbManager.update_records(
             schemas.SyncChannel,
@@ -178,6 +222,9 @@ def mark_peer_untrusted(peer: schemas.Instance) -> None:
             ],
             {schemas.SyncChannel.status: "paused"},
         )
+    for row in live:
+        row.status = "paused"
+    _announce_stub_rows(live, state="on_hold")
 
 
 def _remember_pending_stub(workspace_id: int, peer_instance_id: str) -> None:
@@ -205,8 +252,11 @@ def _clear_pending_stub(workspace_id: int, peer_instance_id: str | None = None) 
     DbManager.delete_records(schemas.FederationPendingStub, filters)
 
 
-def _unpause_memberships_and_channels(workspace_id: int) -> None:
-    """Clear deleted_at on group memberships and sync channels (stub heal, not live restore)."""
+def _restore_memberships_and_channels(workspace_id: int) -> None:
+    """Clear ``deleted_at`` on active group memberships and on ``uninstalled`` Channel rows.
+
+    A ``deleted`` Channel row stays deleted. The caller then pauses and rejoins.
+    """
     soft_memberships = DbManager.find_records(
         schemas.WorkspaceGroupMember,
         [
@@ -234,6 +284,7 @@ def _unpause_memberships_and_channels(workspace_id: int) -> None:
         schemas.SyncChannel,
         [
             schemas.SyncChannel.workspace_id == workspace_id,
+            schemas.SyncChannel.status == "uninstalled",
             schemas.SyncChannel.deleted_at.isnot(None),
         ],
     )
@@ -267,61 +318,29 @@ def _log_convert(
     log_debug("workspace_convert", **fields)
 
 
-def notify_live_workspace_conflict(team_id: str, peer_instance_id: str) -> None:
-    """DM workspace and primary admins once when a peer claims a still-live team."""
+def notify_live_workspace_conflict(
+    team_id: str,
+    peer_instance_id: str,
+    *,
+    app_name: str | None = None,
+) -> None:
+    """DM group-mate managers once when a peer claims a still-live team.
+
+    *app_name* is the Slack app that listed the team. The direct message is sent
+    by this install, and the Acting Manager is that other app.
+    """
     cache_key = f"fed_live_conflict:{team_id}:{peer_instance_id}"
     if _cache_get(cache_key):
         return
     _cache_set(cache_key, True, ttl=86400)
+    from helpers.notifications import notify_install_while_live
 
-    from helpers.notifications import notify_admins_dm
-    from helpers.workspace import get_bot_token
-
-    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
-    if not workspace:
-        return
-    workspace_name = workspace.workspace_name or workspace.team_id
-    message = (
-        f":globe_with_meridians: `{workspace_name}` is also installed on a connected SyncBot instance.\n"
-        ":warning: This install remains active and remote federation traffic for this Workspace is blocked. "
-        "Uninstall this SyncBot if the Workspace should move to the connected instance."
-    )
-
-    targets = [workspace]
-    primary_team_id = (os.environ.get(constants.PRIMARY_WORKSPACE) or "").strip()
-    if primary_team_id and primary_team_id != team_id:
-        primary = DbManager.get_record(schemas.Workspace, id=primary_team_id)
-        if primary:
-            targets.append(primary)
-
-    notified = 0
-    for target in targets:
-        if target.deleted_at is not None:
-            continue
-        token = get_bot_token(target)
-        if not token:
-            continue
-        try:
-            notify_admins_dm(
-                WebClient(token=token),
-                message,
-                include_managers=False,
-                team_id=target.team_id,
-            )
-            notified += 1
-        except Exception:
-            log_error(
-                "federation_live_conflict_dm_failed",
-                team_id=team_id,
-                notification_team_id=target.team_id,
-                peer_instance_id=peer_instance_id,
-                exc_info=True,
-            )
+    notify_install_while_live(team_id, peer_instance_id, app_name=app_name)
     log_debug(
         "live_conflict",
         team_id=team_id,
         peer_instance_id=peer_instance_id,
-        notified=notified,
+        notified=1,
     )
 
 
@@ -367,7 +386,7 @@ def convert_workspace_to_local(team_id: str, *, source: str | None = None) -> Co
             schemas.Workspace.deleted_at: None,
         },
     )
-    _unpause_memberships_and_channels(workspace.id)
+    _restore_memberships_and_channels(workspace.id)
     _clear_pending_stub(workspace.id)
     _log_convert(
         "converted",
@@ -376,6 +395,10 @@ def convert_workspace_to_local(team_id: str, *, source: str | None = None) -> Co
         workspace_id=workspace.id,
         source=source,
     )
+    from helpers.notifications import forget_migration_notices, forget_once
+
+    forget_migration_notices(team_id)
+    forget_once(f"uninstall_notice:{team_id}")
     return "converted"
 
 
@@ -384,6 +407,8 @@ def convert_workspace_to_stub(
     peer_instance_id: str,
     *,
     source: str | None = None,
+    migration_notice: bool = True,
+    app_name: str | None = None,
 ) -> ConvertResult:
     """Convert *team_id* to a stub for *peer_instance_id*, or refuse if still live.
 
@@ -421,7 +446,7 @@ def convert_workspace_to_stub(
 
     if is_local_workspace(workspace):
         _remember_pending_stub(workspace.id, peer_instance_id)
-        notify_live_workspace_conflict(team_id, peer_instance_id)
+        notify_live_workspace_conflict(team_id, peer_instance_id, app_name=app_name)
         _log_convert(
             "refused_live",
             team_id,
@@ -440,7 +465,7 @@ def convert_workspace_to_stub(
             schemas.Workspace.deleted_at: None,
         },
     )
-    _unpause_memberships_and_channels(workspace.id)
+    _restore_memberships_and_channels(workspace.id)
     _clear_pending_stub(workspace.id, peer_instance_id)
     _log_convert(
         "converted",
@@ -449,6 +474,10 @@ def convert_workspace_to_stub(
         workspace_id=workspace.id,
         source=source,
     )
+    if migration_notice:
+        from helpers.notifications import notify_migration
+
+        notify_migration(team_id, peer_instance_id)
     return "converted"
 
 
@@ -469,11 +498,11 @@ def ensure_stub_workspace(
     name = (workspace_name or team_id)[:100]
 
     if existing and is_local_workspace(existing):
-        convert_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub")
+        convert_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub", migration_notice=False)
         return existing
 
     if existing:
-        result = convert_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub")
+        result = convert_workspace_to_stub(team_id, peer_instance_id, source="ensure_stub", migration_notice=False)
         if result in ("converted", "already_stub"):
             updates: dict[Any, Any] = {}
             if workspace_name and existing.workspace_name != name:
@@ -517,5 +546,37 @@ def restore_peer_stubs(peer_instance_id: str, *, source: str = "pair") -> dict[s
         team_id = str(getattr(workspace, "team_id", None) or "").strip()
         if not team_id:
             continue
-        results[team_id] = convert_workspace_to_stub(team_id, peer_instance_id, source=source)
+        results[team_id] = convert_workspace_to_stub(
+            team_id,
+            peer_instance_id,
+            source=source,
+            migration_notice=False,
+        )
+        if results[team_id] not in {"converted", "already_stub"}:
+            continue
+        from helpers.leave_sync import group_name_for_sync_id
+        from helpers.sync_lifecycle import deliver_action_notice
+
+        restored = DbManager.get_record(schemas.Workspace, id=team_id)
+        channels = DbManager.find_records(
+            schemas.SyncChannel,
+            [
+                schemas.SyncChannel.workspace_id == workspace.id,
+                schemas.SyncChannel.deleted_at.is_(None),
+            ],
+        )
+        seen: set[int] = set()
+        for row in channels:
+            sync_id = getattr(row, "sync_id", None)
+            if not sync_id or sync_id in seen:
+                continue
+            seen.add(sync_id)
+            deliver_action_notice(
+                restored,
+                row,
+                action="Resume",
+                group_name=group_name_for_sync_id(sync_id),
+                post_in_channel=False,
+                dm=False,
+            )
     return results

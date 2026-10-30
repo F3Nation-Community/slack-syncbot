@@ -19,8 +19,8 @@ from helpers.envelope import (
 )
 from helpers.post_meta import get_target_post_meta
 from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit
-from helpers.sync_participation import channel_subscribes, get_live_sync_channel
-from helpers.user_action_echo import post_meta_ts
+from helpers.sync_participation import channel_subscribes, get_active_sync_channel
+from helpers.user_action_echo import post_meta_ts, slack_message_ts
 from logger import log_debug, log_warning
 
 
@@ -50,7 +50,7 @@ def apply_target(
     name_probe_cache: dict | None = None,
 ) -> ApplyOutcome:
     """Apply *envelope* to one target. Returns new PostMeta rows (if any)."""
-    live = get_live_sync_channel(sync_channel)
+    live = get_active_sync_channel(sync_channel)
     if not live or not channel_subscribes(live):
         return ApplyOutcome()
     sync_channel = live
@@ -61,6 +61,17 @@ def apply_target(
     created: list[schemas.PostMeta] = []
 
     if kind == KIND_MESSAGE and action == ACTION_CREATE:
+        existing = None
+        if post_id:
+            try:
+                existing = get_target_post_meta(str(post_id), sync_channel)
+            except Exception:
+                existing = None
+        if existing is not None and getattr(existing, "ts", None) is not None:
+            return ApplyOutcome(
+                ts=slack_message_ts(existing.ts),
+                posted_as_user_id=existing.posted_as_user_id,
+            )
         if envelope.get("thread_post_id") and not thread_ts:
             return ApplyOutcome()
         ts, posted_as = slack_write_create(

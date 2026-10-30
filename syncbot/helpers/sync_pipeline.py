@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from collections import defaultdict
+from collections.abc import Callable
 from typing import Any
 
 from slack_sdk import WebClient
@@ -11,7 +13,7 @@ from db import schemas
 from helpers.envelope import ACTION_CREATE, KIND_MESSAGE, get_post_id_for_post_records
 from helpers.post_meta import get_post_records_for_post_id
 from helpers.sync_apply import apply_target
-from helpers.sync_participation import iter_publish_targets
+from helpers.sync_participation import channel_subscribes, get_active_sync_channel, iter_publish_targets
 from helpers.user_action_echo import slack_message_ts
 from helpers.workspace_kind import (
     is_local_workspace,
@@ -21,6 +23,37 @@ from helpers.workspace_kind import (
     workspace_allowed_for_peer,
 )
 from logger import log_debug, log_warning
+
+_ATTEMPT_WAITS = (1, 2)
+
+
+def _sleep_between_attempts(seconds: float) -> None:
+    time.sleep(seconds)
+
+
+def _while_active(sync_channel: schemas.SyncChannel, work: Callable[[schemas.SyncChannel], bool]) -> bool:
+    """Try *work* up to three times while the row stays active and subscribing.
+
+    After the first failure wait 1s, after the second wait 2s. A row that is
+    not active is a skip, which counts as done.
+    """
+    for attempt in range(3):
+        live = get_active_sync_channel(sync_channel)
+        if live is None or not channel_subscribes(live):
+            return True
+        try:
+            if work(live):
+                return True
+        except Exception as exc:
+            log_warning(
+                "delivery_attempt_failed",
+                channel_id=getattr(live, "channel_id", None),
+                attempt=attempt + 1,
+                error=str(exc),
+            )
+        if attempt < 2:
+            _sleep_between_attempts(_ATTEMPT_WAITS[attempt])
+    return False
 
 
 def run_sync_pipeline(
@@ -145,13 +178,15 @@ def run_sync_pipeline(
     else:
         remote_envelope = envelope
 
-    for sync_channel, workspace in local_targets:
-        try:
-            target_meta = post_records_by_channel.get(sync_channel.channel_id)
-            thread_ts = parent_ts_by_channel.get(sync_channel.channel_id) if is_thread_create else None
+    is_create = envelope.get("kind") == KIND_MESSAGE and envelope.get("action") == ACTION_CREATE
+
+    def _local_landed(sync_channel, workspace) -> Callable[[schemas.SyncChannel], bool]:
+        def work(live: schemas.SyncChannel) -> bool:
+            target_meta = post_records_by_channel.get(live.channel_id)
+            thread_ts = parent_ts_by_channel.get(live.channel_id) if is_thread_create else None
             created = apply_target(
                 envelope,
-                sync_channel,
+                live,
                 workspace,
                 source_client=source_client,
                 source_sync_channel=source_sync_channel,
@@ -159,13 +194,20 @@ def run_sync_pipeline(
                 target_post_meta=target_meta,
                 name_probe_cache=name_probe_cache,
             )
+            from helpers.sync_apply import ApplyOutcome
+
+            if not isinstance(created, ApplyOutcome):
+                return True
+            if is_create and not created.created and not created.ts:
+                return False
             post_list.extend(created.created)
-        except Exception as exc:
-            log_warning(
-                "run_sync_pipeline_target_failed",
-                channel_id=sync_channel.channel_id,
-                error=str(exc),
-            )
+            return True
+
+        return work
+
+    for sync_channel, workspace in local_targets:
+        if not _while_active(sync_channel, _local_landed(sync_channel, workspace)):
+            log_warning("run_sync_pipeline_target_failed", channel_id=sync_channel.channel_id)
 
     if stub_by_peer:
         from federation.deliver import deliver_remote, stage_unique_files_for_peer
@@ -186,24 +228,25 @@ def run_sync_pipeline(
                 log_warning("run_sync_pipeline_stage_failed", error=str(exc))
                 staged = False
             for sync_channel, _workspace, peer in stub_targets:
-                try:
+
+                def _remote_landed(live: schemas.SyncChannel, peer=peer, stage_files=not staged) -> bool:
                     env = dict(remote_envelope)
-                    target_meta = post_records_by_channel.get(sync_channel.channel_id)
+                    target_meta = post_records_by_channel.get(live.channel_id)
                     if target_meta is not None:
                         env["target_ts"] = slack_message_ts(target_meta.ts)
                     created = deliver_remote(
                         env,
                         peer,
-                        sync_channel,
-                        stage_files=not staged,
+                        live,
+                        stage_files=stage_files,
                         source_client=source_client,
                     )
+                    if created is None:
+                        return False
                     post_list.extend(created)
-                except Exception as exc:
-                    log_warning(
-                        "run_sync_pipeline_remote_failed",
-                        channel_id=sync_channel.channel_id,
-                        error=str(exc),
-                    )
+                    return True
+
+                if not _while_active(sync_channel, _remote_landed):
+                    log_warning("run_sync_pipeline_remote_failed", channel_id=sync_channel.channel_id)
 
     return post_list

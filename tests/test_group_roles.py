@@ -189,7 +189,7 @@ class TestDepartureRules:
             patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
             patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
             patch("handlers.group_manage.helpers.get_workspace_record", return_value=member_ws),
-            patch("handlers.group_manage.helpers.format_admin_label", return_value=("Ada", "Ada from Workspace B")),
+            patch("handlers.group_manage.helpers.format_admin_label", return_value="`Ada (Workspace B)`"),
             patch("handlers.group_manage.helpers.resolve_workspace_name", return_value="Workspace B"),
             patch("handlers.group_manage.builders.refresh_home_tab_for_workspace"),
             patch("handlers._common._close_modal_done"),
@@ -250,7 +250,7 @@ class TestDepartureRules:
 
 
 class TestPromotionEligibility:
-    def test_pending_and_federated_members_are_not_promotable(self, real_db):
+    def test_pending_members_are_not_promotable_and_stubs_are(self, real_db):
         import helpers
 
         group = _group()
@@ -258,10 +258,10 @@ class TestPromotionEligibility:
         local = _member(group, _workspace("T2"), role="member")
         _member(group, _workspace("T3"), role="member", status="pending")
         fed = _federated_peer()
-        _member(group, _stub_workspace("T_REMOTE", fed), role="member")
+        stub = _member(group, _stub_workspace("T_REMOTE", fed), role="member")
 
         promotable = helpers.get_promotable_members(group.id)
-        assert [m.id for m in promotable] == [local.id]
+        assert {m.id for m in promotable} == {local.id, stub.id}
 
     def test_existing_owners_are_not_promotable(self, real_db):
         import helpers
@@ -290,12 +290,17 @@ class TestSuccessionLadder:
         group = _group()
         primary = _workspace("T_PRIMARY")
         fed = _federated_peer()
-        _member(group, _stub_workspace("T_REMOTE", fed), role="member")
+        stub = _member(group, _stub_workspace("T_REMOTE", fed), role="member")
 
-        with patch.dict(os.environ, {"PRIMARY_WORKSPACE": "T_PRIMARY"}):
-            assert helpers.succeed_ownership(group.id) is None
+        with (
+            patch.dict(os.environ, {"PRIMARY_WORKSPACE": "T_PRIMARY"}),
+            patch("federation.replicate.replicate_group_invite") as invite,
+        ):
+            promoted = helpers.succeed_ownership(group.id)
 
-        assert DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group.id]) == []
+        assert promoted.id == stub.id
+        invite.assert_called_once()
+        assert invite.call_args.kwargs["set_role"] is True
         assert (
             DbManager.find_records(
                 schemas.WorkspaceGroupMember,
@@ -303,8 +308,13 @@ class TestSuccessionLadder:
             )
             == []
         )
+        stored = DbManager.find_records(
+            schemas.WorkspaceGroupMember,
+            [schemas.WorkspaceGroupMember.id == stub.id],
+        )[0]
+        assert stored.role == "owner"
 
-    def test_disbands_when_no_local_member_remains(self, real_db):
+    def test_disbands_when_nobody_remains(self, real_db):
         import helpers
 
         group = _group()
@@ -440,6 +450,45 @@ class TestDisbandGates:
         allowed, reason = helpers.can_disband(group.id, owner_ws.id)
         assert allowed is False
         assert reason == "co_owner_exists"
+
+    def test_an_owner_who_leaves_is_no_longer_an_owner(self, real_db):
+        import json
+
+        import helpers
+        from handlers.group_manage import handle_leave_group_confirm
+
+        group = _group()
+        staying = _workspace("T1")
+        _member(group, staying, role="owner")
+        leaving = _workspace("T2")
+        left = _member(group, leaving, role="owner")
+        self._sync(group, staying)
+
+        body = {
+            "view": {
+                "team_id": leaving.team_id,
+                "private_metadata": json.dumps({"group_id": group.id}),
+            },
+            "user": {"id": "U1", "team_id": leaving.team_id},
+            "team": {"id": leaving.team_id},
+        }
+        with (
+            patch("handlers.group_manage.helpers.get_user_id_from_body", return_value="U1"),
+            patch("handlers.group_manage.helpers.is_workspace_manager", return_value=True),
+            patch("handlers.group_manage.helpers.get_workspace_record", return_value=leaving),
+            patch("handlers.group_manage.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace B)`"),
+            patch("handlers.group_manage.helpers.resolve_workspace_name", return_value="Workspace B"),
+            patch("handlers.group_manage.builders.refresh_home_tab_for_workspace"),
+            patch("handlers._common._close_modal_done"),
+            patch("federation.replicate.replicate_group_leave"),
+            patch("helpers.notifications.notify_group_managers", return_value=[]),
+        ):
+            handle_leave_group_confirm(body, MagicMock(), MagicMock(), context={})
+
+        stored = DbManager.get_record(schemas.WorkspaceGroupMember, id=left.id)
+        assert stored.role == "member"
+        assert stored.status == "inactive"
+        assert helpers.can_disband(group.id, staying.id) == (True, "")
 
     def test_a_retained_uninstalled_co_owner_blocks_disband(self, real_db):
         import helpers

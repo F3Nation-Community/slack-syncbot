@@ -426,9 +426,8 @@ def handle_data_migration(
         orm.SectionBlock(
             label=(
                 "*Export*\n"
-                "Download this Workspace's SyncBot data (syncs, channels, people mapping; no tokens) "
-                "as a JSON file in your DM. Use this when the other instance is already connected, "
-                "or you only need the file."
+                "Download this Workspace's SyncBot data (Groups, Syncs and Mappings, no tokens or secrets) "
+                "as a JSON file. The file will be sent to you from SyncBot as a DM."
             ),
         ),
         orm.ActionsBlock(
@@ -447,10 +446,10 @@ def handle_data_migration(
                 orm.SectionBlock(
                     label=(
                         "*Export and Request Connection*\n"
-                        f"Same JSON file, plus a request to the admins of {primary} for a "
-                        "one-time connection code bundled with the export. Use this when you are "
+                        f"Download a JSON export file, plus a request sent to the admins of {primary} "
+                        "to bundle an External Connection code with the export. Use this when you are "
                         "moving this Workspace to a new SyncBot instance that is not connected yet. "
-                        "They Approve or Decline in a DM; you get the file after they approve."
+                        "You will get the download file after an admin approves the request."
                     ),
                 ),
                 orm.ActionsBlock(
@@ -467,7 +466,7 @@ def handle_data_migration(
         [
             orm.DividerBlock(),
             orm.SectionBlock(
-                label="*Import*\nUpload a migration JSON file. Existing Groups and Syncs are merged by their stable IDs.",
+                label="*Import*\nUpload a JSON export file. Existing Groups and Syncs are merged.",
             ),
         ]
     )
@@ -1080,13 +1079,8 @@ def _run_migration_import(
         team_id_to_workspace_id=team_id_to_workspace_id,
     )
     restored = helpers.get_workspace_by_id(workspace_record.id) or workspace_record
-    helpers.resume_restored_sync_channels(
-        restored,
-        client=client,
-        acting_user_id=acting_user_id,
-        context=context,
-        source="import",
-    )
+    if getattr(restored, "team_id", None):
+        helpers.consider_migration_release(restored.team_id)
     ei.invalidate_home_tab_caches_for_team(workspace_record.team_id)
 
 
@@ -1153,9 +1147,9 @@ def handle_data_migration_submit_ack(
     }
 
 
-_IMPORT_DONE_TEXT = ":white_check_mark: Import finished. Refresh Home to see Groups and Connections."
-_IMPORT_FAIL_TEXT = ":warning: Import failed. Try Data Migration again."
-_IMPORT_EXPIRED_TEXT = ":warning: That import expired. Open Data Migration and upload the file again."
+_IMPORT_DONE_TEXT = ":white_check_mark: Import finished. Migration happens after the old instance is uninstalled."
+_IMPORT_FAIL_TEXT = ":warning: Import failed. Try the import again."
+_IMPORT_EXPIRED_TEXT = ":warning: That import expired. Try the import again."
 
 
 def handle_data_migration_review_ack(body: dict, client: WebClient, context: dict) -> dict | None:

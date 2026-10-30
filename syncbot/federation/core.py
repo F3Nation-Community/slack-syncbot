@@ -258,7 +258,7 @@ def federation_verify(body: str, signature_b64: str, timestamp: str, public_key_
         return False
 
     if abs(time.time() - ts_int) > _TIMESTAMP_MAX_AGE:
-        log_warning("federation_verify: timestamp too old/future", ts=timestamp)
+        log_warning("federation_verify_failed", reason="stale_timestamp", ts=timestamp)
         return False
 
     try:
@@ -599,11 +599,23 @@ def get_or_create_instance(
 # ---------------------------------------------------------------------------
 
 _REQUEST_TIMEOUT = 15  # seconds — pair, offer, ping
-_MESSAGE_TIMEOUT = 90  # seconds — envelope POST
+_MESSAGE_TIMEOUT = 30  # seconds — one Slack-sized envelope POST, not a 90s hold
 _FILE_PART_TIMEOUT = 90  # seconds — raw file part POST
 _USERS_TIMEOUT = 90  # seconds — directory exchange
 _MAX_RETRIES = 3
 _RETRY_BACKOFF = [1, 2, 4]  # seconds between retries
+
+
+_peer_sessions: dict[str, requests.Session] = {}
+
+
+def peer_session(instance_id: str) -> requests.Session:
+    """One HTTP session per peer so snapshot and replicate calls reuse TLS."""
+    session = _peer_sessions.get(instance_id)
+    if session is None:
+        session = requests.Session()
+        _peer_sessions[instance_id] = session
+    return session
 
 
 def _federation_request(
@@ -614,6 +626,7 @@ def _federation_request(
     *,
     timeout: int | None = None,
     accept_statuses: frozenset[int] | None = None,
+    max_retries: int | None = None,
 ) -> dict | None:
     """Send an authenticated JSON request to a federated workspace.
 
@@ -626,10 +639,11 @@ def _federation_request(
     body = json.dumps(payload)
     req_timeout = timeout if timeout is not None else _REQUEST_TIMEOUT
     accepted = accept_statuses or frozenset({200})
+    attempts = _MAX_RETRIES if max_retries is None else max(1, int(max_retries))
 
     start_time = time.time()
 
-    for attempt in range(_MAX_RETRIES):
+    for attempt in range(attempts):
         try:
             sig, ts = federation_sign(body)
             headers = {
@@ -639,7 +653,9 @@ def _federation_request(
                 "X-Federation-Timestamp": ts,
                 "X-Federation-Instance": get_instance_id(),
             }
-            resp = requests.request(method, url, data=body, headers=headers, timeout=req_timeout)
+            resp = peer_session(fed_ws.instance_id).request(
+                method, url, data=body, headers=headers, timeout=req_timeout
+            )
             elapsed = round((time.time() - start_time) * 1000, 1)
 
             if resp.status_code in accepted:
@@ -662,8 +678,8 @@ def _federation_request(
                     attempt=attempt + 1,
                     remote=fed_ws.instance_id,
                 )
-                if attempt < _MAX_RETRIES - 1:
-                    time.sleep(_RETRY_BACKOFF[attempt])
+                if attempt < attempts - 1:
+                    time.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
                 continue
             elif resp.status_code == 401:
                 log_error("federation_auth_rejected", url=url, remote=fed_ws.instance_id, reason="peer_not_trusted")
@@ -694,20 +710,20 @@ def _federation_request(
                 return data
         except requests.exceptions.Timeout:
             log_warning("federation_request_timeout", url=url, attempt=attempt + 1, remote=fed_ws.instance_id)
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
         except requests.exceptions.ConnectionError as e:
             log_warning(
                 "federation_connection_error", url=url, attempt=attempt + 1, error=str(e), remote=fed_ws.instance_id
             )
-            if attempt < _MAX_RETRIES - 1:
-                time.sleep(_RETRY_BACKOFF[attempt])
+            if attempt < attempts - 1:
+                time.sleep(_RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)])
         except Exception as e:
             log_error("federation_request_error", url=url, error=str(e), remote=fed_ws.instance_id)
             return None
 
     elapsed = round((time.time() - start_time) * 1000, 1)
-    log_error(
-        "federation_request_exhausted", url=url, elapsed_ms=elapsed, attempts=_MAX_RETRIES, remote=fed_ws.instance_id
-    )
+    log_error("federation_request_exhausted", url=url, elapsed_ms=elapsed, attempts=attempts, remote=fed_ws.instance_id)
     return None
 
 
@@ -784,6 +800,7 @@ def push_message(fed_ws: schemas.Instance, payload: dict) -> dict | None:
         payload,
         timeout=_MESSAGE_TIMEOUT,
         accept_statuses=frozenset({200, 409}),
+        max_retries=1,
     )
 
 
@@ -795,6 +812,7 @@ def push_edit(fed_ws: schemas.Instance, payload: dict) -> dict | None:
         payload,
         timeout=_MESSAGE_TIMEOUT,
         accept_statuses=frozenset({200, 409}),
+        max_retries=1,
     )
 
 
@@ -806,6 +824,7 @@ def push_delete(fed_ws: schemas.Instance, payload: dict) -> dict | None:
         payload,
         timeout=_MESSAGE_TIMEOUT,
         accept_statuses=frozenset({200, 409}),
+        max_retries=1,
     )
 
 
@@ -817,6 +836,7 @@ def push_reaction(fed_ws: schemas.Instance, payload: dict) -> dict | None:
         payload,
         timeout=_MESSAGE_TIMEOUT,
         accept_statuses=frozenset({200, 409}),
+        max_retries=1,
     )
 
 
@@ -887,7 +907,7 @@ def push_teams(fed_ws: schemas.Instance, payload: dict) -> dict | None:
     """Advertise this instance's Workspaces so the peer can create/heal stubs.
 
     *payload* carries ``workspaces`` (``team_id`` + display ``name``),
-    ``primary_team_id``, and ``primary_workspace_name``. The peer heals each
+    ``primary_team_id``, ``primary_workspace_name``, and ``app_name``. The peer heals each
     listed team and pauses this peer's stubs that left the allowlist. Trust
     stays the fingerprint. ``409 owner_on_connection`` is accepted.
     """
@@ -937,8 +957,43 @@ def allowed_workspace_entries(instance_id: str) -> list[dict]:
     return sorted(entries, key=lambda item: item["team_id"])
 
 
+def _this_app_display_name() -> str | None:
+    """This install's Slack app name, from any local bot token. None when Slack cannot be asked."""
+    from slack_sdk import WebClient
+
+    from helpers.slack_api import get_app_display_name
+    from helpers.workspace import get_bot_token
+    from helpers.workspace_kind import is_local_workspace
+
+    tokens: list[str] = []
+    team_id = this_primary_team_id()
+    if team_id:
+        primary = DbManager.get_record(schemas.Workspace, id=team_id)
+        if primary and is_local_workspace(primary):
+            token = get_bot_token(primary)
+            if token:
+                tokens.append(token)
+    if not tokens:
+        rows = DbManager.find_records(
+            schemas.Workspace,
+            [
+                schemas.Workspace.deleted_at.is_(None),
+                schemas.Workspace.instance_id == get_instance_id(),
+            ],
+        )
+        for workspace in rows:
+            token = get_bot_token(workspace)
+            if token:
+                tokens.append(token)
+                break
+    if not tokens:
+        return None
+    name = (get_app_display_name(WebClient(token=tokens[0])) or "").strip()
+    return name or None
+
+
 def teams_allowlist_payload(instance_id: str) -> dict:
-    """Body for ``POST /teams``: allowlist plus primary Team ID and display name."""
+    """Body for ``POST /teams``: allowlist plus primary Team ID, display name, and this app's name."""
     entries = allowed_workspace_entries(instance_id)
     payload: dict = {
         "workspaces": entries,
@@ -949,6 +1004,9 @@ def teams_allowlist_payload(instance_id: str) -> dict:
     name = this_primary_workspace_name()
     if name:
         payload["primary_workspace_name"] = name
+    app_name = _this_app_display_name()
+    if app_name:
+        payload["app_name"] = app_name
     return payload
 
 
@@ -1002,6 +1060,10 @@ def refresh_federation_allowlists() -> None:
         try:
             result = push_allowed_workspaces(peer)
             ok = bool(result and result.get("ok"))
+            if result:
+                from helpers.workspace import apply_teams_release_results
+
+                apply_teams_release_results(result.get("results"))
             emit = log_warning if not ok else log_debug
             emit(
                 "push_teams",
@@ -1029,6 +1091,14 @@ def push_group_invite(fed_ws: schemas.Instance, payload: dict) -> dict | None:
 
 def push_group_leave(fed_ws: schemas.Instance, payload: dict) -> dict | None:
     return _federation_request(fed_ws, "/group-leave", payload, timeout=_REQUEST_TIMEOUT)
+
+
+def push_group_member_remove(fed_ws: schemas.Instance, payload: dict) -> dict | None:
+    return _federation_request(fed_ws, "/group-member-remove", payload, timeout=_REQUEST_TIMEOUT)
+
+
+def push_workspace_release(fed_ws: schemas.Instance, payload: dict) -> dict | None:
+    return _federation_request(fed_ws, "/workspace-release", payload, timeout=_REQUEST_TIMEOUT)
 
 
 def push_sync_upsert(fed_ws: schemas.Instance, payload: dict) -> dict | None:

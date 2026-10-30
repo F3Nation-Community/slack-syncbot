@@ -181,7 +181,7 @@ variable "slack_client_secret" {
 
 variable "slack_bot_scopes" {
   type        = string
-  default     = "app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,emoji:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,usergroups:read,users:read,users:read.email"
+  default     = "app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,emoji:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email"
   description = "Comma-separated Slack OAuth bot scopes (SLACK_BOT_SCOPES)"
 }
 

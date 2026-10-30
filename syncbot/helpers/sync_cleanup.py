@@ -95,6 +95,12 @@ def purge_sync_channels(channels) -> None:
             schemas.SyncChannel,
             [schemas.SyncChannel.id == channel.id],
         )
+        log_info(
+            "sync_channel_purged",
+            sync_channel_id=getattr(channel, "id", None),
+            sync_id=getattr(channel, "sync_id", None),
+            channel_id=getattr(channel, "channel_id", None),
+        )
 
     _invalidate_channel_memberships(fanout_ids)
 
@@ -157,7 +163,7 @@ def purge_workspace(workspace_id: int) -> None:
     DbManager.delete_records(schemas.Workspace, [schemas.Workspace.id == workspace_id])
 
     # The retention purge is the only involuntary loss of ownership. It promotes
-    # the earliest-joined remaining local member or disbands. Imported here
+    # the earliest-joined remaining member or disbands. Imported here
     # rather than at module scope to keep this module free of helpers-package
     # imports.
     from helpers.group_roles import succeed_ownership

@@ -1,7 +1,7 @@
 """tokens_revoked and app_uninstalled use Bolt's installation store methods."""
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from handlers.tokens import handle_app_uninstalled, handle_tokens_revoked
 
@@ -16,22 +16,38 @@ def _body(*, oauth=None, bot=None):
 
 
 class TestTokensRevokedOauthOnly:
-    def test_clears_that_users_token_and_republishes_home_without_uninstalling(self):
+    """A personal revoke ends that person's authorization (token + the private rows they run)."""
+
+    def test_ends_that_users_authorization_and_republishes_home_without_uninstalling(self):
+        client = MagicMock()
         with (
-            patch("handlers.tokens.helpers.clear_user_authorization", return_value=True) as clear,
+            patch("handlers.tokens.end_user_authorization", return_value=0) as end_auth,
             patch("handlers.tokens._republish_home_after_user_revoke") as republish,
             patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
         ):
-            handle_tokens_revoked(_body(oauth=["U9"]), MagicMock(), MagicMock(), {})
+            handle_tokens_revoked(_body(oauth=["U9"]), client, MagicMock(), {})
 
-        clear.assert_called_once_with("T1", "U9")
+        end_auth.assert_called_once_with("T1", "U9", client=client)
         republish.assert_called_once()
         assert republish.call_args.args[:2] == ("T1", "U9")
         uninstall.assert_not_called()
 
+    def test_each_revoked_user_is_ended_in_turn(self):
+        client = MagicMock()
+        with (
+            patch("handlers.tokens.end_user_authorization", return_value=0) as end_auth,
+            patch("handlers.tokens._republish_home_after_user_revoke") as republish,
+            patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
+        ):
+            handle_tokens_revoked(_body(oauth=["U9", "U10"]), client, MagicMock(), {})
+
+        assert end_auth.call_args_list == [call("T1", "U9", client=client), call("T1", "U10", client=client)]
+        assert [c.args[:2] for c in republish.call_args_list] == [("T1", "U9"), ("T1", "U10")]
+        uninstall.assert_not_called()
+
     def test_bot_token_revoke_is_still_a_workspace_uninstall_when_bot_is_dead(self):
         with (
-            patch("handlers.tokens.helpers.clear_user_authorization") as clear,
+            patch("handlers.tokens.end_user_authorization") as end_auth,
             patch("handlers.tokens._republish_home_after_user_revoke") as republish,
             patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
             patch("handlers.tokens.DbManager.get_record", return_value=WORKSPACE),
@@ -40,21 +56,22 @@ class TestTokensRevokedOauthOnly:
             handle_tokens_revoked(_body(oauth=["U9"], bot=["U_BOT"]), MagicMock(), MagicMock(), {})
 
         uninstall.assert_called_once_with("T1")
-        clear.assert_not_called()
+        end_auth.assert_not_called()
         republish.assert_not_called()
 
     def test_bot_array_on_user_revoke_does_not_uninstall_when_bot_token_still_works(self):
+        client = MagicMock()
         with (
-            patch("handlers.tokens.helpers.clear_user_authorization", return_value=True) as clear,
+            patch("handlers.tokens.end_user_authorization", return_value=0) as end_auth,
             patch("handlers.tokens._republish_home_after_user_revoke") as republish,
             patch("handlers.tokens.helpers.uninstall_workspace") as uninstall,
             patch("handlers.tokens.DbManager.get_record", return_value=WORKSPACE),
             patch("handlers.tokens._workspace_bot_is_alive", return_value=True),
         ):
-            handle_tokens_revoked(_body(oauth=["U9"], bot=["U_BOT"]), MagicMock(), MagicMock(), {})
+            handle_tokens_revoked(_body(oauth=["U9"], bot=["U_BOT"]), client, MagicMock(), {})
 
         uninstall.assert_not_called()
-        clear.assert_called_once_with("T1", "U9")
+        end_auth.assert_called_once_with("T1", "U9", client=client)
         republish.assert_called_once()
         assert republish.call_args.args[:2] == ("T1", "U9")
 

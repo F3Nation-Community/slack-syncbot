@@ -124,7 +124,7 @@ def get_int_setting(key: str, default: int) -> int:
 
 
 def soft_delete_retention_days() -> int:
-    """Days a soft-deleted workspace is retained before the purge removes it permanently."""
+    """Days removed data is kept before the purge deletes it. The Settings default is 30."""
     return get_int_setting(
         constants.SETTING_SOFT_DELETE_RETENTION_DAYS,
         constants.DEFAULT_SOFT_DELETE_RETENTION_DAYS,

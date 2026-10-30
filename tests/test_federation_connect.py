@@ -355,13 +355,15 @@ class TestEndpointAndSubpaths:
         fed_ws = SimpleNamespace(webhook_url="https://peer.example/api/federation", instance_id="fp")
         resp = MagicMock(status_code=200)
         resp.json.return_value = {"ok": True}
+        session = MagicMock()
+        session.request.return_value = resp
         with (
             patch.object(federation_core, "federation_sign", return_value=("sig", "1")),
             patch.object(federation_core, "get_instance_id", return_value="fp"),
-            patch.object(federation_core.requests, "request", return_value=resp) as req,
+            patch.object(federation_core, "peer_session", return_value=session),
         ):
             federation_core._federation_request(fed_ws, "/message", {"a": 1})
-        assert req.call_args.args[1] == "https://peer.example/api/federation/message"
+        assert session.request.call_args.args[1] == "https://peer.example/api/federation/message"
 
     def test_initiate_appends_pair_and_sends_endpoint(self):
         _private, public_pem = _keypair()
@@ -428,20 +430,36 @@ class TestFedWsCacheInvalidation:
         }
         workspace = SimpleNamespace(id=1, team_id="T1")
         fed_ws = SimpleNamespace(id=2, instance_id="peer", name="Partner Org", private_key_encrypted=None)
-        stub = SimpleNamespace(id=9, instance_id="peer")
+        stub = SimpleNamespace(id=9, instance_id="peer", workspace_name="Workspace B")
+        row = SimpleNamespace(
+            id=4,
+            sync_id=8,
+            channel_id="C2",
+            channel_name="general",
+            status="paused",
+            publishes=True,
+            subscribes=True,
+            workspace_id=9,
+            is_private=None,
+        )
         with (
             patch("handlers.federation_cmds._require_primary_admin", return_value=workspace),
             patch("handlers.federation_cmds.DbManager.get_record", return_value=fed_ws),
             patch("handlers.federation_cmds.DbManager.find_records", return_value=[stub]),
             patch("handlers.federation_cmds.DbManager.delete_records"),
             patch("handlers.federation_cmds.DbManager.update_records"),
-            patch("handlers.federation_cmds.helpers.soft_delete_workspace") as pause,
+            patch("handlers.federation_cmds.helpers.soft_delete_workspace", return_value=[row]) as pause,
+            patch("helpers.sync_lifecycle.deliver_action_notice") as announce,
             patch("handlers.federation_cmds.invalidate_fed_ws_for_sync_cache") as inv,
             patch("handlers.federation_cmds._close_modal_done"),
             patch("handlers.federation_cmds.builders.refresh_home_tab_for_workspace"),
         ):
             handle_leave_external_connection_confirm(body, MagicMock(), MagicMock(), {})
         pause.assert_called_once_with(stub)
+        announce.assert_called_once()
+        assert announce.call_args.args[0] is stub
+        assert announce.call_args.args[1] is row
+        assert announce.call_args.kwargs["action"] == "Leave Connection"
         inv.assert_called_once_with()
 
     def test_leave_connection_refuses_self_instance(self):

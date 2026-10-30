@@ -167,7 +167,7 @@ class TestHandleReactionClaim:
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="B1"),
             patch("handlers.reaction_event.helpers.get_team_id_from_body", return_value="T1"),
             patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=False),
-            patch("handlers.reaction_event.helpers.channel_has_membership", return_value=True),
+            patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
             patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
             patch("handlers.reaction_event.log_debug") as log_debug,
@@ -855,7 +855,7 @@ class TestCreateJoinBuilders:
         participation = next(
             block for block in blocks if getattr(block, "action", None) == actions.CONFIG_SYNC_PARTICIPATION
         )
-        assert [opt.value for opt in participation.element.options] == ["publish_only", "publish_and_subscribe"]
+        assert [opt.value for opt in participation.element.options] == ["publish_and_subscribe", "publish_only"]
         assert any(text and "Shared" in text for text in texts)
 
     def test_parse_reaction_fields_defaults_to_hybrid(self):

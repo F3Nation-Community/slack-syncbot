@@ -13,9 +13,9 @@ from helpers.post_meta import get_post_records, get_publishing_post_records, pos
 from helpers.sync_apply import ApplyOutcome
 from helpers.sync_participation import (
     already_subscribed_to_source,
-    channel_has_membership,
     channel_subscribes,
     get_origin_sync_channel,
+    has_channel_sync,
     invalidate_channel_memberships,
     invalidate_sync_fanout_for_syncs,
     iter_publish_targets,
@@ -40,6 +40,149 @@ def test_participation_label():
     assert participation_label(SimpleNamespace(publishes=True, subscribes=False)) == "Publish only"
     assert participation_label(SimpleNamespace(publishes=False, subscribes=True)) == "Subscribe only"
     assert participation_label(None) == "Publish and Subscribe"
+
+
+def test_member_text_omits_privacy_unless_private_channels_are_allowed_and_the_flag_is_known():
+    from helpers.sync_participation import sync_member_text
+
+    row = SimpleNamespace(channel_id="C1", channel_name="general", status="active", is_private=True, workspace_id=1)
+    unknown = SimpleNamespace(channel_id="C1", channel_name="general", status="paused", is_private=None, workspace_id=1)
+    public = SimpleNamespace(channel_id="C1", channel_name="general", status="active", is_private=False, workspace_id=1)
+    workspace = SimpleNamespace(id=1, team_id="T1", workspace_name="Workspace A")
+    with patch("helpers.workspace_settings.allow_private_channels", return_value=False):
+        assert sync_member_text(row, workspace) == "#general (Workspace A) [Publish and Subscribe]"
+    with patch("helpers.workspace_settings.allow_private_channels", return_value=True):
+        assert sync_member_text(unknown, workspace) == "#general (Workspace A) [Paused]"
+        assert sync_member_text(row, workspace) == "#general (Workspace A) [Publish and Subscribe]"
+        assert sync_member_text(public, workspace) == "#general (Workspace A) [Publish and Subscribe]"
+
+
+def test_one_notice_is_the_channel_post_and_the_other_channels():
+    from helpers.notifications import notify_channel_or_managers
+    from helpers.sync_lifecycle import post_to_other_sync_channels
+    from helpers.sync_participation import format_action_notice
+
+    with patch(
+        "helpers.sync_participation.format_workspaces_in_sync",
+        return_value="`Workspace B [Publish and Subscribe]`",
+    ):
+        sentence = format_action_notice(
+            action="Join",
+            workspace_name="Workspace A",
+            group_name="Partner Org",
+            manager="Ada Lovelace",
+            sync_id=5,
+        )
+    assert sentence == (
+        ":inbox_tray: *SyncBot Action Notice*\n"
+        "```\n"
+        "Workspace Group: Partner Org\n"
+        "Acting Manager: Ada Lovelace (Workspace A)\n"
+        "Action: Join\n"
+        "Workspaces in Sync: Workspace B [Publish and Subscribe]\n"
+        "```"
+    )
+    workspace = SimpleNamespace(id=1, team_id="T1", workspace_name="Workspace A")
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.notify_synced_channels", return_value=0),
+        patch("helpers.notifications.notify_managers") as managers,
+    ):
+        assert notify_channel_or_managers(workspace, "C1", sentence) is False
+    assert managers.call_args.args[1] == sentence
+    other = SimpleNamespace(id=2, team_id="T2", workspace_name="Workspace B")
+    twin = SimpleNamespace(id=9, sync_id=5, workspace_id=2, channel_id="C2", deleted_at=None, is_private=None)
+    with (
+        patch("helpers.sync_lifecycle.DbManager.find_records", return_value=[twin]),
+        patch("helpers.sync_lifecycle.get_workspace_by_id", return_value=other),
+        patch("helpers.sync_lifecycle.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.sync_lifecycle.notify_synced_channels", return_value=1) as posted,
+    ):
+        post_to_other_sync_channels(workspace, 5, sentence)
+    assert posted.call_args.args[1:] == (["C2"], sentence)
+
+
+def test_notice_title_stays_outside_one_code_block():
+    from helpers.sync_participation import format_action_notice
+
+    with patch(
+        "helpers.sync_participation.format_workspaces_in_sync",
+        return_value="Workspace A [Publish and Subscribe], Workspace B [Publish and Subscribe]",
+    ):
+        channel = format_action_notice(
+            action="Resume",
+            workspace_name="Workspace A",
+            group_name="Group",
+            sync_id=5,
+        )
+    assert channel.startswith(":arrow_forward: *SyncBot Action Notice*\n```\n")
+    assert channel.endswith("\n```")
+    inside = channel.split("```", 2)[1]
+    assert "Action: Resume" in inside
+    assert "`" not in inside
+    assert "*SyncBot Action Notice*" not in inside
+
+    manager = format_action_notice(
+        action="Leave",
+        workspace_name="Workspace A",
+        group_name="Group",
+        manager="Ada Lovelace",
+        channel_name="general",
+        retention_days=30,
+        for_managers=True,
+        workspace_line=True,
+    )
+    body = manager.split("```", 2)[1]
+    assert "Affected Channel: #general" in body
+    assert "Data Retention Days: 30" in body
+    assert "Workspace: Workspace A" in body
+    assert "Workspaces in Sync" not in body
+    assert "`" not in body
+
+
+def test_workspace_manager_messages_name_the_workspace_and_skip_the_roster():
+    from helpers.sync_participation import format_action_notice
+
+    install = format_action_notice(
+        action="Install",
+        workspace_name="Workspace A",
+        manager="Ada Lovelace",
+        for_managers=True,
+        workspace_line=True,
+    )
+    assert "Workspace: Workspace A" in install
+    assert "Acting Manager: Ada Lovelace" in install
+    assert "Workspaces in Sync" not in install
+
+    person = format_action_notice(
+        action="Leave",
+        workspace_name="Workspace A",
+        manager="`Ada Lovelace (Workspace A)`",
+        for_managers=True,
+        workspace_line=True,
+    )
+    assert "Acting Manager: Ada Lovelace" in person
+    assert "Acting Manager: Ada Lovelace (Workspace A)" not in person
+
+    named = format_action_notice(
+        action="Install",
+        workspace_name="Workspace A",
+        for_managers=True,
+        workspace_line=True,
+        app_name="SyncBot (Test)",
+    )
+    assert "Acting Manager: SyncBot (Test)" in named
+    assert "Action: Install" in named
+
+    with patch("helpers.sync_participation.format_workspaces_in_sync", return_value="`Workspace B [Paused]`"):
+        pause = format_action_notice(
+            action="Pause",
+            workspace_name="Workspace A",
+            sync_id=5,
+            for_managers=True,
+        )
+    assert "Workspaces in Sync: Workspace B [Paused]" in pause
+    assert "\nWorkspace: Workspace A" not in pause
 
 
 @pytest.fixture
@@ -278,7 +421,7 @@ def test_pipeline_does_not_hop_from_target_into_its_other_sync(real_db, kind, ac
         DbManager.create_record(schemas.PostMeta(post_id="P1", sync_channel_id=source.id, ts=1.0))
         DbManager.create_record(schemas.PostMeta(post_id="P1", sync_channel_id=b_first.id, ts=2.0))
 
-    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply:
+    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome(ts="1.000000")) as apply:
         run_sync_pipeline(
             envelope,
             source_channel_id="C_A",
@@ -309,7 +452,7 @@ def test_thread_reply_stays_on_original_post_records_not_sibling_sync(real_db):
         "text": "reply in the copy thread",
     }
 
-    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply:
+    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome(ts="1.000000")) as apply:
         run_sync_pipeline(
             envelope,
             source_channel_id="C_A",
@@ -621,7 +764,7 @@ def test_duplicate_target_across_syncs_is_written_once(real_db):
         _channel(sync, a, "C_A", publishes=True, subscribes=False)
         _channel(sync, b, "C_B", publishes=False, subscribes=True)
 
-    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply:
+    with patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome(ts="1.000000")) as apply:
         run_sync_pipeline(
             {"kind": "message", "action": "create", "post_id": "P1", "source_workspace_id": a.id},
             source_channel_id="C_A",
@@ -639,10 +782,10 @@ def test_membership_survives_stop_pause_and_one_way_modes(real_db):
     deleted = _channel(third, a, "C_SHARED", publishes=True, subscribes=True)
     DbManager.update_record(schemas.SyncChannel, deleted.id, {"deleted_at": _now()})
 
-    assert channel_has_membership("C_SHARED")
+    assert has_channel_sync("C_SHARED")
     DbManager.delete_records(schemas.SyncChannel, [schemas.SyncChannel.id == active.id])
-    assert channel_has_membership("C_SHARED")
-    assert not channel_has_membership("C_UNCONFIGURED")
+    assert has_channel_sync("C_SHARED")
+    assert not has_channel_sync("C_UNCONFIGURED")
     assert paused.status == "paused"
 
 

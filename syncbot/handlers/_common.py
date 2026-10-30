@@ -166,26 +166,25 @@ def _ensure_membership_or_rollback(
     log_event: str,
     log_extra: dict | None = None,
     context: dict | None = None,
-) -> bool:
+) -> bool | None:
     """Add SyncBot to *channel_id*, undoing the caller's rows if that fails.
 
-    Callers write their ``Sync`` / ``SyncChannel`` rows first so the
-    unconfigured-channel leave handlers see a configured channel, which is what
+    Callers write their ``Sync`` / ``SyncChannel`` rows first so
+    ``leave_channel_without_sync`` sees a Channel that is already in a Sync, which is what
     makes a private-channel invite survive. The flip side is that a failed
     join or invite would leave a Channel listed on Home that SyncBot cannot
     read, so the rows are removed again and the admin is told why.
 
-    Returns *True* when SyncBot is in the channel.
+    Returns whether the Channel is private, or ``None`` when the join failed.
     """
     try:
-        helpers.ensure_bot_in_conversation(
+        return helpers.ensure_bot_in_conversation(
             client,
             channel_id,
             team_id=team_id,
             acting_user_id=acting_user_id,
             context=context,
         )
-        return True
     except helpers.ConversationAccessError as exc:
         message = str(exc)
         log_warning(log_event, **log_extra or {}, error=message)
@@ -213,7 +212,7 @@ def _ensure_membership_or_rollback(
         acting_user_id,
         helpers.format_error_dm(f":warning: {message}", details),
     )
-    return False
+    return None
 
 
 def _get_authorized_workspace(

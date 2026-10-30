@@ -1,6 +1,7 @@
 """Admin DM notifications and channel notifications."""
 
-from datetime import UTC, datetime
+import json
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from slack_sdk import WebClient
@@ -97,9 +98,9 @@ def notify_admins_dm(
     team_id: str | None = None,
     context: dict | None = None,
 ) -> int:
-    """Send a DM to workspace admins/owners and extra managers.
+    """Send a DM to workspace admins/owners and managers.
 
-    Extra managers are included because these DMs are operational (sync failures,
+    Managers are included because these DMs are operational (sync failures,
     group changes). Settings / Backup / Reset do not use this helper.
     """
     notified = 0
@@ -199,6 +200,315 @@ def save_dm_messages_to_group_member(member_id: int, dm_entries: list[dict]) -> 
     )
 
 
+def notify_managers(
+    client: WebClient,
+    message: str,
+    *,
+    team_id: str | None = None,
+    channel_id: str | None = None,
+    private: bool = False,
+    context: dict | None = None,
+    exclude_user_ids: set[str] | None = None,
+) -> int:
+    """DM managers. A private Channel only reaches managers still in that Channel."""
+    from helpers.conversations import user_in_private_channel
+
+    notified = 0
+    for user_id in get_manager_ids(client, team_id=team_id, context=context):
+        if exclude_user_ids is not None and user_id in exclude_user_ids:
+            continue
+        if private and not user_in_private_channel(team_id, user_id, channel_id):
+            continue
+        try:
+            dm = client.conversations_open(users=[user_id])
+            opened = safe_get(dm, "channel", "id")
+            if opened:
+                client.chat_postMessage(channel=opened, text=message)
+                notified += 1
+                if exclude_user_ids is not None:
+                    exclude_user_ids.add(user_id)
+        except Exception as exc:
+            log_warning("notify_managers", user_id=user_id, error=str(exc))
+    return notified
+
+
+def notify_channel_or_managers(
+    workspace,
+    channel_id: str | None,
+    text: str,
+    *,
+    fallback_dm: bool = True,
+    private: bool = False,
+) -> bool:
+    """Post *text* in the Channel. Direct-message managers when that post does not land."""
+    token = get_bot_token(workspace) if workspace else None
+    if not token or not channel_id:
+        log_warning("channel_notice_failed", channel_id=channel_id, reason="no_token")
+        return False
+    client = WebClient(token=token)
+    posted = notify_synced_channels(client, [channel_id], text)
+    if posted:
+        return True
+    if not fallback_dm:
+        log_warning(
+            "channel_notice_failed",
+            channel_id=channel_id,
+            reason="not_posted",
+            team_id=getattr(workspace, "team_id", None),
+        )
+        return False
+    notify_managers(
+        client,
+        text,
+        team_id=getattr(workspace, "team_id", None),
+        channel_id=channel_id,
+        private=private,
+    )
+    log_info("notice_fell_back_to_dm", channel_id=channel_id, team_id=getattr(workspace, "team_id", None))
+    return False
+
+
+def _app_display_name(token: str | None) -> str:
+    """Display name of the Slack app that sends with *token*."""
+    if not token:
+        return "SyncBot"
+    from helpers.slack_api import get_app_display_name
+
+    return get_app_display_name(WebClient(token=token))
+
+
+def notify_primary_action(workspace, action: str) -> None:
+    """DM this install's primary Workspace managers. Install and Uninstall only."""
+    import os
+
+    from constants import PRIMARY_WORKSPACE
+    from helpers.sync_participation import format_action_notice
+
+    primary = (os.environ.get(PRIMARY_WORKSPACE) or "").strip()
+    if not primary or workspace is None:
+        return
+    primary_ws = DbManager.get_record(schemas.Workspace, id=primary)
+    token = get_bot_token(primary_ws) if primary_ws and primary_ws.deleted_at is None else None
+    if not token:
+        return
+    name = getattr(workspace, "workspace_name", None) or "Workspace"
+    text = format_action_notice(
+        action=action,
+        workspace_name=name,
+        for_managers=True,
+        workspace_line=True,
+        app_name=_app_display_name(token),
+    )
+    notify_managers(WebClient(token=token), text, team_id=primary)
+
+
+def _migration_notice_map() -> dict[str, list[str]]:
+    rows = DbManager.find_records(schemas.InstanceSetting, [schemas.InstanceSetting.key == "migration_notices"])
+    if not rows or not rows[0].value:
+        return {}
+    try:
+        data = json.loads(rows[0].value)
+    except (TypeError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {str(team): [str(peer) for peer in peers] for team, peers in data.items() if isinstance(peers, list)}
+
+
+def _write_migration_notice_map(data: dict[str, list[str]]) -> None:
+    payload = json.dumps(data)
+    now = datetime.now(UTC)
+    rows = DbManager.find_records(schemas.InstanceSetting, [schemas.InstanceSetting.key == "migration_notices"])
+    if rows:
+        DbManager.update_records(
+            schemas.InstanceSetting,
+            [schemas.InstanceSetting.key == "migration_notices"],
+            {schemas.InstanceSetting.value: payload, schemas.InstanceSetting.updated_at: now},
+        )
+        return
+    DbManager.create_record(schemas.InstanceSetting(key="migration_notices", value=payload, updated_at=now))
+
+
+def claim_migration_notice(team_id: str, peer_id: str) -> bool:
+    """Record that this install has announced *team_id* moving with *peer_id*.
+
+    Returns False when that pair was already announced, including from another process.
+    """
+    team_id = (team_id or "").strip()
+    peer_id = (peer_id or "").strip()
+    if not team_id or not peer_id:
+        return False
+    data = _migration_notice_map()
+    peers = data.get(team_id, [])
+    if peer_id in peers:
+        return False
+    data[team_id] = [*peers, peer_id]
+    _write_migration_notice_map(data)
+    return True
+
+
+def claim_once(key: str) -> bool:
+    """Insert *key* once. A second caller, including one that raced the first, gets False."""
+    from sqlalchemy.exc import IntegrityError
+
+    text = (key or "").strip()[:64]
+    if not text:
+        return False
+    try:
+        DbManager.create_record(schemas.InstanceSetting(key=text, value="1", updated_at=datetime.now(UTC)))
+        return True
+    except IntegrityError:
+        return False
+
+
+def forget_once(key: str) -> None:
+    """Drop a :func:`claim_once` mark so a later event can announce."""
+    text = (key or "").strip()[:64]
+    if not text:
+        return
+    DbManager.delete_records(schemas.InstanceSetting, [schemas.InstanceSetting.key == text])
+
+
+def forget_migration_notices(team_id: str) -> None:
+    """Drop remembered Migration sends for *team_id* so a later move can announce."""
+    team_id = (team_id or "").strip()
+    if not team_id:
+        return
+    data = _migration_notice_map()
+    if team_id not in data:
+        return
+    del data[team_id]
+    _write_migration_notice_map(data)
+
+
+def _local_group_mates(team_id: str) -> list:
+    """Local workspaces that share a group with *team_id*, each once."""
+    from helpers.workspace import get_workspace_by_id
+    from helpers.workspace_kind import is_local_workspace
+
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
+    if not workspace:
+        return []
+    memberships = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.workspace_id == workspace.id,
+            schemas.WorkspaceGroupMember.deleted_at.is_(None),
+        ],
+    )
+    group_ids = {row.group_id for row in memberships}
+    if not group_ids:
+        return []
+    mates = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id.in_(list(group_ids)),
+            schemas.WorkspaceGroupMember.deleted_at.is_(None),
+        ],
+    )
+    found: list = []
+    seen: set[int] = set()
+    for mate in mates:
+        other = get_workspace_by_id(mate.workspace_id)
+        if not other or other.id in seen or not is_local_workspace(other):
+            continue
+        seen.add(other.id)
+        found.append(other)
+    return found
+
+
+def _dm_local_group_mates(team_id: str, text: str) -> None:
+    told_users: set[str] = set()
+    for other in _local_group_mates(team_id):
+        token = get_bot_token(other)
+        if not token:
+            continue
+        notify_managers(WebClient(token=token), text, team_id=other.team_id, exclude_user_ids=told_users)
+
+
+def _group_mate_app_name(team_id: str) -> str:
+    for other in _local_group_mates(team_id):
+        token = get_bot_token(other)
+        if token:
+            return _app_display_name(token)
+    return "SyncBot"
+
+
+def notify_migration(team_id: str, peer_id: str) -> None:
+    """DM each manager once. One send per team and peer, remembered in the database."""
+    from helpers.sync_participation import format_action_notice
+
+    team_id = (team_id or "").strip()
+    peer_id = (peer_id or "").strip()
+    if not team_id or not peer_id or not claim_migration_notice(team_id, peer_id):
+        return
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
+    if not workspace or not _local_group_mates(team_id):
+        return
+    text = format_action_notice(
+        action="Migration",
+        workspace_name=workspace.workspace_name or "Workspace",
+        for_managers=True,
+        workspace_line=True,
+        app_name=_group_mate_app_name(team_id),
+    )
+    _dm_local_group_mates(team_id, text)
+
+
+def notify_install_while_live(team_id: str, peer_id: str, *, app_name: str | None = None) -> None:
+    """DM group-mate managers once. *peer_id* listed *team_id* while it is still installed here.
+
+    *app_name* is the Slack app that listed the team. This install sends the
+    direct message, and the Acting Manager is that app, not this one. The claim
+    is ``install_from:{team}:{peer}``, not the Migration claim, so a later move
+    can still announce.
+    """
+    from helpers.sync_participation import format_action_notice
+
+    team_id = (team_id or "").strip()
+    peer_id = (peer_id or "").strip()
+    if not team_id or not peer_id or not claim_once(f"install_from:{team_id}:{peer_id}"):
+        return
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
+    if not workspace or not _local_group_mates(team_id):
+        return
+    shown = (app_name or "").strip() or "SyncBot"
+    text = format_action_notice(
+        action="Install",
+        workspace_name=workspace.workspace_name or "Workspace",
+        for_managers=True,
+        workspace_line=True,
+        app_name=shown,
+    )
+    _dm_local_group_mates(team_id, text)
+
+
+def notify_group_managers(group_id: int, text: str, *, exclude_workspace_id: int | None = None) -> list:
+    """DM managers of each local Workspace in *group_id*. Returns the Workspaces told."""
+    from helpers.group_roles import get_active_members
+    from helpers.workspace import get_workspace_by_id
+    from helpers.workspace_kind import is_local_workspace
+
+    told: list = []
+    if not group_id or not (text or "").strip():
+        return told
+    for member in get_active_members(group_id):
+        if not member.workspace_id or member.workspace_id == exclude_workspace_id:
+            continue
+        workspace = get_workspace_by_id(member.workspace_id)
+        if not workspace or workspace.deleted_at is not None or not is_local_workspace(workspace):
+            continue
+        token = get_bot_token(workspace)
+        if not token:
+            continue
+        try:
+            notify_admins_dm(WebClient(token=token), text, team_id=workspace.team_id)
+            told.append(workspace)
+        except Exception:
+            log_warning("failed_to_notify_group_member", workspace_id=member.workspace_id)
+    return told
+
+
 def notify_synced_channels(client: WebClient, channel_ids: list[str], message: str) -> int:
     """Post a message to a list of channels.  Best-effort."""
     notified = 0
@@ -212,9 +522,10 @@ def notify_synced_channels(client: WebClient, channel_ids: list[str], message: s
 
 
 def purge_stale_soft_deletes() -> int:
-    """Permanently delete workspaces that have been soft-deleted beyond the retention period.
+    """Hard-delete ``deleted`` Channel rows past retention, then an empty Sync, then a disbanded Group with no Syncs.
 
-    Returns 0 without raising if the schema is missing (e.g. fresh DB before Alembic bootstrap).
+    Workspaces soft-deleted past the same window are purged after that. Returns how many workspaces were removed.
+    Returns 0 without raising if the schema is missing.
     """
     from helpers.workspace import get_workspace_by_id
 
@@ -226,7 +537,15 @@ def purge_stale_soft_deletes() -> int:
     from helpers.settings import soft_delete_retention_days
 
     retention_days = soft_delete_retention_days()
-    cutoff = datetime.now(UTC) - __import__("datetime").timedelta(days=retention_days)
+    # Workspace.deleted_at is timezone-aware. SyncChannel.deleted_at is stored naive.
+    cutoff = datetime.now(UTC) - timedelta(days=retention_days)
+    cutoff_naive = datetime.now(UTC).replace(tzinfo=None) - timedelta(days=retention_days)
+
+    try:
+        channels_purged = _purge_expired_deleted_channels(cutoff_naive)
+    except ProgrammingError as e:
+        log_debug("purge_stale_soft_deletes", value=e.orig if hasattr(e, "orig") else e)
+        return 0
 
     try:
         stale_workspaces = DbManager.find_records(
@@ -241,11 +560,14 @@ def purge_stale_soft_deletes() -> int:
         return 0
 
     if not stale_workspaces:
+        if channels_purged:
+            log_info("purge_stale_soft_deletes_complete", purged=0, sync_channels=channels_purged)
         return 0
 
     purged = 0
     for ws in stale_workspaces:
         ws_name = ws.workspace_name or ws.team_id or f"Workspace {ws.id}"
+        manager_notices = _tell_other_channels_workspace_removed(ws, ws_name, retention_days)
 
         group_memberships = DbManager.find_records(
             schemas.WorkspaceGroupMember,
@@ -270,16 +592,12 @@ def purge_stale_soft_deletes() -> int:
                 if not member_ws or member_ws.deleted_at is not None or not get_bot_token(member_ws):
                     continue
                 notified_ws.add(member.workspace_id)
-                try:
-                    member_client = WebClient(token=get_bot_token(member_ws))
-                    notify_admins_dm(
-                        member_client,
-                        f":wastebasket: `{ws_name}` has been permanently removed "
-                        f"after {retention_days} days of inactivity.",
-                        team_id=member_ws.team_id,
-                    )
-                except Exception as e:
-                    log_warning("purge", workspace_id=member.workspace_id, error=str(e))
+                member_client = WebClient(token=get_bot_token(member_ws))
+                for text in manager_notices:
+                    try:
+                        notify_admins_dm(member_client, text, team_id=member_ws.team_id)
+                    except Exception as e:
+                        log_warning("purge_notify_failed", workspace_id=member.workspace_id, error=str(e))
 
         # purge_workspace, not a bare Workspace delete: seven foreign keys across
         # six tables still reference this row, so a parent-first delete fails on
@@ -294,7 +612,96 @@ def purge_stale_soft_deletes() -> int:
 
         purged += 1
 
-    if purged:
-        log_info("purge_stale_soft_deletes_complete", purged=purged)
+    if purged or channels_purged:
+        log_info("purge_stale_soft_deletes_complete", purged=purged, sync_channels=channels_purged)
 
     return purged
+
+
+def _purge_expired_deleted_channels(cutoff_naive: datetime) -> int:
+    """Hard-delete ``deleted`` rows past retention. ``uninstalled`` rows stay with their workspace."""
+    expired = DbManager.find_records(
+        schemas.SyncChannel,
+        [
+            schemas.SyncChannel.status == "deleted",
+            schemas.SyncChannel.deleted_at.isnot(None),
+            schemas.SyncChannel.deleted_at < cutoff_naive,
+        ],
+    )
+    from helpers.sync_cleanup import purge_sync, purge_sync_channels
+
+    emptied: set[int] = set()
+    for row in expired:
+        if not getattr(row, "id", None):
+            continue
+        purge_sync_channels([row])
+        sync_id = getattr(row, "sync_id", None)
+        if not sync_id or sync_id in emptied:
+            continue
+        left = DbManager.count_records(schemas.SyncChannel, [schemas.SyncChannel.sync_id == sync_id])
+        if left:
+            continue
+        emptied.add(sync_id)
+        sync = DbManager.get_record(schemas.Sync, id=sync_id)
+        group_id = getattr(sync, "group_id", None) if sync else None
+        purge_sync(sync_id)
+        if not group_id:
+            continue
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
+        if not group or getattr(group, "status", None) != "disbanded":
+            continue
+        if DbManager.count_records(schemas.Sync, [schemas.Sync.group_id == group_id]):
+            continue
+        from helpers.group_roles import _disband_group
+
+        _disband_group(group_id)
+    return len(expired)
+
+
+def _retention_notice(workspace_name: str, retention_days: int, sync, *, for_managers: bool) -> str:
+    """Action Notice for a Workspace that aged out. The day count is only on the manager copy."""
+    from helpers.sync_participation import format_action_notice
+
+    group_name = None
+    if sync is not None and getattr(sync, "group_id", None):
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=sync.group_id)
+        group_name = group.name if group else None
+    return format_action_notice(
+        action="Retention",
+        workspace_name=workspace_name,
+        group_name=group_name,
+        manager=None,
+        sync_id=getattr(sync, "id", None),
+        for_managers=for_managers,
+        retention_days=retention_days if for_managers else None,
+        workspace_line=sync is None,
+    )
+
+
+def _tell_other_channels_workspace_removed(workspace, workspace_name: str, retention_days: int) -> list[str]:
+    """One Channel sentence per Sync, and a remove so a peer's stub ages out on its own clock.
+
+    Returns the manager copy, one per Sync. With no Sync, one notice about the Workspace.
+    """
+    from helpers.leave_sync import _replicate_one_remove
+    from helpers.sync_lifecycle import post_to_other_sync_channels
+
+    rows = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.workspace_id == workspace.id],
+    )
+    manager_notices: list[str] = []
+    told: set[int] = set()
+    for row in rows:
+        sync_id = getattr(row, "sync_id", None)
+        sync = DbManager.get_record(schemas.Sync, id=sync_id) if sync_id else None
+        notice = None
+        if sync_id and sync_id not in told and sync is not None:
+            told.add(sync_id)
+            notice = _retention_notice(workspace_name, retention_days, sync, for_managers=False)
+            post_to_other_sync_channels(workspace, sync_id, notice)
+            manager_notices.append(_retention_notice(workspace_name, retention_days, sync, for_managers=True))
+        _replicate_one_remove(sync, getattr(sync, "group_id", None) if sync else None, workspace, row, notice=notice)
+    if not manager_notices:
+        manager_notices.append(_retention_notice(workspace_name, retention_days, None, for_managers=True))
+    return manager_notices

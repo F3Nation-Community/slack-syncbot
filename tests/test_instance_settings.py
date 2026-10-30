@@ -280,7 +280,17 @@ class TestSettingsFormRenders:
         action_ids = [b["element"]["action_id"] for b in blocks if b.get("element", {}).get("action_id")]
         assert actions.CONFIG_SETTINGS_WORKSPACE_BLOCK_LIST in action_ids
         labels = [b.get("label", {}).get("text") for b in blocks if b.get("type") == "input"]
+        assert "Extra Managers" in labels
+        assert "Allow Private Channels in this Workspace" in labels
+        assert "Allow External Connections (Federation)" in labels
+        assert "Days to Retain Soft-Deleted Data" in labels
         assert "Workspace Block List" in labels
+        rendered = str(blocks)
+        assert "Public Channels Only (default)" in rendered
+        assert "External Connections Disabled (default)" in rendered
+        assert "does not start this timer" in rendered
+        assert "Deleting a Channel in Slack" in rendered
+        assert "owns a Group" in rendered
 
     def test_non_primary_form_omits_instance_fields(self):
         from handlers.settings import _build_settings_form

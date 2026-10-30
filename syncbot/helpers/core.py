@@ -191,17 +191,14 @@ def is_settings_visible_for_workspace(team_id: str | None) -> bool:
     return bool((team_id or "").strip())
 
 
-def format_admin_label(client, user_id: str, workspace) -> tuple[str, str]:
-    """Return ``(display_name, full_label)`` for an admin."""
+def format_admin_label(client, user_id: str, workspace) -> str:
+    """Code-ticked `` `Name (Workspace)` `` for notices. Not a Slack mention."""
     from .slack_api import get_user_info
     from .workspace import resolve_workspace_name
 
     display_name, _ = get_user_info(client, user_id)
-    display_name = display_name or "An Admin from another Workspace"
     ws_name = resolve_workspace_name(workspace) if workspace else None
-    if ws_name:
-        return display_name, f"{display_name} from {ws_name}"
-    return display_name, display_name
+    return code_ticked_display_name(display_name or "An Admin", ws_name)
 
 
 _PREFIXED_ACTIONS = (
@@ -214,6 +211,7 @@ _PREFIXED_ACTIONS = (
     actions.CONFIG_EDIT_PENDING_EXTERNAL_CONNECTION,
     actions.CONFIG_CANCEL_PENDING_EXTERNAL_CONNECTION,
     actions.CONFIG_LEAVE_GROUP,
+    actions.CONFIG_REMOVE_GROUP_MEMBER,
     actions.CONFIG_ACCEPT_GROUP_INVITE,
     actions.CONFIG_DECLINE_GROUP_INVITE,
     actions.CONFIG_CANCEL_GROUP_INVITE,

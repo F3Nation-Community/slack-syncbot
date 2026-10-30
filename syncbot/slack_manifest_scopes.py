@@ -33,7 +33,6 @@ BOT_SCOPES: tuple[str, ...] = (
     "reactions:read",
     "reactions:write",
     "team:read",
-    "usergroups:read",
     "users:read",
     "users:read.email",
 )
