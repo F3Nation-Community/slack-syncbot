@@ -203,7 +203,7 @@ Only fill the provider block that matches `CLOUD_PROVIDER`, and only fill the da
 
 | Variable | Notes |
 |----------|-------|
-| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). At DEBUG, `log_debug()` events include skip, heal, missing bot token, pipeline fan-out, file share timestamps, and `/teams`. `log_info()` covers migration export/import and pair. |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` (default `INFO`). At DEBUG, `log_debug()` events include skip, `workspace_convert`, `teams_convert`, missing bot token, pipeline fan-out, file share timestamps, and `/teams`. `log_info()` covers migration export/import and pair. |
 | `PRIMARY_WORKSPACE` | Slack Team ID that unlocks Backup/Restore (and scopes DB reset). Takes effect after a redeploy. |
 | `ENABLE_DB_RESET` | `true` / `false` (default `false`). Shows the Reset Database button, and only on the primary workspace. |
 
