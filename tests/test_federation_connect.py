@@ -462,6 +462,30 @@ class TestFedWsCacheInvalidation:
         assert announce.call_args.kwargs["action"] == "Leave Connection"
         inv.assert_called_once_with()
 
+    def test_leave_connection_confirm_says_the_remote_workspaces_are_soft_deleted(self):
+        from handlers.federation_cmds import handle_leave_external_connection
+
+        body = {
+            "user": {"id": "U_ADMIN"},
+            "team": {"id": "T1"},
+            "trigger_id": "tr",
+            "actions": [{"action_id": "leave_external_connection_peer", "value": "peer"}],
+        }
+        workspace = SimpleNamespace(id=1, team_id="T1")
+        peer = SimpleNamespace(instance_id="peer", name="Partner Org", private_key_encrypted=None)
+        client = MagicMock()
+        with (
+            patch("handlers.federation_cmds._require_primary_admin", return_value=workspace),
+            patch("handlers.federation_cmds.DbManager.get_record", return_value=peer),
+            patch("handlers.federation_cmds.helpers.soft_delete_retention_days", return_value=30),
+        ):
+            handle_leave_external_connection(body, client, MagicMock(), {})
+        text = str(client.views_update.call_args.kwargs["view"])
+        assert "Soft-delete remote Workspaces" in text
+        assert "uninstalled" in text
+        assert "Pause remote" not in text
+        assert "Partner Org" in text
+
     def test_leave_connection_refuses_self_instance(self):
         from handlers.federation_cmds import handle_leave_external_connection
 

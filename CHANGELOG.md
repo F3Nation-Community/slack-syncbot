@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A workspace still installed here posts Install when another instance lists it, and that notice names the app that was installed
 - A migration export leaves out a disbanded group, and an older file does not revive it
 - Settings names the soft-delete retention period, and Pause and Archive do not start that timer
+- Leave Connection's confirm says the remote Workspaces are soft-deleted, and Disband's checkbox deletes history now
 - Home shows each Channel's participation or Paused, its privacy, each member's state, and each Workspace's Group Role
 - Synced Channel details match the rest of Home, and an External Connection URL is its own code-ticked line
 - The Slack app manifest adds Channel leave and delete events and drops usergroups:read

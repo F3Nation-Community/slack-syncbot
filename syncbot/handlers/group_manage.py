@@ -671,7 +671,7 @@ def _disband_confirm_blocks(
                 f"\u2022 End {_counted(sync_count, 'Channel Sync', 'Channel Syncs')} "
                 f"covering {_counted(channel_count, 'Channel', 'Channels')}\n"
                 f"\u2022 Keep synced message history for `{days}` days, then delete it. "
-                "It does not come back, unless you tick the box below\n"
+                "It does not come back\n"
                 "\u2022 Delete every user mapping for this Group now\n\n"
                 "_Ticking the box deletes synced message history now for every Workspace in this Group, "
                 "including one on another instance. User mappings are deleted now either way. "

@@ -266,7 +266,7 @@ class TestDisbandGroupConfirmModal:
             "actions": [{"action_id": f"{actions.CONFIG_DISBAND_GROUP}_5"}],
             "trigger_id": "tr",
         }
-        group = SimpleNamespace(id=5, name="G")
+        group = SimpleNamespace(id=5, name="Partner Org")
         workspace = SimpleNamespace(id=2, team_id="T1", deleted_at=None)
         with (
             patch("handlers._common._get_authorized_workspace", return_value=("U1", workspace)),
@@ -295,8 +295,10 @@ class TestDisbandGroupConfirmModal:
         ]
         assert "Also delete synced message history now" in labels
         text = str(view)
-        assert "Disband `G`?" in text
+        assert "Disband `Partner Org`?" in text
         assert "`14` days" in text
+        assert "unless you tick the box" not in text
+        assert "deletes synced message history now" in text
         assert "every Workspace in this Group" in text
         assert "User mappings are deleted now" in text
 
