@@ -39,7 +39,12 @@ jobs:
 
       - name: Skip when hold label is present
         if: contains(github.event.pull_request.labels.*.name, 'hold')
-        run: echo "hold label set; leaving auto-merge disabled."
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          echo "hold label set; disabling auto-merge."
+          gh pr merge --disable-auto "$PR_URL" || echo "Auto-merge was already off."
 
       - name: Close version-only major updates
         if: >-
@@ -67,4 +72,12 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           PR_URL: ${{ github.event.pull_request.html_url }}
-        run: gh pr merge --auto --squash "$PR_URL"
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          names="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
+          if [[ -z "${names}" ]]; then
+            echo "Dependabot pull request changes no files; disabling auto-merge."
+            gh pr merge --disable-auto "$PR_URL" || echo "Auto-merge was already off."
+            exit 0
+          fi
+          gh pr merge --auto --squash "$PR_URL"
