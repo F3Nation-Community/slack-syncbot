@@ -88,6 +88,27 @@ Bumps actions/checkout from 1.0.0 to 2.0.0.
     assert result.stdout.split() == ["certifi"]
 
 
+def test_a_table_inside_the_changelog_is_not_a_package_list(tmp_path: Path) -> None:
+    body = """\
+Bumps the python-patch-minor group with 2 updates:
+
+| Package | From | To |
+| --- | --- | --- |
+| [certifi](https://github.com/certifi/python-certifi) | `2026.2.25` | `2026.10.23` |
+
+<details>
+<summary>Release notes</summary>
+
+| Package | From | To |
+| --- | --- | --- |
+| [actions/checkout](https://github.com/actions/checkout) | `1.0.0` | `2.0.0` |
+</details>
+"""
+    result = _run(tmp_path, "list", LOCK, body, "")
+    assert result.returncode == 0
+    assert result.stdout.split() == ["certifi"]
+
+
 def test_a_lowered_pin_is_not_printed(tmp_path: Path) -> None:
     lowered = """\
 -certifi==2026.10.19 ; python_version >= "3.12"

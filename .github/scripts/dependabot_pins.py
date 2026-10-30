@@ -75,7 +75,7 @@ def body_targets(text: str) -> dict[str, str]:
             continue
         name = next(group for group in update.groups()[:3] if group)
         targets[normalize(name)] = update.group(4)
-    for line in text.splitlines():
+    for line in _preamble(text).splitlines():
         match = _TABLE_ROW.match(line.strip())
         if not match:
             continue
