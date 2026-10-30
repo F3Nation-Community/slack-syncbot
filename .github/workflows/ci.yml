@@ -44,6 +44,8 @@ jobs:
               - 'infra/gcp/litestream.yml'
               - 'syncbot/requirements.txt'
       - id: set
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           if [ "${{ github.event_name }}" != "pull_request" ]; then
             echo "python-deps=true" >> "$GITHUB_OUTPUT"
@@ -51,7 +53,12 @@ jobs:
             echo "terraform=true" >> "$GITHUB_OUTPUT"
             echo "gcp-docker=true" >> "$GITHUB_OUTPUT"
           else
-            echo "python-deps=${{ steps.filter.outputs.python-deps }}" >> "$GITHUB_OUTPUT"
+            python_deps="${{ steps.filter.outputs.python-deps }}"
+            # An empty Dependabot diff skips the path filter, which used to skip pip-audit.
+            if [ "$PR_AUTHOR" = "dependabot[bot]" ]; then
+              python_deps=true
+            fi
+            echo "python-deps=${python_deps}" >> "$GITHUB_OUTPUT"
             echo "sam=${{ steps.filter.outputs.sam }}" >> "$GITHUB_OUTPUT"
             echo "terraform=${{ steps.filter.outputs.terraform }}" >> "$GITHUB_OUTPUT"
             echo "gcp-docker=${{ steps.filter.outputs.gcp-docker }}" >> "$GITHUB_OUTPUT"
@@ -111,9 +118,49 @@ jobs:
         id: sync
         env:
           PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REF: ${{ github.base_ref }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
+          dependabot=false
+          if [[ "${PR_AUTHOR}" == "dependabot[bot]" && "${GITHUB_REPOSITORY}" == "F3Nation-Community/slack-syncbot" ]]; then
+            dependabot=true
+          fi
+
+          if [[ "${dependabot}" == "true" ]]; then
+            git fetch origin "${BASE_REF}"
+            git diff "origin/${BASE_REF}" HEAD -- syncbot/requirements.txt > /tmp/requirements.diff || true
+            gh pr view "${PR_NUMBER}" --json body --jq .body > /tmp/pr-body.md
+            python .github/scripts/dependabot_pins.py list \
+              --lock poetry.lock \
+              --body /tmp/pr-body.md \
+              --requirements-diff /tmp/requirements.diff > /tmp/dependabot-packages.txt
+            mapfile -t packages < /tmp/dependabot-packages.txt
+            if ((${#packages[@]} > 0)); then
+              poetry update "${packages[@]}"
+            fi
+            if ! git diff --quiet -- pyproject.toml; then
+              echo "::error::poetry update changed pyproject.toml. Widen that constraint in a separate pull request."
+              exit 1
+            fi
+          fi
+
           poetry export -f requirements.txt --without-hashes -o syncbot/requirements.txt
-          if git diff --quiet syncbot/requirements.txt; then
+
+          if [[ "${dependabot}" == "true" ]]; then
+            python .github/scripts/dependabot_pins.py check \
+              --lock poetry.lock \
+              --body /tmp/pr-body.md \
+              --requirements-diff /tmp/requirements.diff
+            if [[ -z "$(git diff --name-only "origin/${BASE_REF}")" ]]; then
+              echo "::error::Dependabot pull request changes no files against ${BASE_REF}."
+              exit 1
+            fi
+          fi
+
+          if git diff --quiet -- poetry.lock syncbot/requirements.txt; then
             echo "needs_commit=false" >> "$GITHUB_OUTPUT"
             echo "requirements.txt files are already in sync."
           else
@@ -139,7 +186,7 @@ jobs:
           set -euo pipefail
           git config user.name "f3n-community-automation[bot]"
           git config user.email "${APP_ID}+f3n-community-automation[bot]@users.noreply.github.com"
-          git add syncbot/requirements.txt
+          git add poetry.lock syncbot/requirements.txt
           subject="chore: sync requirements.txt files with poetry.lock"
           if [ "${SKIP_CI}" = "true" ]; then
             subject="${subject} [skip ci]"
