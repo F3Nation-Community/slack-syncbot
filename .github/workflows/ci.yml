@@ -68,6 +68,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     steps:
       # App token only on F3Nation-Community/slack-syncbot same-repo (not fork PRs).
       # github.repository is the base repo on pull_request, so also require
@@ -91,6 +92,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: ${{ steps.app-token.outcome == 'success' }}
           token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+      - name: Fetch Dependabot metadata
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.repository == 'F3Nation-Community/slack-syncbot' &&
+          github.event.pull_request.user.login == 'dependabot[bot]'
+        id: dependabot-meta
+        uses: dependabot/fetch-metadata@v2
+        with:
+          github-token: ${{ github.token }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -122,6 +132,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_REF: ${{ github.base_ref }}
           GH_TOKEN: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
+          DEPENDABOT_ECOSYSTEM: ${{ steps.dependabot-meta.outputs.package-ecosystem }}
         run: |
           set -euo pipefail
           dependabot=false
@@ -131,29 +142,36 @@ jobs:
 
           if [[ "${dependabot}" == "true" ]]; then
             git fetch origin "${BASE_REF}"
-            git diff "origin/${BASE_REF}" HEAD -- syncbot/requirements.txt > /tmp/requirements.diff || true
-            gh pr view "${PR_NUMBER}" --json body --jq .body > /tmp/pr-body.md
-            python .github/scripts/dependabot_pins.py list \
-              --lock poetry.lock \
-              --body /tmp/pr-body.md \
-              --requirements-diff /tmp/requirements.diff > /tmp/dependabot-packages.txt
-            mapfile -t packages < /tmp/dependabot-packages.txt
-            if ((${#packages[@]} > 0)); then
-              poetry update "${packages[@]}"
-            fi
-            if ! git diff --quiet -- pyproject.toml; then
-              echo "::error::poetry update changed pyproject.toml. Widen that constraint in a separate pull request."
-              exit 1
+            # Docker and GitHub Actions updates also say "Bumps … from … to …".
+            # poetry update is only for the pip ecosystem. python is the interpreter
+            # constraint, and actions/checkout is not a locked package.
+            if [[ "${DEPENDABOT_ECOSYSTEM}" == "pip" ]]; then
+              git diff "origin/${BASE_REF}" HEAD -- syncbot/requirements.txt > /tmp/requirements.diff || true
+              gh pr view "${PR_NUMBER}" --json body --jq .body > /tmp/pr-body.md
+              python .github/scripts/dependabot_pins.py list \
+                --lock poetry.lock \
+                --body /tmp/pr-body.md \
+                --requirements-diff /tmp/requirements.diff > /tmp/dependabot-packages.txt
+              mapfile -t packages < /tmp/dependabot-packages.txt
+              if ((${#packages[@]} > 0)); then
+                poetry update "${packages[@]}"
+              fi
+              if ! git diff --quiet -- pyproject.toml; then
+                echo "::error::poetry update changed pyproject.toml. Widen that constraint in a separate pull request."
+                exit 1
+              fi
             fi
           fi
 
           poetry export -f requirements.txt --without-hashes -o syncbot/requirements.txt
 
           if [[ "${dependabot}" == "true" ]]; then
-            python .github/scripts/dependabot_pins.py check \
-              --lock poetry.lock \
-              --body /tmp/pr-body.md \
-              --requirements-diff /tmp/requirements.diff
+            if [[ "${DEPENDABOT_ECOSYSTEM}" == "pip" ]]; then
+              python .github/scripts/dependabot_pins.py check \
+                --lock poetry.lock \
+                --body /tmp/pr-body.md \
+                --requirements-diff /tmp/requirements.diff
+            fi
             # Merge-base (three-dot) plus uncommitted lock/export edits. A two-dot
             # diff against the tip of main counts commits that landed on main only.
             names="$(
