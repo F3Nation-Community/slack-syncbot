@@ -210,6 +210,8 @@ class SyncChannel(BaseClass, GetDBClass):
     reaction_style = Column(String(32), nullable=True)
     publishes = Column(Boolean, nullable=False, default=True)
     subscribes = Column(Boolean, nullable=False, default=True)
+    synced_by_user_id = Column(String(32), nullable=True)
+    is_private = Column(Boolean, nullable=True, default=None)
     created_at = Column(DateTime, nullable=False)
     deleted_at = Column(DateTime, nullable=True, default=None)
 
