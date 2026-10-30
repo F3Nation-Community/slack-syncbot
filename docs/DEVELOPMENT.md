@@ -114,4 +114,4 @@ If you rotate the key or recreate the App: update **both** repository secret sto
 
 ## Commit signing (local)
 
-Maintainers using **GPG-signed commits** should keep `commit.gpgsign` enabled locally; automated release and requirements-sync commits are signed as **`f3n-community-automation[bot]`** via the GitHub App. See [AGENTS.md](../AGENTS.md) and [AI_AGENTS.md](AI_AGENTS.md).
+Maintainers using **GPG-signed commits** should keep `commit.gpgsign` enabled locally; automated release and requirements-sync commits are signed as **`f3n-community-automation[bot]`** via the GitHub App. Coding rules are in [AGENTS.md](../AGENTS.md).

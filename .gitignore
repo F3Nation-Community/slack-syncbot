@@ -169,10 +169,8 @@ syncbot/.oauth-data/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# Cursor (keep shared project rules; ignore local plans / IDE junk)
+# Cursor local plans and IDE files stay on this machine.
 .cursor/*
-!.cursor/rules/
-!.cursor/rules/**
 
 # Local planning notes — never commit. Agents write plans under .plans/ only (not docs/).
 docs/PLAN_*.md
