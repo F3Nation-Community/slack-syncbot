@@ -60,6 +60,14 @@ def test_dependabot_automerge_uses_app_token() -> None:
     text = (REPO_ROOT / ".github" / "workflows" / "dependabot-auto-merge.yml").read_text()
     assert "actions/create-github-app-token@v3" in text
     assert "GH_TOKEN: ${{ steps.app-token.outputs.token }}" in text
+    hold = text.split("Skip when hold label is present", 1)[1].split("- name:", 1)[0]
+    assert 'gh pr merge --disable-auto "$PR_URL"' in hold
+
+
+def test_requirements_sync_updates_the_lock_without_installing() -> None:
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    req, _rest = ci.split("forbidden-edits:", 1)
+    assert 'poetry update --lock "${packages[@]}"' in req
 
 
 def test_release_copies_changelog_section_to_github_release() -> None:

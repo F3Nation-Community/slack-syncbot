@@ -154,7 +154,9 @@ jobs:
                 --requirements-diff /tmp/requirements.diff > /tmp/dependabot-packages.txt
               mapfile -t packages < /tmp/dependabot-packages.txt
               if ((${#packages[@]} > 0)); then
-                poetry update "${packages[@]}"
+                # --lock writes poetry.lock and does not install. This job's
+                # checkout holds the App token that can push to main.
+                poetry update --lock "${packages[@]}"
               fi
               if ! git diff --quiet -- pyproject.toml; then
                 echo "::error::poetry update changed pyproject.toml. Widen that constraint in a separate pull request."
