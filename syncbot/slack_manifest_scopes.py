@@ -8,7 +8,7 @@ match the manifest ``user`` array (order included). When changing scopes, edit t
 GCP ``slack_user_scopes``, and env examples.
 
 ``USER_PERMISSION_GROUPS`` is the Home tab Authorize list. How to extend it is
-documented on that constant (and in ``AGENTS.md`` / ``docs/AI_AGENTS.md``).
+documented on that constant (and in ``AGENTS.md``).
 """
 
 from __future__ import annotations
@@ -33,7 +33,6 @@ BOT_SCOPES: tuple[str, ...] = (
     "reactions:read",
     "reactions:write",
     "team:read",
-    "usergroups:read",
     "users:read",
     "users:read.email",
 )

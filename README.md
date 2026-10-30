@@ -79,7 +79,6 @@ For local development, run `cp .env.example .env` and set your Slack app variabl
 | [API_REFERENCE.md](docs/API_REFERENCE.md) | HTTP routes and Slack events |
 | [CHANGELOG.md](CHANGELOG.md) | Release history (updated by python-semantic-release on F3Nation-Community `main`) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to contribute |
-| [AI_AGENTS.md](docs/AI_AGENTS.md) | AI/coding-agent workflow and CI guardrails |
 
 ## License
 

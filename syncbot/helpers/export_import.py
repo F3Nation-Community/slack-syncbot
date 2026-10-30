@@ -301,6 +301,31 @@ def invalidate_home_tab_caches_for_team(team_id: str) -> None:
     _cache_delete_prefix(f"home_tab_blocks:{team_id}")
 
 
+def invalidate_group_member_homes(group_id: int | None, *, exclude_workspace_id: int | None = None) -> None:
+    """Drop Home caches for every local member of a group, so each rebuilds on its next open."""
+    from helpers.workspace_kind import is_local_workspace
+
+    if not group_id:
+        return
+    members = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == group_id,
+            schemas.WorkspaceGroupMember.status == "active",
+            schemas.WorkspaceGroupMember.deleted_at.is_(None),
+        ],
+    )
+    seen: set[int] = set()
+    for member in members:
+        workspace_id = member.workspace_id
+        if not workspace_id or workspace_id == exclude_workspace_id or workspace_id in seen:
+            continue
+        seen.add(workspace_id)
+        workspace = get_workspace_by_id(workspace_id)
+        if workspace and is_local_workspace(workspace) and workspace.team_id:
+            invalidate_home_tab_caches_for_team(workspace.team_id)
+
+
 def invalidate_home_tab_caches_for_all_teams(team_ids: list[str]) -> None:
     """Clear home tab caches for each team_id (e.g. after full restore)."""
     for tid in team_ids:
@@ -310,6 +335,21 @@ def invalidate_home_tab_caches_for_all_teams(team_ids: list[str]) -> None:
 # ---------------------------------------------------------------------------
 # Data migration export (workspace-scoped)
 # ---------------------------------------------------------------------------
+
+_EXPORT_SKIP_CHANNEL_STATUSES = frozenset({"deleted", "uninstalled", "left"})
+
+
+def _group_is_active(group) -> bool:
+    """A missing status is active. Disband is the status that leaves a group out."""
+    return (getattr(group, "status", None) or "active") == "active"
+
+
+def _channel_in_migration_export(sync_channel) -> bool:
+    """Paused and pending stay. A removed or uninstalled Channel does not."""
+    if getattr(sync_channel, "deleted_at", None) is not None:
+        return False
+    status = getattr(sync_channel, "status", None) or "active"
+    return status not in _EXPORT_SKIP_CHANNEL_STATUSES
 
 
 def build_migration_export(
@@ -336,9 +376,11 @@ def build_migration_export(
         ],
     )
     groups_data = []
+    exported_group_ids: set[int] = set()
     for membership in memberships:
         g = DbManager.get_record(schemas.WorkspaceGroup, membership.group_id)
-        if g:
+        if g and _group_is_active(g):
+            exported_group_ids.add(g.id)
             role = "owner" if membership.role == "creator" else membership.role
             group_members = DbManager.find_records(
                 schemas.WorkspaceGroupMember,
@@ -353,10 +395,12 @@ def build_migration_export(
                 member_workspace = get_workspace_by_id(group_member.workspace_id) if group_member.workspace_id else None
                 if member_workspace and member_workspace.team_id != team_id:
                     member_team_ids.append(member_workspace.team_id)
+                    member_role = "owner" if group_member.role == "creator" else group_member.role
                     member_workspaces.append(
                         {
                             "team_id": member_workspace.team_id,
                             "workspace_name": member_workspace.workspace_name or None,
+                            "role": member_role if member_role in ("owner", "member") else "member",
                         }
                     )
             groups_data.append(
@@ -370,13 +414,17 @@ def build_migration_export(
             )
 
     # Syncs that have at least one SyncChannel for W
-    sync_channels_w = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.workspace_id == workspace_id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
+    sync_channels_w = [
+        sync_channel
+        for sync_channel in DbManager.find_records(
+            schemas.SyncChannel,
+            [
+                schemas.SyncChannel.workspace_id == workspace_id,
+                schemas.SyncChannel.deleted_at.is_(None),
+            ],
+        )
+        if _channel_in_migration_export(sync_channel)
+    ]
     sync_ids = {sync_channel.sync_id for sync_channel in sync_channels_w}
     syncs_data = []
     sync_channels_data = []
@@ -384,7 +432,7 @@ def build_migration_export(
 
     for sync_id in sync_ids:
         sync = DbManager.get_record(schemas.Sync, sync_id)
-        if not sync:
+        if not sync or sync.group_id not in exported_group_ids:
             continue
         syncs_data.append(
             {
@@ -398,9 +446,14 @@ def build_migration_export(
         syncs_data[-1]["group_uid"] = group.uid if group else None
         all_channels = DbManager.find_records(
             schemas.SyncChannel,
-            [schemas.SyncChannel.sync_id == sync_id],
+            [
+                schemas.SyncChannel.sync_id == sync_id,
+                schemas.SyncChannel.deleted_at.is_(None),
+            ],
         )
         for sync_channel in all_channels:
+            if not _channel_in_migration_export(sync_channel):
+                continue
             owner = get_workspace_by_id(sync_channel.workspace_id) if sync_channel.workspace_id else None
             channel_team = (owner.team_id if owner else None) or (
                 team_id if sync_channel.workspace_id == workspace_id else None
@@ -418,6 +471,8 @@ def build_migration_export(
                     "publishes": sync_channel.publishes,
                     "subscribes": sync_channel.subscribes,
                     "reaction_style": sync_channel.reaction_style,
+                    "synced_by_user_id": getattr(sync_channel, "synced_by_user_id", None),
+                    "is_private": getattr(sync_channel, "is_private", None),
                 }
             )
             key = f"{sync.uid}:{sync_channel.channel_id}"
@@ -476,6 +531,8 @@ def build_migration_export(
     )
     user_mappings_data = []
     for um in um_records:
+        if getattr(um, "group_id", None) not in exported_group_ids:
+            continue
         src_ws = get_workspace_by_id(um.source_workspace_id) if um.source_workspace_id else None
         tgt_ws = get_workspace_by_id(um.target_workspace_id) if um.target_workspace_id else None
         user_mappings_data.append(
@@ -485,8 +542,12 @@ def build_migration_export(
                 "source_user_id": um.source_user_id,
                 "target_user_id": um.target_user_id,
                 "map_method": um.map_method,
+                "group_uid": None,
             }
         )
+        mapped_group = DbManager.get_record(schemas.WorkspaceGroup, um.group_id) if um.group_id else None
+        if mapped_group:
+            user_mappings_data[-1]["group_uid"] = mapped_group.uid
 
     # Workspace-scoped durable data only. No tokens, private key, or federation_file_parts.
     payload = {
@@ -609,37 +670,15 @@ def _workspace_id_for_imported_team(
     return None
 
 
-def _ensure_group_membership(group_id: int, workspace_id: int, *, role: str, now) -> None:
-    if role == "creator":
-        role = "member"
-    if role not in ("owner", "member"):
-        role = "member"
-    memberships = DbManager.find_records(
-        schemas.WorkspaceGroupMember,
-        [
-            schemas.WorkspaceGroupMember.group_id == group_id,
-            schemas.WorkspaceGroupMember.workspace_id == workspace_id,
-        ],
-    )
-    if memberships:
-        DbManager.update_records(
-            schemas.WorkspaceGroupMember,
-            [schemas.WorkspaceGroupMember.id == memberships[0].id],
-            {
-                schemas.WorkspaceGroupMember.status: "active",
-                schemas.WorkspaceGroupMember.role: role,
-                schemas.WorkspaceGroupMember.deleted_at: None,
-            },
-        )
-        return
-    DbManager.create_record(
-        schemas.WorkspaceGroupMember(
-            group_id=group_id,
-            workspace_id=workspace_id,
-            status="active",
-            role=role,
-            joined_at=now,
-        )
+def _ensure_group_membership(group_id: int, workspace_id: int, *, role, now) -> None:
+    from helpers.group_roles import upsert_group_membership
+
+    upsert_group_membership(
+        group_id,
+        workspace_id,
+        role=role if role is not None else "",
+        now=now,
+        apply_role=True,
     )
 
 
@@ -659,9 +698,9 @@ def import_migration_data(
     now = datetime.now(UTC)
     this_workspace = get_workspace_by_id(workspace_id)
     if this_workspace and this_workspace.team_id:
-        from helpers.workspace_kind import heal_workspace_to_local
+        from helpers.workspace_kind import convert_workspace_to_local
 
-        heal_workspace_to_local(this_workspace.team_id, source="import")
+        convert_workspace_to_local(this_workspace.team_id, source="import")
         this_workspace = get_workspace_by_id(workspace_id)
         if this_workspace:
             workspace_id = this_workspace.id
@@ -674,6 +713,8 @@ def import_migration_data(
         if not uid or not name:
             continue
         existing = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.uid == uid])
+        if existing and not _group_is_active(existing[0]):
+            continue
         if existing:
             group = existing[0]
         else:
@@ -689,15 +730,22 @@ def import_migration_data(
         group_uid_to_id[uid] = group.id
         this_role = group_entry.get("role") or "member"
         _ensure_group_membership(group.id, workspace_id, role=this_role, now=now)
-        for other_team in group_entry.get("member_team_ids") or []:
+        named_members = group_entry.get("member_workspaces") or []
+        if named_members:
+            others = named_members
+        else:
+            others = [{"team_id": team, "role": None} for team in (group_entry.get("member_team_ids") or [])]
+        for entry in others:
+            if not isinstance(entry, dict):
+                continue
             other_id = _workspace_id_for_imported_team(
-                str(other_team) if other_team else None,
+                str(entry.get("team_id") or "") or None,
                 this_workspace_id=workspace_id,
                 team_id_to_workspace_id=team_id_to_workspace_id,
             )
             if not other_id or other_id == workspace_id:
                 continue
-            _ensure_group_membership(group.id, other_id, role="member", now=now)
+            _ensure_group_membership(group.id, other_id, role=entry.get("role"), now=now)
 
     sync_uid_to_id: dict[str, int] = {}
     for sync_entry in syncs_export:
@@ -752,22 +800,35 @@ def import_migration_data(
                 schemas.SyncChannel.channel_id == channel_id,
             ],
         )
+        moving = target_ws_id == workspace_id
+        current = getattr(existing_channels[0], "status", None) if existing_channels else None
+        if moving and status == "paused":
+            written_status = "paused"
+        elif moving and current == "active":
+            written_status = "active"
+        elif moving:
+            written_status = "pending"
+        else:
+            written_status = status
         if existing_channels:
             new_sync_channel = existing_channels[0]
-            updates = {
-                schemas.SyncChannel.status: status,
-                schemas.SyncChannel.publishes: sc_entry.get("publishes", True),
-                schemas.SyncChannel.subscribes: sc_entry.get("subscribes", True),
-                schemas.SyncChannel.reaction_style: sc_entry.get("reaction_style"),
-                schemas.SyncChannel.deleted_at: None,
-            }
-            if channel_name:
-                updates[schemas.SyncChannel.channel_name] = channel_name
-            DbManager.update_records(
-                schemas.SyncChannel,
-                [schemas.SyncChannel.id == new_sync_channel.id],
-                updates,
-            )
+            if moving:
+                updates = {
+                    schemas.SyncChannel.status: written_status,
+                    schemas.SyncChannel.publishes: sc_entry.get("publishes", True),
+                    schemas.SyncChannel.subscribes: sc_entry.get("subscribes", True),
+                    schemas.SyncChannel.reaction_style: sc_entry.get("reaction_style"),
+                    schemas.SyncChannel.deleted_at: None,
+                    schemas.SyncChannel.synced_by_user_id: sc_entry.get("synced_by_user_id"),
+                    schemas.SyncChannel.is_private: sc_entry.get("is_private"),
+                }
+                if channel_name:
+                    updates[schemas.SyncChannel.channel_name] = channel_name
+                DbManager.update_records(
+                    schemas.SyncChannel,
+                    [schemas.SyncChannel.id == new_sync_channel.id],
+                    updates,
+                )
         else:
             new_sync_channel = DbManager.create_record(
                 schemas.SyncChannel(
@@ -775,10 +836,12 @@ def import_migration_data(
                     workspace_id=target_ws_id,
                     channel_id=channel_id,
                     channel_name=channel_name,
-                    status=status,
+                    status=written_status,
                     publishes=sc_entry.get("publishes", True),
                     subscribes=sc_entry.get("subscribes", True),
                     reaction_style=sc_entry.get("reaction_style"),
+                    synced_by_user_id=sc_entry.get("synced_by_user_id"),
+                    is_private=sc_entry.get("is_private"),
                     created_at=now,
                 )
             )
@@ -831,6 +894,9 @@ def import_migration_data(
 
     # user_mappings where both source and target workspace exist on B
     for um in user_mappings_export:
+        mapped_group_uid = str(um.get("group_uid") or "").strip()
+        if mapped_group_uid and mapped_group_uid not in group_uid_to_id:
+            continue
         src_team = um.get("source_team_id")
         tgt_team = um.get("target_team_id")
         src_ws_id = team_id_to_workspace_id.get(src_team) if src_team else None
@@ -855,7 +921,7 @@ def import_migration_data(
                 target_user_id=um.get("target_user_id"),
                 map_method=um.get("map_method") or um.get("match_method", "none"),
                 mapped_at=now,
-                group_id=None,
+                group_id=group_uid_to_id.get(mapped_group_uid) if mapped_group_uid else None,
             )
         )
 

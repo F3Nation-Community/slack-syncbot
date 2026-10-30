@@ -37,8 +37,12 @@ Once the request has the `SyncBot-Federation` User-Agent and federation is on, m
 | `POST` | `/api/federation/file/offer` | Announce a hashed file so the peer can skip or accept parts |
 | `POST` | `/api/federation/file` | Receive one encrypted file part (raw bytes) |
 | `POST` | `/api/federation/users` | Exchange user directory with a connected instance |
-| `POST` | `/api/federation/teams` | Peer announces allowed Workspaces (`team_id` + name); this install heals stubs or records a pending claim while still live, and refreshes the primary Workspace name |
+| `POST` | `/api/federation/teams` | Peer announces allowed Workspaces (`team_id` + name) and its Slack app name (`app_name`); this install converts stubs or records a pending claim while still live, and refreshes the primary Workspace name |
+| `POST` | `/api/federation/group-member-remove` | Hard-delete one workspace's group membership and that group's user mappings |
+| `POST` | `/api/federation/workspace-release` | Origin uninstalled a workspace. Write each group role from the file and resume `pending` rows when this workspace is already imported |
 | `GET` | `/api/federation/ping` | Health check for connected instances (only when federation is on) |
+
+A group upsert may include `status`. `disbanded` ends that group here and marks its memberships inactive, then DMs managers when the body includes `notice`. An upsert that omits `status` does not bring a disbanded group back, and `disbanded` does not create a group that was never here. Promote and Give Up Ownership use the group invite with `set_role` so the role is stored (`creator` is `owner`). A snapshot invite omits `set_role`. Leave and Remove may include the same `notice`, and this instance DMs it to managers of its own workspaces in the group.
 
 Inbound message and reaction endpoints resolve the addressed `SyncChannel` as a target and apply the envelope through the same `apply_target` path as local fan-out. Thread creates include `target_ts` (the Slack ts on that Channel) so a reply can apply without looking the parent up again. Edits, deletes, and reactions need PostMeta on that SyncChannel. If that channel does not subscribe, the request is accepted without writing to Slack. Federation copies never become a new source or create another hop.
 
@@ -57,10 +61,19 @@ When a channel sync includes a federated workspace, this instance POSTs to the p
 | Event | Handler | Description |
 |-------|---------|-------------|
 | `app_home_opened` | `handle_app_home_opened` | Publishes the Home tab with workspace groups, channel syncs, and user mapping. When the per-user content hash is unchanged, republishes the cached blocks instead of rebuilding. |
-| `app_uninstalled` | `handle_app_uninstalled` | Workspace uninstall: Bolt `InstallationStore.delete_all` (bot + every user install row), then pause groups and channel syncs. |
-| `member_joined_channel` | `handle_member_joined_channel` | Detects when SyncBot is added to an unconfigured channel; posts a message and leaves. |
-| `message.channels` / `message.groups` | `respond_to_message_event` | Fires on new messages, thread broadcasts, `/me`, edits, deletes, and file shares in public/private channels. |
+| `app_uninstalled` | `handle_app_uninstalled` | Bolt `delete_all`, then soft-delete the workspace. Memberships keep their row. Channel rows become `uninstalled`. Other members' Channels are told. Peers mirror the status. |
+| `member_joined_channel` | `handle_member_joined_channel` | A manager adding SyncBot back resumes the paused Syncs on that Channel. A refused add posts the reason and SyncBot leaves. A Channel with no Sync gets a note and SyncBot leaves. |
+| `member_left_channel` | `handle_member_left_channel` | The person a private Sync runs under leaving makes that Workspace leave the Sync (soft-delete, the Action Notice, the detail direct message). SyncBot being removed pauses it. |
+| `channel_left` | `handle_channel_left` | Pauses the Channel Sync when SyncBot leaves a public Channel. |
+| `group_left` | `handle_channel_left` | Same handler as `channel_left`. Pauses the Channel Sync when SyncBot leaves a private Channel. |
+| `channel_archive` | `respond_to_message_event` | Archive arrives as a message subtype. The Sync pauses and SyncBot stays in the Channel. |
+| `channel_unarchive` | `respond_to_message_event` | Unarchive arrives as a message subtype. The Sync resumes when SyncBot is still in the Channel. Otherwise it stays paused. Managers in that Channel are told SyncBot is not in it. |
+| `group_archive` | `respond_to_message_event` | A private Channel archive arrives as a message subtype. The Sync pauses and SyncBot stays in the Channel. |
+| `group_unarchive` | `respond_to_message_event` | A private Channel unarchive arrives as a message subtype. The Sync resumes when SyncBot is still in the Channel. |
+| `channel_deleted` | `handle_channel_deleted` | Deletes this Workspace's synced history for a public Channel that Slack deleted. Other Workspaces stay. |
+| `group_deleted` | `handle_channel_deleted` | Deletes this Workspace's synced history for a private Channel that Slack deleted. Other Workspaces stay. |
+| `message.channels` / `message.groups` | `respond_to_message_event` | Fires on new messages, thread broadcasts, `/me`, edits, deletes, and file shares in public/private channels. Also applies `channel_convert_to_private`, `channel_convert_to_public`, `channel_archive`, `channel_unarchive`, `group_archive`, and `group_unarchive` when those arrive as a message. |
 | `reaction_added` / `reaction_removed` | `handle_reaction` | Syncs emoji reactions from publishing channels to subscribing targets; skips user-token echo events SyncBot applied on a target. |
 | `team_join` | `handle_team_join` | Fires when a new user joins a connected workspace. Adds the user to the directory and re-checks unmapped user mappings. |
-| `tokens_revoked` | `handle_tokens_revoked` | User-token revoke: Bolt `delete_installation` for that person, then republish Home. A `tokens.bot` array is treated as uninstall only when the stored bot token fails `auth.test`. |
-| `user_profile_changed` | `handle_user_profile_changed` | Detects display name or email changes and updates the user directory and mappings. |
+| `tokens_revoked` | `handle_tokens_revoked` | A user-token revoke ends the private Channel Syncs that person runs, then republishes Home. A `tokens.bot` array soft-deletes the workspace only when the stored bot token fails `auth.test`. |
+| `user_profile_changed` | `handle_user_profile_changed` | A deleted or deactivated profile ends the private Channel Syncs that person runs. Other profile changes update the directory. |

@@ -32,8 +32,9 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
 import constants
+from helpers._cache import _cache_delete, _cache_get, _cache_set
 from helpers.core import safe_get
-from helpers.slack_api import get_own_bot_user_id
+from helpers.slack_api import get_own_bot_user_id, slack_error_code
 from helpers.workspace_settings import allow_private_channels
 from logger import log_warning
 from slack_manifest_scopes import USER_PERMISSION_GROUPS
@@ -206,6 +207,103 @@ def _clean_token(token) -> str | None:
     return token.strip() or None
 
 
+def _private_channel_member_key(team_id: str, user_id: str) -> str:
+    return f"private_channel_member:{team_id}:{user_id}"
+
+
+def _membership_error(exc: Exception) -> str:
+    """Slack's error code, or the exception text, so a failed lookup is not a blank."""
+    return slack_error_code(exc) or str(exc) or "membership_lookup_failed"
+
+
+def _user_token_private_channel_ids(token: str) -> tuple[frozenset[str] | None, str | None]:
+    """Unarchived private Channel ids this user token can see, and an error when Slack failed.
+
+    ``users.conversations`` can return a short page before the list ends, so
+    each page is followed until Slack omits ``next_cursor``. A failed page
+    returns ``(None, error)`` rather than a partial set, so the caller does not cache it.
+    An empty set with no error means Slack answered and the person is in none.
+    """
+    client = WebClient(token=token)
+    found: set[str] = set()
+    cursor = None
+    while True:
+        kwargs: dict = {"types": "private_channel", "exclude_archived": True, "limit": 200}
+        if cursor:
+            kwargs["cursor"] = cursor
+        try:
+            response = client.users_conversations(**kwargs)
+        except Exception as exc:
+            detail = _membership_error(exc)
+            log_warning("private_channel_member_lookup_failed", error=detail)
+            return None, detail
+        channels = safe_get(response, "channels") or []
+        for channel in channels:
+            channel_id = channel.get("id") if isinstance(channel, dict) else None
+            if channel_id:
+                found.add(str(channel_id))
+        meta = safe_get(response, "response_metadata") or {}
+        cursor = meta.get("next_cursor") if isinstance(meta, dict) else None
+        if not cursor:
+            return frozenset(found), None
+
+
+def _private_channel_ids(team_id: str | None, user_id: str | None) -> frozenset[str] | None:
+    """Cached private Channel ids, or None when this person has no user token or Slack failed."""
+    ids, _error = private_channel_membership(team_id, user_id)
+    return ids
+
+
+def private_channel_membership(team_id: str | None, user_id: str | None) -> tuple[frozenset[str] | None, str | None]:
+    """This person's private Channel ids, and an error when Slack could not be asked.
+
+    ``(ids, None)`` includes an empty set when Slack answered. ``(None, error)``
+    is a failed call and is not cached. ``(None, None)`` means there is no user token.
+    """
+    if not team_id or not user_id:
+        return None, None
+    cache_key = _private_channel_member_key(team_id, user_id)
+    cached = _cache_get(cache_key)
+    if isinstance(cached, frozenset):
+        return cached, None
+    token = get_user_token(team_id, user_id)
+    if not token:
+        return None, None
+    channel_ids, error = _user_token_private_channel_ids(token)
+    if channel_ids is not None:
+        _cache_set(cache_key, channel_ids)
+    return channel_ids, error
+
+
+def user_in_private_channel(team_id: str | None, user_id: str | None, channel_id: str | None) -> bool:
+    """Whether this authorized person is in this private Channel."""
+    if not channel_id:
+        return False
+    channel_ids = _private_channel_ids(team_id, user_id)
+    return bool(channel_ids and channel_id in channel_ids)
+
+
+def invalidate_private_channel_member(team_id: str | None, user_id: str | None) -> None:
+    """Drop this person's private-Channel answer and their own cached Home tab, nobody else's."""
+    if not team_id or not user_id:
+        return
+    _cache_delete(_private_channel_member_key(team_id, user_id))
+    _cache_delete(f"home_tab_hash:{team_id}:{user_id}")
+    _cache_delete(f"home_tab_blocks:{team_id}:{user_id}")
+
+
+def note_private_channel_membership(client: WebClient, team_id: str, user_id: str, channel_id: str) -> None:
+    """Invalidate this person's Home when they join or leave a private Channel.
+
+    A public Channel, or one whose privacy could not be read, changes nothing.
+    """
+    from helpers.channel_state import get_slack_channel_private
+
+    if get_slack_channel_private(client, channel_id) is not True:
+        return
+    invalidate_private_channel_member(team_id, user_id)
+
+
 def has_user_token(team_id: str | None, user_id: str | None) -> bool:
     """Whether this specific user has authorized SyncBot to act as them.
 
@@ -314,8 +412,10 @@ def ensure_bot_in_conversation(
     acting_user_id: str | None,
     bot_user_id: str | None = None,
     context: dict | None = None,
-) -> None:
+) -> bool:
     """Make SyncBot a member of *channel_id*, whichever type it is.
+
+    Returns whether the Channel is private.
 
     Public channels are joined with the bot token. Private channels are joined by
     inviting the bot as *acting_user_id* and no one else, because a bot cannot
@@ -330,8 +430,10 @@ def ensure_bot_in_conversation(
         raise ConversationAccessError("No Channel was selected.")
 
     is_private, is_member = _channel_visibility(client, channel_id, team_id=team_id)
+    if is_private and not allow_private_channels(team_id):
+        raise ConversationAccessError("Private Channels cannot be synced. Pick a public Channel.")
     if is_member:
-        return
+        return is_private
 
     if not is_private:
         try:
@@ -339,14 +441,11 @@ def ensure_bot_in_conversation(
         except SlackApiError as exc:
             error = _slack_error(exc)
             if error in _ALREADY_THERE_ERRORS:
-                return
+                return is_private
             raise ConversationAccessError(
                 f"SyncBot could not join that Channel (`{error or 'unknown error'}`)."
             ) from exc
-        return
-
-    if not allow_private_channels(team_id):
-        raise ConversationAccessError("Private Channels cannot be synced. Pick a public Channel.")
+        return is_private
 
     invite_user_id = _bot_member_id(client, bot_user_id=bot_user_id, context=context)
     if not invite_user_id:
@@ -361,7 +460,7 @@ def ensure_bot_in_conversation(
     except SlackApiError as exc:
         error = _slack_error(exc)
         if error in _ALREADY_THERE_ERRORS:
-            return
+            return is_private
         if error == "not_in_channel":
             # The picker only offers private channels the user belongs to, so
             # this means a stale or hand-built payload rather than a normal pick.
@@ -377,11 +476,11 @@ def ensure_bot_in_conversation(
             if fresh_id and fresh_id != invite_user_id:
                 try:
                     WebClient(token=token).conversations_invite(channel=channel_id, users=fresh_id)
-                    return
+                    return is_private
                 except SlackApiError as retry_exc:
                     retry_error = _slack_error(retry_exc)
                     if retry_error in _ALREADY_THERE_ERRORS:
-                        return
+                        return is_private
                     exc = retry_exc
             raise ConversationAccessError(
                 "SyncBot could not be added to that private Channel because Slack did not "
@@ -391,6 +490,7 @@ def ensure_bot_in_conversation(
         raise ConversationAccessError(
             f"SyncBot could not be added to that private Channel (`{error or 'unknown error'}`)."
         ) from exc
+    return is_private
 
 
 def authorize_url(team_id: str | None = None, context: dict | None = None) -> str | None:

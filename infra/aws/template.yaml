@@ -66,7 +66,7 @@ Parameters:
   SlackOauthBotScopes:
     Description: Comma-separated list of Slack OAuth bot scopes (SLACK_BOT_SCOPES)
     Type: String
-    Default: "app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,emoji:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,usergroups:read,users:read,users:read.email"
+    Default: "app_mentions:read,channels:history,channels:join,channels:read,channels:manage,chat:write,chat:write.customize,emoji:read,files:read,files:write,groups:history,groups:read,groups:write,im:write,reactions:read,reactions:write,team:read,users:read,users:read.email"
 
   SlackOauthUserScopes:
     Description: >

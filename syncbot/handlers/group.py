@@ -289,34 +289,22 @@ def handle_join_group_submit(
 
     _activate_group_membership(client, workspace_record, group)
 
-    display_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
-    person = helpers.code_ticked_display_name(display_name, helpers.resolve_workspace_name(workspace_record))
+    person = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    from helpers.sync_participation import format_action_notice
 
-    other_members = DbManager.find_records(
-        schemas.WorkspaceGroupMember,
-        [
-            schemas.WorkspaceGroupMember.group_id == group.id,
-            schemas.WorkspaceGroupMember.status == "active",
-            schemas.WorkspaceGroupMember.deleted_at.is_(None),
-            schemas.WorkspaceGroupMember.workspace_id != workspace_record.id,
-        ],
+    notice = format_action_notice(
+        action="Join Group",
+        workspace_name=helpers.resolve_workspace_name(workspace_record),
+        group_name=group.name,
+        manager=person,
+        for_managers=True,
+        workspace_line=True,
     )
-    for other_member in other_members:
-        if not other_member.workspace_id:
-            continue
-        member_ws = helpers.get_workspace_by_id(other_member.workspace_id)
-        if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
-            continue
-        try:
-            member_client = WebClient(token=helpers.get_bot_token(member_ws))
-            helpers.notify_admins_dm(
-                member_client,
-                f":punch: {person} joined `{group.name}`.",
-                team_id=member_ws.team_id,
-            )
-            builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
-        except Exception as e:
-            log_warning("failed_to_notify_group_member", workspace_id=other_member.workspace_id, error=str(e))
+
+    from helpers.notifications import notify_group_managers
+
+    for member_ws in notify_group_managers(group.id, notice, exclude_workspace_id=workspace_record.id):
+        builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
 
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
@@ -533,12 +521,20 @@ def handle_invite_workspace_submit(
     )
     DbManager.create_record(member)
 
-    display_name, _ = helpers.format_admin_label(client, acting_user_id, workspace_record)
-    person = helpers.code_ticked_display_name(display_name, helpers.resolve_workspace_name(workspace_record))
+    person = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
     target_client = WebClient(token=helpers.get_bot_token(target_ws))
 
-    invite_text = f":punch: {person} has invited your Workspace to join `{group.name}`."
+    from helpers.sync_participation import format_action_notice
+
+    invite_text = format_action_notice(
+        action="Invite",
+        workspace_name=helpers.resolve_workspace_name(target_ws),
+        group_name=group.name,
+        manager=person,
+        for_managers=True,
+        workspace_line=True,
+    )
     invite_blocks = [
         {
             "type": "section",
@@ -646,45 +642,32 @@ def handle_accept_group_invite(
 
     _activate_group_membership(client, workspace_record, group)
 
+    person = helpers.format_admin_label(client, user_id, workspace_record)
+    ws_name = helpers.resolve_workspace_name(workspace_record)
+    from helpers.sync_participation import format_action_notice
+
+    notice = format_action_notice(
+        action="Join Group",
+        workspace_name=ws_name,
+        group_name=group.name,
+        manager=person,
+        for_managers=True,
+        workspace_line=True,
+    )
+
     try:
         from federation.replicate import replicate_group_invite
 
-        replicate_group_invite(group, workspace_record)
+        replicate_group_invite(group, workspace_record, notice=notice, announce=True)
     except Exception:
         log_warning("federation_replicate_group_invite_failed", group_id=group.id)
 
-    _update_invite_dms(
-        member,
-        workspace_record,
-        f"Your Workspace has joined `{group.name}`.",
-    )
+    _update_invite_dms(member, workspace_record, notice)
 
-    other_members = DbManager.find_records(
-        schemas.WorkspaceGroupMember,
-        [
-            schemas.WorkspaceGroupMember.group_id == group.id,
-            schemas.WorkspaceGroupMember.status == "active",
-            schemas.WorkspaceGroupMember.deleted_at.is_(None),
-            schemas.WorkspaceGroupMember.workspace_id != workspace_record.id,
-        ],
-    )
-    ws_name = helpers.resolve_workspace_name(workspace_record)
-    for other_member in other_members:
-        if not other_member.workspace_id:
-            continue
-        member_ws = helpers.get_workspace_by_id(other_member.workspace_id)
-        if not member_ws or member_ws.deleted_at is not None or not helpers.get_bot_token(member_ws):
-            continue
-        try:
-            member_client = WebClient(token=helpers.get_bot_token(member_ws))
-            helpers.notify_admins_dm(
-                member_client,
-                f":punch: `{ws_name}` has joined `{group.name}`.",
-                team_id=member_ws.team_id,
-            )
-            builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
-        except Exception as e:
-            log_warning("failed_to_notify_group_member", workspace_id=other_member.workspace_id, error=str(e))
+    from helpers.notifications import notify_group_managers
+
+    for member_ws in notify_group_managers(group.id, notice, exclude_workspace_id=workspace_record.id):
+        builders.refresh_home_tab_for_workspace(member_ws, logger, context=None)
 
     log_info("group_invite_accepted", member_id=member_id, group_id=group.id, workspace_id=workspace_record.id)
 
@@ -697,14 +680,92 @@ def handle_decline_group_invite(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Handle Decline (invited workspace) or Cancel Invite (inviting workspace) for a pending group invite.
+    """Decline a pending group invite. Only the invited workspace may decline."""
+    _end_pending_invite(body, client, logger, context, is_cancel=False)
 
-    Decline is an invitee action, so the acting workspace must be the invited one.
-    Cancel is an inviter action, so the acting workspace must be the one that sent
-    the invite (``invited_by_workspace_id``). Both destroy a membership row, so
-    without these checks any signed interaction carrying an arbitrary integer
-    could cancel or decline any pending invite on the instance.
-    """
+
+def handle_cancel_group_invite(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Ask before cancelling an outgoing group invite."""
+    auth_result = _get_authorized_workspace(body, client, context, "cancel_group_invite")
+    if not auth_result:
+        return
+    _, acting = auth_result
+    raw = helpers.safe_get(body, "actions", 0, "value")
+    try:
+        member_id = int(raw)
+    except (TypeError, ValueError):
+        log_warning("cancel_group_invite", raw_member_id=raw)
+        return
+    trigger_id = helpers.safe_get(body, "trigger_id")
+    if not trigger_id:
+        return
+    member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
+    if not member or member.status != "pending":
+        return
+    allowed = member.invited_by_workspace_id == acting.id or helpers.is_workspace_owner(member.group_id, acting.id)
+    group = DbManager.get_record(schemas.WorkspaceGroup, id=member.group_id)
+    group_name = group.name if group else "this Group"
+    target_ws = helpers.get_workspace_by_id(member.workspace_id) if member.workspace_id else None
+    target_name = helpers.resolve_workspace_name(target_ws) if target_ws else "Workspace"
+    if not allowed:
+        text = f":lock: *Only the inviter, or an Owner, can cancel the invite to `{target_name}`.*"
+        button = None
+    else:
+        text = (
+            f":eject: *Cancel the invite to `{target_name}`?*\n\n"
+            f"They will not join `{group_name}` unless someone invites them again."
+        )
+        button = ":eject: Cancel Invite"
+    blocks = [orm.SectionBlock(label=text)]
+    if button:
+        blocks.append(
+            orm.ActionsBlock(
+                elements=[
+                    orm.ButtonElement(
+                        label=button,
+                        action=actions.CONFIG_CANCEL_GROUP_INVITE_CONFIRM,
+                        value=str(member_id),
+                        style="danger",
+                    )
+                ]
+            )
+        )
+    orm.BlockView(blocks=blocks).post_modal(
+        client=client,
+        trigger_id=trigger_id,
+        callback_id=actions.CONFIG_CANCEL_GROUP_INVITE_CONFIRM,
+        title_text="Cancel Invite",
+        submit_button_text=None,
+        close_button_text="Cancel" if button else "Close",
+        parent_metadata={"member_id": member_id},
+        body=body,
+    )
+
+
+def handle_cancel_group_invite_confirm(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
+    """Cancel a pending invite after confirmation."""
+    _end_pending_invite(body, client, logger, context, is_cancel=True)
+
+
+def _end_pending_invite(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+    *,
+    is_cancel: bool,
+) -> None:
+    """Decline (invitee) or cancel (inviter or owner) a pending group invite."""
     raw_member_id = helpers.safe_get(body, "actions", 0, "value")
     try:
         member_id = int(raw_member_id)
@@ -712,15 +773,12 @@ def handle_decline_group_invite(
         log_warning("decline_group_invite", raw_member_id=raw_member_id)
         return
 
-    action_id = helpers.safe_get(body, "actions", 0, "action_id") or ""
-    is_cancel = action_id.startswith(actions.CONFIG_CANCEL_GROUP_INVITE)
-    outcome = "canceled" if is_cancel else "declined"
     action_name = "cancel_group_invite" if is_cancel else "decline_group_invite"
 
     auth_result = _get_authorized_workspace(body, client, context, action_name)
     if not auth_result:
         return
-    _, acting_workspace = auth_result
+    user_id, acting_workspace = auth_result
 
     member = DbManager.get_record(schemas.WorkspaceGroupMember, id=member_id)
     if not member or member.status != "pending":
@@ -745,14 +803,24 @@ def handle_decline_group_invite(
         return
 
     group = DbManager.get_record(schemas.WorkspaceGroup, id=member.group_id)
-    group_name = group.name if group else "the group"
-
     target_ws = helpers.get_workspace_by_id(member.workspace_id) if member.workspace_id else None
+    from helpers.sync_participation import format_action_notice
 
-    _update_invite_dms(
-        member,
-        target_ws,
-        f":eject: The invitation to join `{group_name}` was {outcome}.",
+    notice = format_action_notice(
+        action="Cancel Invite" if is_cancel else "Decline",
+        workspace_name=helpers.resolve_workspace_name(target_ws) if target_ws else "Workspace",
+        group_name=group.name if group else None,
+        manager=helpers.format_admin_label(client, user_id, acting_workspace),
+        for_managers=True,
+        workspace_line=True,
+    )
+    _update_invite_dms(member, target_ws, notice)
+    from helpers.notifications import notify_group_managers
+
+    notify_group_managers(
+        member.group_id,
+        notice,
+        exclude_workspace_id=target_ws.id if target_ws else None,
     )
 
     group_id = member.group_id

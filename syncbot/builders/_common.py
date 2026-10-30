@@ -97,49 +97,11 @@ def _get_workspace_info(workspace: Workspace) -> dict:
     return result
 
 
-def _format_channel_ref(
-    channel_id: str,
-    workspace: Workspace,
-    is_local: bool = True,
-    *,
-    include_workspace_in_link: bool = True,
-) -> str:
-    """Format a channel reference for display in Block Kit mrkdwn."""
+def _format_channel_ref(channel_id: str, workspace: Workspace, is_local: bool = True) -> str:
+    """This workspace's Channel is a native mention. Another workspace's Channel is a code tick."""
     if is_local:
         return f"<#{channel_id}>"
-
     ws_name = workspace.workspace_name if workspace and workspace.workspace_name else "Workspace"
-
-    if not workspace or not helpers.get_bot_token(workspace):
-        ch_name, _is_private = helpers.lookup_channel_meta(channel_id, workspace)
-        label = f"#{str(ch_name or channel_id).removeprefix('#')}"
-        if include_workspace_in_link:
-            if ch_name != channel_id:
-                return helpers.code_ticked_display_name(label, ws_name)
-            return f"{label} ({ws_name})"
-        return label
-
-    cache_key = f"chan_ref:{channel_id}:{include_workspace_in_link}"
-    cached = helpers._cache_get(cache_key)
-    if cached:
-        return cached
-
-    ch_name = channel_id
-    try:
-        ws_client = WebClient(token=helpers.get_bot_token(workspace))
-        info = ws_client.conversations_info(channel=channel_id)
-        ch_name = helpers.safe_get(info, "channel", "name") or channel_id
-    except Exception as e:
-        log_warning("format_channel_ref_failed", channel_id=channel_id, workspace=ws_name, error=str(e))
-
-    ws_info = _get_workspace_info(workspace)
-    domain = ws_info.get("raw_domain")
-    link_text = f"#{ch_name} ({ws_name})" if include_workspace_in_link else f"#{ch_name}"
-    if domain:
-        deep_link = f"https://{domain}.slack.com/archives/{channel_id}"
-        result = f"<{deep_link}|{link_text}>"
-    else:
-        result = f"`[{link_text}]`"
-    if ch_name != channel_id:
-        helpers._cache_set(cache_key, result, ttl=3600)
-    return result
+    looked = helpers.lookup_channel_name(channel_id, workspace) if workspace else None
+    label = f"#{str(looked or channel_id).removeprefix('#')}"
+    return f"`{label} ({ws_name})`"

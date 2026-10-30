@@ -21,7 +21,8 @@ def _manifest() -> dict:
 def test_slack_manifest_bot_scopes_match_constants():
     bot = _manifest()["oauth_config"]["scopes"]["bot"]
     assert bot == list(BOT_SCOPES)
-    assert {"emoji:read", "usergroups:read"} <= set(bot)
+    assert "emoji:read" in bot
+    assert "usergroups:read" not in bot
     assert "im:write" in bot
     assert not {"bookmarks:read", "bookmarks:write", "pins:read", "pins:write"} & set(bot)
 
@@ -82,6 +83,16 @@ def test_slack_manifest_subscribes_to_uninstall_and_token_revoke():
     events = _manifest()["settings"]["event_subscriptions"]["bot_events"]
     assert "app_uninstalled" in events
     assert "tokens_revoked" in events
+    for name in (
+        "member_left_channel",
+        "channel_left",
+        "group_left",
+        "channel_deleted",
+        "group_deleted",
+    ):
+        assert name in events
+    for name in ("channel_archive", "channel_unarchive", "group_archive"):
+        assert name not in events
 
 
 def test_permission_group_labels_are_plain_language():

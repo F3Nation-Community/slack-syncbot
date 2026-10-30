@@ -1,5 +1,8 @@
 """Data migration export looks up Workspaces by integer primary key."""
 
+import os
+from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -53,7 +56,8 @@ class TestBuildMigrationExportWorkspaceLookup:
             title="Announcements",
             sync_mode="group",
         )
-        group = SimpleNamespace(id=3, uid="group-uid")
+        group = SimpleNamespace(id=3, uid="group-uid", name="Partner Org", status="active")
+        membership = SimpleNamespace(group_id=3, role="owner", workspace_id=42, status="active", deleted_at=None)
         sync_channel = SimpleNamespace(
             id=7,
             sync_id=9,
@@ -77,7 +81,7 @@ class TestBuildMigrationExportWorkspaceLookup:
 
         def find_records(model, _filters):
             return {
-                "WorkspaceGroupMember": [],
+                "WorkspaceGroupMember": [membership],
                 "SyncChannel": [sync_channel],
                 "PostMeta": [post_meta],
                 "UserDirectory": [],
@@ -104,6 +108,8 @@ class TestBuildMigrationExportWorkspaceLookup:
                 "publishes": True,
                 "subscribes": False,
                 "reaction_style": "direct_only",
+                "synced_by_user_id": None,
+                "is_private": None,
             }
         ]
         assert payload["post_meta"]["sync-uid:C1"][0]["posted_as_user_id"] == "U2"
@@ -112,7 +118,7 @@ class TestBuildMigrationExportWorkspaceLookup:
         local = SimpleNamespace(id=42, team_id="T1", workspace_name="Workspace A", deleted_at=None)
         peer = SimpleNamespace(id=99, team_id="T-PEER", workspace_name="Workspace B", deleted_at=None)
         sync = SimpleNamespace(id=9, uid="sync-uid", group_id=3, title="Announcements", sync_mode="group")
-        group = SimpleNamespace(id=3, uid="group-uid")
+        group = SimpleNamespace(id=3, uid="group-uid", name="Partner Org", status="active")
         local_sc = SimpleNamespace(
             id=7,
             sync_id=9,
@@ -158,6 +164,8 @@ class TestBuildMigrationExportWorkspaceLookup:
 
         def find_records(model, filters):
             name = model.__name__
+            if name == "WorkspaceGroupMember":
+                return [SimpleNamespace(group_id=3, role="owner", workspace_id=42, status="active", deleted_at=None)]
             if name == "SyncChannel":
                 return [local_sc, peer_sc]
             if name == "PostMeta":
@@ -428,3 +436,254 @@ def test_import_post_meta_onto_peer_stub_channels():
     assert remote.post_id == "post-1"
     assert str(remote.ts) == "20.000002"
     assert remote.posted_as_user_id == "U-PEER"
+
+
+@pytest.fixture
+def real_db(tmp_path):
+    import db as db_mod
+    from db import initialize_database
+    from helpers._cache import clear_all_caches
+
+    url = f"sqlite:///{tmp_path / 'migration_export.db'}"
+    old_engine = db_mod.GLOBAL_ENGINE
+    old_session = db_mod.GLOBAL_SESSION
+    old_schema = db_mod.GLOBAL_SCHEMA
+    with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+        try:
+            db_mod.GLOBAL_ENGINE = None
+            db_mod.GLOBAL_SESSION = None
+            db_mod.GLOBAL_SCHEMA = None
+            initialize_database()
+            from federation import core as federation_core
+
+            federation_core._INSTANCE_ID = None
+            federation_core._cached_private_key = None
+            federation_core._cached_public_pem = None
+            federation_core.get_or_create_instance_keypair()
+            clear_all_caches()
+            yield
+        finally:
+            if db_mod.GLOBAL_ENGINE is not None:
+                db_mod.GLOBAL_ENGINE.dispose()
+            db_mod.GLOBAL_ENGINE = old_engine
+            db_mod.GLOBAL_SESSION = old_session
+            db_mod.GLOBAL_SCHEMA = old_schema
+            clear_all_caches()
+
+
+def _export_rows():
+    from db import DbManager, schemas
+    from federation.core import get_instance_id
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    local = DbManager.create_record(
+        schemas.Workspace(team_id="TA", workspace_name="Workspace A", instance_id=get_instance_id())
+    )
+    other = DbManager.create_record(
+        schemas.Workspace(team_id="TB", workspace_name="Workspace B", instance_id=get_instance_id())
+    )
+    live = DbManager.create_record(
+        schemas.WorkspaceGroup(
+            name="Live Group", invite_code="LIVE-0001", status="active", created_at=now, uid="live-uid"
+        )
+    )
+    disbanded = DbManager.create_record(
+        schemas.WorkspaceGroup(
+            name="Partner Org", invite_code="DEAD-0001", status="disbanded", created_at=now, uid="dead-uid"
+        )
+    )
+    left = DbManager.create_record(
+        schemas.WorkspaceGroup(
+            name="Left Group", invite_code="LEFT-0001", status="active", created_at=now, uid="left-uid"
+        )
+    )
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=live.id, workspace_id=local.id, status="active", role="owner", joined_at=now
+        )
+    )
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=live.id,
+            workspace_id=other.id,
+            status="active",
+            role="member",
+            joined_at=now,
+            deleted_at=now,
+        )
+    )
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=disbanded.id, workspace_id=local.id, status="active", role="owner", joined_at=now
+        )
+    )
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=left.id,
+            workspace_id=local.id,
+            status="inactive",
+            role="member",
+            joined_at=now,
+            deleted_at=now,
+        )
+    )
+
+    def add_sync(group, uid, title):
+        return DbManager.create_record(schemas.Sync(uid=uid, title=title, group_id=group.id, sync_mode="group"))
+
+    def add_channel(sync, workspace, channel_id, status="active", deleted_at=None):
+        return DbManager.create_record(
+            schemas.SyncChannel(
+                sync_id=sync.id,
+                workspace_id=workspace.id,
+                channel_id=channel_id,
+                channel_name=channel_id.lower(),
+                status=status,
+                publishes=True,
+                subscribes=True,
+                created_at=now,
+                deleted_at=deleted_at,
+            )
+        )
+
+    live_sync = add_sync(live, "live-sync", "Announcements")
+    add_channel(live_sync, local, "C-LIVE")
+    add_channel(live_sync, other, "C-OTHER")
+    add_channel(live_sync, local, "C-PAUSE", status="paused")
+    add_channel(live_sync, local, "C-GONE", status="deleted")
+    dead_sync = add_sync(disbanded, "dead-sync", "Old")
+    dead_channel = add_channel(dead_sync, local, "C-DEAD")
+    left_sync = add_sync(left, "left-sync", "Gone")
+    add_channel(left_sync, local, "C-LEFT")
+    DbManager.create_record(
+        schemas.PostMeta(post_id="P-LIVE", sync_channel_id=dead_channel.id, ts=Decimal("1700000000.000100"))
+    )
+    DbManager.create_record(
+        schemas.UserMapping(
+            source_workspace_id=local.id,
+            source_user_id="U1",
+            target_workspace_id=other.id,
+            target_user_id="U2",
+            map_method="manual",
+            mapped_at=now,
+            group_id=disbanded.id,
+        )
+    )
+    DbManager.create_record(
+        schemas.UserMapping(
+            source_workspace_id=local.id,
+            source_user_id="U3",
+            target_workspace_id=other.id,
+            target_user_id="U4",
+            map_method="manual",
+            mapped_at=now,
+            group_id=live.id,
+        )
+    )
+    return local
+
+
+def test_export_omits_a_disbanded_group_and_a_group_this_workspace_left(real_db):
+    from helpers.export_import import build_migration_export
+
+    local = _export_rows()
+    payload = build_migration_export(local.id, include_source_instance=False)
+    assert [group["uid"] for group in payload["groups"]] == ["live-uid"]
+    assert payload["groups"][0]["member_team_ids"] == ["TB"]
+    channels = {row["channel_id"] for row in payload["sync_channels"]}
+    assert channels == {"C-LIVE", "C-OTHER", "C-PAUSE"}
+    assert not any(key.startswith("dead-sync:") or key.startswith("left-sync:") for key in payload["post_meta"])
+    assert [row["group_uid"] for row in payload["user_mappings"]] == ["live-uid"]
+    assert {row["uid"] for row in payload["syncs"]} == {"live-sync"}
+
+
+def test_import_does_not_revive_a_disbanded_group(real_db):
+    from db import DbManager, schemas
+    from helpers.export_import import import_migration_data
+
+    local = _export_rows()
+    disbanded = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.uid == "dead-uid"])[0]
+    membership = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.group_id == disbanded.id],
+    )[0]
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == membership.id],
+        {
+            schemas.WorkspaceGroupMember.status: "inactive",
+            schemas.WorkspaceGroupMember.deleted_at: datetime.now(UTC),
+        },
+    )
+    channel = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.channel_id == "C-DEAD"],
+    )[0]
+    DbManager.update_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.id == channel.id],
+        {schemas.SyncChannel.status: "deleted", schemas.SyncChannel.deleted_at: datetime.now(UTC)},
+    )
+    data = {
+        "workspace": {"team_id": "TA"},
+        "groups": [
+            {"uid": "dead-uid", "name": "Partner Org", "role": "owner"},
+            {"uid": "fresh-uid", "name": "Live Group", "role": "member"},
+        ],
+        "syncs": [
+            {"uid": "dead-sync", "group_uid": "dead-uid", "title": "Old"},
+            {"uid": "fresh-sync", "group_uid": "fresh-uid", "title": "New"},
+        ],
+        "sync_channels": [
+            {"sync_uid": "dead-sync", "team_id": "TA", "channel_id": "C-DEAD", "status": "active"},
+            {"sync_uid": "fresh-sync", "team_id": "TA", "channel_id": "C-FRESH", "status": "active"},
+        ],
+        "post_meta": {},
+        "user_mappings": [
+            {
+                "source_team_id": "TA",
+                "target_team_id": "TB",
+                "source_user_id": "U9",
+                "target_user_id": "U8",
+                "map_method": "manual",
+                "group_uid": "dead-uid",
+            }
+        ],
+    }
+    import_migration_data(data, local.id, team_id_to_workspace_id={"TA": local.id, "TB": 2})
+    kept = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.group_id == disbanded.id],
+    )[0]
+    assert kept.status == "inactive"
+    assert kept.deleted_at is not None
+    dead_channel = DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.channel_id == "C-DEAD"])[0]
+    assert dead_channel.deleted_at is not None
+    assert dead_channel.status == "deleted"
+    fresh = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.uid == "fresh-uid"])
+    assert fresh and fresh[0].status == "active"
+    assert DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.channel_id == "C-FRESH"])
+    revived_maps = DbManager.find_records(
+        schemas.UserMapping,
+        [schemas.UserMapping.source_user_id == "U9"],
+    )
+    assert revived_maps == []
+
+
+def test_confirm_import_does_not_add_a_status_line():
+    from handlers.export_import import _migration_overview_blocks
+
+    blocks = _migration_overview_blocks(
+        {
+            "groups": [{"uid": "live-uid", "name": "Partner Org"}],
+            "syncs": [{"uid": "live-sync", "group_uid": "live-uid", "title": "Announcements"}],
+            "sync_channels": [{"sync_uid": "live-sync", "channel_id": "C1"}],
+            "user_mappings": [],
+            "post_meta": {},
+        }
+    )
+    text = "\n".join(getattr(block, "label", "") or "" for block in blocks)
+    assert "Partner Org" in text
+    assert "Deleted Status" not in text
+    assert "Disbanded" not in text
+    assert "\nStatus:" not in text

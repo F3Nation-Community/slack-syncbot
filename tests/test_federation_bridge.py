@@ -163,19 +163,21 @@ def test_workspace_kind_local_vs_stub(real_db):
     assert not is_stub_workspace(peer["local"])
     assert not is_local_workspace(peer["stub"])
     assert can_promote(peer["local"])
-    assert not can_promote(peer["stub"])
+    assert can_promote(peer["stub"])
+    peer["local"].deleted_at = datetime.now(UTC)
+    assert not can_promote(peer["local"])
 
 
-def test_heal_stub_logs_refused_live(real_db, caplog):
+def test_workspace_convert_logs_refused_live(real_db, caplog):
     import logging
 
-    from helpers.workspace_kind import heal_workspace_to_stub
+    from helpers.workspace_kind import convert_workspace_to_stub
 
     peer = _seed_peer()
     with caplog.at_level(logging.DEBUG, logger="syncbot"):
-        result = heal_workspace_to_stub(peer["local"].team_id, peer["fed"].instance_id)
+        result = convert_workspace_to_stub(peer["local"].team_id, peer["fed"].instance_id)
     assert result == "refused_live"
-    assert any(record.message == "heal_stub" for record in caplog.records)
+    assert any(record.message == "workspace_convert" for record in caplog.records)
 
 
 def test_inbound_skip_logs_channel_not_found(real_db, caplog):
@@ -382,16 +384,16 @@ def test_pair_logs_heal_results(real_db, monkeypatch, caplog):
     pair_recs = [record for record in caplog.records if record.message == "federation_pair"]
     assert pair_recs
     assert pair_recs[0].__dict__.get("direction") == "inbound"
-    assert (pair_recs[0].__dict__.get("heal") or {}).get(peer["local"].team_id) == "refused_live"
+    assert (pair_recs[0].__dict__.get("convert") or {}).get(peer["local"].team_id) == "refused_live"
     assert any(
-        record.message == "heal_stub"
+        record.message == "workspace_convert"
         and record.__dict__.get("source") == "pair"
         and record.__dict__.get("result") == "refused_live"
         for record in caplog.records
     )
 
 
-def test_teams_heal_logs_source(real_db, caplog):
+def test_teams_convert_logs_source(real_db, caplog):
     import logging
 
     from federation.api import handle_teams
@@ -404,8 +406,10 @@ def test_teams_heal_logs_source(real_db, caplog):
         )
     assert status == 200
     assert resp["results"][peer["local"].team_id] == "refused_live"
-    assert any(record.message == "heal_stub" and record.__dict__.get("source") == "teams" for record in caplog.records)
-    assert any(record.message == "teams_heal" for record in caplog.records)
+    assert any(
+        record.message == "workspace_convert" and record.__dict__.get("source") == "teams" for record in caplog.records
+    )
+    assert any(record.message == "teams_convert" for record in caplog.records)
 
 
 def test_teams_refreshes_stub_name_and_primary_workspace(real_db):
@@ -445,7 +449,8 @@ def test_ensure_stub_logs_created(real_db, caplog):
     assert workspace is not None
     assert workspace.team_id == "TNEWSTUB"
     assert any(
-        record.message == "heal_stub" and record.__dict__.get("result") == "created" for record in caplog.records
+        record.message == "workspace_convert" and record.__dict__.get("result") == "created"
+        for record in caplog.records
     )
 
 
@@ -673,7 +678,7 @@ def test_pipeline_mixed_group_local_not_diverted(real_db):
     with (
         patch("helpers.sync_pipeline.iter_publish_targets", return_value=[(other_sc, other)]),
         patch("federation.deliver.deliver_remote") as deliver,
-        patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome()) as apply,
+        patch("helpers.sync_pipeline.apply_target", return_value=ApplyOutcome(ts="1.000000")) as apply,
     ):
         run_sync_pipeline(envelope, source_channel_id="CLOCAL")
         apply.assert_called_once()
@@ -695,6 +700,8 @@ def test_replicate_group_invite_pushes_peer(real_db):
     assert payload["team_id"] == peer["stub"].team_id
     assert payload["uid"]
     assert payload["role"] == "member"
+    assert "set_role" not in payload
+    assert "notice" not in payload
 
 
 def test_replicate_peer_snapshot_pushes_group_and_channels(real_db):
@@ -735,11 +742,13 @@ def test_replicate_peer_snapshot_pushes_group_and_channels(real_db):
     roles = {call.args[1]["team_id"]: call.args[1]["role"] for call in invite.call_args_list}
     assert roles["TLOCAL"] == "owner"
     assert roles["TSTUB"] == "member"
+    assert all("set_role" not in call.args[1] and "notice" not in call.args[1] for call in invite.call_args_list)
     sync_upsert.assert_called()
     channel_upsert.assert_called()
     channel_payload = channel_upsert.call_args.args[1]
     assert channel_payload["team_id"] == "TLOCAL"
     assert channel_payload["channel_id"] == "CLOCAL"
+    assert "notice" not in channel_payload
 
 
 def test_replicate_peer_snapshot_skips_local_not_on_allowlist(real_db):
@@ -826,7 +835,212 @@ def test_handle_group_invite_honors_owner_role(real_db):
             schemas.WorkspaceGroupMember.workspace_id == stub.id,
         ],
     )
+    assert members[0].role == "member"
+
+
+def test_handle_group_invite_set_role_stores_owner_and_notifies(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.notify_admins_dm") as dm,
+    ):
+        status, resp = handle_group_invite(
+            {
+                "uid": peer["group"].uid,
+                "team_id": "TSTUB",
+                "role": "creator",
+                "set_role": True,
+                "notice": ":key: `Stub` is now an Owner of `Shared`.",
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    assert resp["ok"] is True
+    members = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == peer["group"].id,
+            schemas.WorkspaceGroupMember.workspace_id == peer["stub"].id,
+        ],
+    )
     assert members[0].role == "owner"
+    dm.assert_called_once()
+    assert dm.call_args.args[1] == ":key: `Stub` is now an Owner of `Shared`."
+
+
+def test_handle_group_invite_without_set_role_keeps_an_owner(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.notify_admins_dm") as dm,
+    ):
+        status, _resp = handle_group_invite(
+            {
+                "uid": peer["group"].uid,
+                "team_id": "TLOCAL",
+                "role": "member",
+                "notice": "do not send",
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    members = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == peer["group"].id,
+            schemas.WorkspaceGroupMember.workspace_id == peer["local"].id,
+        ],
+    )
+    assert members[0].role == "owner"
+    dm.assert_not_called()
+
+
+def test_group_upsert_disbanded_ends_the_group_and_a_later_upsert_leaves_it(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_upsert
+
+    peer = _seed_peer()
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.notify_admins_dm") as dm,
+    ):
+        status, resp = handle_group_upsert(
+            {
+                "uid": peer["group"].uid,
+                "name": "Shared",
+                "status": "disbanded",
+                "notice": ":wastebasket: disbanded `Shared`.",
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    assert resp["ok"] is True
+    group = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.uid == peer["group"].uid])[0]
+    assert group.status == "disbanded"
+    members = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.group_id == group.id],
+    )
+    assert members
+    assert all(member.status == "inactive" and member.deleted_at is not None for member in members)
+    dm.assert_called()
+    assert dm.call_args.args[1] == ":wastebasket: disbanded `Shared`."
+
+    status, _resp = handle_group_upsert({"uid": peer["group"].uid, "name": "Renamed"}, peer["fed"])
+    assert status == 200
+    group = DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.uid == peer["group"].uid])[0]
+    assert group.status == "disbanded"
+    assert group.name == "Shared"
+
+
+def test_group_upsert_disbanded_does_not_create_a_missing_group(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_upsert
+
+    peer = _seed_peer()
+    status, resp = handle_group_upsert(
+        {"uid": "missing-group", "name": "Nope", "status": "disbanded"},
+        peer["fed"],
+    )
+    assert status == 200
+    assert resp == {"ok": True}
+    assert DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.uid == "missing-group"]) == []
+
+
+def test_group_leave_and_remove_notify_local_managers(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_leave, handle_group_member_remove
+
+    peer = _seed_peer()
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.notify_admins_dm") as dm,
+    ):
+        status, _resp = handle_group_leave(
+            {"uid": peer["group"].uid, "team_id": "TSTUB", "notice": ":wave: `Stub` left `Shared`."},
+            peer["fed"],
+        )
+    assert status == 200
+    dm.assert_called_once()
+    assert dm.call_args.args[1] == ":wave: `Stub` left `Shared`."
+
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.notify_admins_dm") as dm,
+    ):
+        status, _resp = handle_group_member_remove(
+            {
+                "uid": peer["group"].uid,
+                "team_id": "TSTUB",
+                "notice": ":wave: removed `Stub` from `Shared`.",
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    dm.assert_called_once()
+    assert dm.call_args.args[1] == ":wave: removed `Stub` from `Shared`."
+    assert (
+        DbManager.find_records(
+            schemas.WorkspaceGroupMember,
+            [
+                schemas.WorkspaceGroupMember.group_id == peer["group"].id,
+                schemas.WorkspaceGroupMember.workspace_id == peer["stub"].id,
+            ],
+        )
+        == []
+    )
+
+
+def test_replicate_role_and_disband_payloads(real_db):
+    from db import DbManager, schemas
+    from federation.replicate import replicate_group_invite, replicate_group_leave, replicate_group_upsert
+
+    peer = _seed_peer()
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.workspace_id == peer["stub"].id],
+        {schemas.WorkspaceGroupMember.role: "owner"},
+    )
+    with (
+        patch("federation.core.push_group_upsert"),
+        patch("federation.core.push_group_invite") as invite,
+    ):
+        replicate_group_invite(peer["group"], peer["stub"], set_role=True, notice=":key: `Stub` is now an Owner.")
+    payload = invite.call_args.args[1]
+    assert payload["set_role"] is True
+    assert payload["role"] == "owner"
+    assert payload["notice"] == ":key: `Stub` is now an Owner."
+
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.workspace_id == peer["local"].id],
+        {schemas.WorkspaceGroupMember.role: "member"},
+    )
+    with (
+        patch("federation.core.push_group_upsert"),
+        patch("federation.core.push_group_invite") as invite,
+    ):
+        replicate_group_invite(peer["group"], peer["local"], set_role=True, notice=":door: `Local` stepped down.")
+    payload = invite.call_args.args[1]
+    assert payload["set_role"] is True
+    assert payload["role"] == "member"
+
+    with patch("federation.core.push_group_leave") as leave:
+        replicate_group_leave(peer["group"], peer["local"], notice=":wave: left")
+    assert leave.call_args.args[1]["notice"] == ":wave: left"
+
+    peer["group"].status = "disbanded"
+    with patch("federation.core.push_group_upsert") as upsert:
+        replicate_group_upsert(peer["group"], notice=":wastebasket: gone")
+    body = upsert.call_args.args[1]
+    assert body["status"] == "disbanded"
+    assert body["notice"] == ":wastebasket: gone"
 
 
 def _pair_headers(instance_id: str):
@@ -1328,7 +1542,7 @@ def test_inbound_channel_create_skips_resume_notice(real_db):
             created_at=now,
         )
     )
-    with patch("federation.api.notify_sibling_sync_channels") as notify:
+    with patch("helpers.sync_lifecycle.post_to_other_sync_channels") as notify:
         status, resp = handle_sync_channel_upsert(
             {
                 "sync_uid": sync.uid,
@@ -1341,6 +1555,265 @@ def test_inbound_channel_create_skips_resume_notice(real_db):
     assert status == 200
     assert resp["ok"] is True
     notify.assert_not_called()
+
+
+def test_inbound_channel_create_posts_the_origin_sentence(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_sync_channel_upsert
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    sync = DbManager.create_record(
+        schemas.Sync(
+            title="Shared",
+            group_id=peer["group"].id,
+            sync_mode="group",
+            uid="55555555-5555-5555-5555-555555555556",
+        )
+    )
+    DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["local"].id,
+            channel_id="CLOCAL",
+            status="active",
+            publishes=True,
+            subscribes=True,
+            created_at=now,
+        )
+    )
+    sentence = ":arrows_counterclockwise: *Ada Lovelace (Workspace B)* joined `#general (Workspace B)` to this Sync."
+    with patch("helpers.sync_lifecycle.post_to_other_sync_channels") as notify:
+        status, resp = handle_sync_channel_upsert(
+            {
+                "sync_uid": sync.uid,
+                "team_id": "TSTUB",
+                "channel_id": "CSTUB",
+                "status": "active",
+                "notice": sentence,
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    _assert_posted_notice(notify, peer["stub"], sync.id, sentence)
+
+
+def test_inbound_resume_with_notice_does_not_add_a_second_sentence(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_sync_channel_upsert
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    sync = DbManager.create_record(
+        schemas.Sync(
+            title="Shared",
+            group_id=peer["group"].id,
+            sync_mode="group",
+            uid="55555555-5555-5555-5555-555555555557",
+        )
+    )
+    DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["stub"].id,
+            channel_id="CSTUB",
+            status="paused",
+            publishes=True,
+            subscribes=True,
+            created_at=now,
+        )
+    )
+    sentence = ":arrow_forward: Syncing with `Workspace B` has been resumed."
+    with patch("helpers.sync_lifecycle.post_to_other_sync_channels") as notify:
+        status, _resp = handle_sync_channel_upsert(
+            {
+                "sync_uid": sync.uid,
+                "team_id": "TSTUB",
+                "channel_id": "CSTUB",
+                "status": "active",
+                "notice": sentence,
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    _assert_posted_notice(notify, peer["stub"], sync.id, sentence)
+
+
+def test_inbound_remove_with_notice_posts_that_sentence_only(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_sync_channel_remove
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    sync = DbManager.create_record(
+        schemas.Sync(
+            title="Shared",
+            group_id=peer["group"].id,
+            sync_mode="group",
+            uid="55555555-5555-5555-5555-555555555558",
+        )
+    )
+    DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["stub"].id,
+            channel_id="CSTUB",
+            status="active",
+            publishes=True,
+            subscribes=True,
+            created_at=now,
+        )
+    )
+    sentence = ":wave: `#general (Workspace B)` left this Sync."
+    with (
+        patch("helpers.leave_sync.post_to_other_sync_channels") as notify,
+        patch("helpers.leave_sync.notify_channel_or_managers", return_value=True),
+        patch("helpers.leave_sync._leave_channel_id"),
+    ):
+        status, _resp = handle_sync_channel_remove(
+            {
+                "sync_uid": sync.uid,
+                "team_id": "TSTUB",
+                "channel_id": "CSTUB",
+                "notice": sentence,
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    _assert_posted_notice(notify, peer["stub"], sync.id, sentence)
+    removed = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.sync_id == sync.id, schemas.SyncChannel.workspace_id == peer["stub"].id],
+    )
+    assert removed and removed[0].status == "deleted" and removed[0].deleted_at is not None
+
+
+def test_create_rejoins_onto_the_sync_a_peer_stub_already_revived(real_db):
+    from decimal import Decimal
+
+    from db import DbManager, schemas
+    from federation.api import handle_sync_channel_upsert
+    from handlers.channel_sync import _revive_deleted_create
+    from helpers.post_meta import get_post_records
+    from helpers.sync_lifecycle import rejoin_sync_channel
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    sync = DbManager.create_record(
+        schemas.Sync(
+            title="Shared",
+            group_id=peer["group"].id,
+            sync_mode="group",
+            uid="66666666-6666-6666-6666-666666666666",
+        )
+    )
+    local = DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["local"].id,
+            channel_id="CLOCAL",
+            status="deleted",
+            publishes=True,
+            subscribes=True,
+            deleted_at=now,
+            created_at=now,
+        )
+    )
+    DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["stub"].id,
+            channel_id="CSTUB",
+            status="deleted",
+            publishes=True,
+            subscribes=True,
+            deleted_at=now,
+            created_at=now,
+        )
+    )
+    DbManager.create_record(
+        schemas.PostMeta(post_id="P-bridge", sync_channel_id=local.id, ts=Decimal("1700000000.000100"))
+    )
+    status, _resp = handle_sync_channel_upsert(
+        {
+            "sync_uid": sync.uid,
+            "team_id": "TSTUB",
+            "channel_id": "CSTUB",
+            "channel_name": "general",
+            "status": "active",
+            "publishes": True,
+            "subscribes": True,
+        },
+        peer["fed"],
+    )
+    assert status == 200
+    assert len(DbManager.find_records(schemas.Sync, [schemas.Sync.group_id == peer["group"].id])) == 1
+    stub = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.sync_id == sync.id, schemas.SyncChannel.workspace_id == peer["stub"].id],
+    )[0]
+    assert stub.status == "active" and stub.deleted_at is None
+    chosen = rejoin_sync_channel(peer["group"].id, peer["local"].id, "CLOCAL")
+    assert chosen.id == local.id
+    with patch("helpers.sync_lifecycle.ensure_bot_in_conversation", return_value=False):
+        revived = _revive_deleted_create(
+            MagicMock(), peer["local"], "UADA", peer["group"].id, "CLOCAL", True, True, None, None
+        )
+    assert revived.sync_id == sync.id
+    assert len(DbManager.find_records(schemas.Sync, [schemas.Sync.group_id == peer["group"].id])) == 1
+    found = get_post_records("1700000000.000100")
+    assert found and found[0][1].id == local.id
+
+
+def test_inbound_local_row_keeps_its_status_and_posts_the_carried_notice(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_sync_channel_upsert
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    sync = DbManager.create_record(
+        schemas.Sync(
+            title="Shared",
+            group_id=peer["group"].id,
+            sync_mode="group",
+            uid="55555555-5555-5555-5555-555555555559",
+        )
+    )
+    row = DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["local"].id,
+            channel_id="CLOCAL",
+            status="active",
+            publishes=True,
+            subscribes=True,
+            created_at=now,
+        )
+    )
+    sentence = ":double_vertical_bar: Syncing with `Workspace A` is on hold while the External Connection is untrusted."
+    with patch("helpers.sync_lifecycle.post_to_other_sync_channels") as notify:
+        status, _resp = handle_sync_channel_upsert(
+            {
+                "sync_uid": sync.uid,
+                "team_id": peer["local"].team_id,
+                "channel_id": "CLOCAL",
+                "status": "paused",
+                "notice": sentence,
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    assert DbManager.get_record(schemas.SyncChannel, id=row.id).status == "active"
+    notify.assert_called_once()
+    assert notify.call_args.args[2] == sentence
+
+
+def _assert_posted_notice(notify, workspace, sync_id: int, sentence: str) -> None:
+    notify.assert_called_once()
+    posted, sid, text = notify.call_args.args
+    assert posted.id == workspace.id
+    assert sid == sync_id
+    assert text == sentence
 
 
 def test_post_parts_retries_413_once(tmp_path):
@@ -1546,7 +2019,7 @@ def test_leave_connection_keeps_post_meta_for_retention(real_db):
     assert stub.instance_id == peer["fed"].instance_id
     paused = DbManager.get_record(schemas.SyncChannel, id=stub_sc.id)
     assert paused.deleted_at is not None
-    assert paused.status == "paused"
+    assert paused.status == "uninstalled"
     assert DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.sync_channel_id == stub_sc.id])
     fed = DbManager.get_record(schemas.Instance, id=peer["fed"].instance_id)
     assert fed.status == "inactive"
@@ -1596,7 +2069,7 @@ def test_reinstall_reclaims_stub_to_local(real_db):
     peer = _seed_peer()
     _sync, _local_sc, stub_sc = _seed_shared_sync(peer)
     client = MagicMock()
-    with patch("helpers.workspace.heal_restored_sync_channels", return_value={}):
+    with patch("helpers.workspace.resume_restored_sync_channels", return_value={}):
         restored = get_workspace_record(peer["stub"].team_id, {"team": {"id": peer["stub"].team_id}}, {}, client)
     assert is_local_workspace(restored)
     assert restored.deleted_at is None
@@ -1615,8 +2088,8 @@ def test_export_includes_paused_remote_post_meta(real_db):
     soft_delete_workspace(peer["stub"])
     payload = build_migration_export(peer["local"].id, include_source_instance=False)
     channels = {(row["team_id"], row["channel_id"]) for row in payload["sync_channels"]}
-    assert ("TSTUB", "CSTUB") in channels
-    assert payload["post_meta"]["44444444-4444-4444-4444-444444444444:CSTUB"]
+    assert ("TSTUB", "CSTUB") not in channels
+    assert "44444444-4444-4444-4444-444444444444:CSTUB" not in payload["post_meta"]
     members = payload["groups"][0]["member_team_ids"]
     assert "TSTUB" in members
 
@@ -1741,7 +2214,8 @@ def test_handle_group_leave_invalidates_local_homes(real_db):
     from federation.api import handle_group_leave
 
     peer = _seed_peer()
-    with patch("federation.api.invalidate_home_tab_caches_for_team") as inv:
+    # Replicated group changes drop member Homes through helpers.export_import.invalidate_group_member_homes.
+    with patch("helpers.export_import.invalidate_home_tab_caches_for_team") as inv:
         status, _resp = handle_group_leave(
             {"uid": peer["group"].uid, "team_id": peer["stub"].team_id},
             peer["fed"],
@@ -1754,7 +2228,7 @@ def test_handle_group_upsert_invalidates_on_rename(real_db):
     from federation.api import handle_group_upsert
 
     peer = _seed_peer()
-    with patch("federation.api.invalidate_home_tab_caches_for_team") as inv:
+    with patch("helpers.export_import.invalidate_home_tab_caches_for_team") as inv:
         status, _resp = handle_group_upsert({"uid": peer["group"].uid, "name": "Renamed"}, peer["fed"])
     assert status == 200
     assert any(call.args[0] == peer["local"].team_id for call in inv.call_args_list)
@@ -2026,6 +2500,26 @@ def test_edit_ack_allows_drop_after_demote(real_db):
     assert result is None
 
 
+def test_handle_sync_channel_remove_purge_deletes_the_local_row(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_sync_channel_remove
+
+    peer = _seed_peer()
+    sync, channel = _seed_inbound_channel(peer)
+    status, _resp = handle_sync_channel_remove(
+        {
+            "sync_uid": sync.uid,
+            "team_id": "TLOCAL",
+            "channel_id": "CLOCAL",
+            "purge": True,
+            "notice": ":wastebasket: history was deleted.",
+        },
+        peer["fed"],
+    )
+    assert status == 200
+    assert DbManager.get_record(schemas.SyncChannel, id=channel.id) is None
+
+
 def test_handle_sync_channel_remove_invalidates_local_homes(real_db):
     from db import DbManager, schemas
     from federation.api import handle_sync_channel_remove
@@ -2044,7 +2538,7 @@ def test_handle_sync_channel_remove_invalidates_local_homes(real_db):
             created_at=now,
         )
     )
-    with patch("federation.api.invalidate_home_tab_caches_for_team") as inv:
+    with patch("helpers.export_import.invalidate_home_tab_caches_for_team") as inv:
         status, _resp = handle_sync_channel_remove(
             {"sync_uid": sync.uid, "team_id": peer["stub"].team_id, "channel_id": "CSTUB"},
             peer["fed"],
@@ -2165,3 +2659,360 @@ def test_handle_users_returns_json_chunk_mb(real_db, monkeypatch):
     assert resp["ok"] is True
     assert "json_chunk_mb" in resp
     assert "next_offset" not in resp
+
+
+def test_group_invite_reuses_soft_deleted_membership(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    rows = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == peer["group"].id,
+            schemas.WorkspaceGroupMember.workspace_id == peer["stub"].id,
+        ],
+    )
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == rows[0].id],
+        {schemas.WorkspaceGroupMember.deleted_at: now, schemas.WorkspaceGroupMember.status: "active"},
+    )
+    status, _resp = handle_group_invite(
+        {"uid": peer["group"].uid, "team_id": "TSTUB", "role": "owner"},
+        peer["fed"],
+    )
+    assert status == 200
+    again = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == peer["group"].id,
+            schemas.WorkspaceGroupMember.workspace_id == peer["stub"].id,
+            schemas.WorkspaceGroupMember.deleted_at.is_(None),
+        ],
+    )
+    assert len(again) == 1
+    assert again[0].id == rows[0].id
+    assert again[0].role == "member"
+
+
+def test_inbound_pending_row_is_an_empty_success(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_message
+
+    peer = _seed_peer()
+    channel = DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=DbManager.create_record(
+                schemas.Sync(
+                    title="Move",
+                    group_id=peer["group"].id,
+                    sync_mode="group",
+                    uid="33333333-3333-3333-3333-333333333333",
+                )
+            ).id,
+            workspace_id=peer["local"].id,
+            channel_id="CWAIT",
+            status="pending",
+            publishes=True,
+            subscribes=True,
+            created_at=datetime.now(UTC).replace(tzinfo=None),
+        )
+    )
+    status, resp = handle_message(
+        {
+            "channel_id": "CWAIT",
+            "post_id": "P1",
+            "kind": "message",
+            "action": "create",
+            "text": "hello",
+            "sync_uid": "33333333-3333-3333-3333-333333333333",
+        },
+        peer["fed"],
+    )
+    assert status == 200
+    assert resp.get("ts") is None
+    stored = DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.sync_channel_id == channel.id])
+    assert stored == []
+
+
+def test_active_delivery_retries_then_stops(monkeypatch):
+    from helpers.sync_pipeline import _while_active
+
+    sleeps: list[float] = []
+    monkeypatch.setattr("helpers.sync_pipeline._sleep_between_attempts", sleeps.append)
+    calls = {"n": 0}
+
+    class _row:
+        channel_id = "C1"
+        status = "active"
+        subscribes = True
+        deleted_at = None
+
+    monkeypatch.setattr("helpers.sync_pipeline.get_active_sync_channel", lambda _row_in: _row())
+    monkeypatch.setattr("helpers.sync_pipeline.channel_subscribes", lambda _row_in: True)
+
+    def work(_live):
+        calls["n"] += 1
+        return False
+
+    assert _while_active(_row(), work) is False
+    assert calls["n"] == 3
+    assert sleeps == [1, 2]
+
+
+def test_inbound_convert_does_not_announce_and_each_peer_announces_once(real_db):
+    from datetime import UTC, datetime
+
+    from db import DbManager, schemas
+    from federation.api import _convert_pending_target_to_stub
+    from helpers.notifications import notify_migration
+
+    peer = _seed_peer()
+    now = datetime.now(UTC)
+    DbManager.update_records(
+        schemas.Workspace,
+        [schemas.Workspace.id == peer["local"].id],
+        {schemas.Workspace.deleted_at: now},
+    )
+    sync = DbManager.create_record(
+        schemas.Sync(
+            title="Move",
+            group_id=peer["group"].id,
+            sync_mode="group",
+            uid="77777777-7777-7777-7777-777777777777",
+        )
+    )
+    DbManager.create_record(
+        schemas.SyncChannel(
+            sync_id=sync.id,
+            workspace_id=peer["local"].id,
+            channel_id="CMOVE",
+            status="uninstalled",
+            publishes=True,
+            subscribes=True,
+            created_at=now.replace(tzinfo=None),
+            deleted_at=now.replace(tzinfo=None),
+        )
+    )
+    DbManager.create_record(
+        schemas.FederationPendingStub(
+            workspace_id=peer["local"].id,
+            instance_id=peer["fed"].instance_id,
+        )
+    )
+    other = DbManager.create_record(
+        schemas.Workspace(
+            team_id="TOTHER",
+            workspace_name="Workspace A",
+            instance_id=peer["local"].instance_id,
+        )
+    )
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=peer["group"].id,
+            workspace_id=other.id,
+            status="active",
+            role="member",
+            joined_at=now.replace(tzinfo=None),
+        )
+    )
+    with patch("helpers.notifications.notify_migration") as announced:
+        _convert_pending_target_to_stub("CMOVE", peer["fed"])
+    announced.assert_not_called()
+    moved = DbManager.get_record(schemas.Workspace, id="TLOCAL")
+    assert moved.instance_id == peer["fed"].instance_id
+    assert moved.deleted_at is None
+
+    client = MagicMock()
+    client.conversations_open.return_value = {"channel": {"id": "D1"}}
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.notifications.get_manager_ids", return_value=["U1"]),
+        patch("helpers.notifications.WebClient", return_value=client),
+    ):
+        notify_migration("TLOCAL", peer["fed"].instance_id)
+        notify_migration("TLOCAL", peer["fed"].instance_id)
+        assert client.chat_postMessage.call_count == 1
+        text = client.chat_postMessage.call_args.kwargs["text"]
+        assert "Workspace: Local" in text
+        assert "Workspaces in Sync" not in text
+        notify_migration("TLOCAL", "c" * 64)
+        assert client.chat_postMessage.call_count == 2
+
+
+def _slack_app_client():
+    client = MagicMock()
+    client.auth_test.return_value = {"ok": True, "user_id": "UBOT", "bot_id": "BBOT"}
+    client.users_info.return_value = {
+        "ok": True,
+        "user": {
+            "id": "UBOT",
+            "real_name": "SyncBot (Test)",
+            "profile": {"display_name": "SyncBot (Test)", "real_name": "SyncBot (Test)"},
+        },
+    }
+    client.conversations_open.return_value = {"channel": {"id": "D1"}}
+    return client
+
+
+def test_install_and_uninstall_name_the_slack_app(real_db, monkeypatch):
+    from db import DbManager, schemas
+    from helpers.notifications import notify_primary_action
+    from helpers.workspace import get_workspace_record
+
+    peer = _seed_peer()
+    DbManager.update_records(
+        schemas.Workspace,
+        [schemas.Workspace.id == peer["stub"].id],
+        {schemas.Workspace.workspace_name: "Workspace A"},
+    )
+    monkeypatch.setenv("PRIMARY_WORKSPACE", peer["local"].team_id)
+    client = _slack_app_client()
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-app"),
+        patch("helpers.notifications.WebClient", return_value=client),
+        patch("helpers.notifications.get_manager_ids", return_value=["U1"]),
+        patch("helpers.workspace.resume_restored_sync_channels", return_value={}),
+        patch("helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`") as person,
+    ):
+        get_workspace_record(
+            peer["stub"].team_id,
+            {"user": {"id": "UADA"}, "team": {"id": peer["stub"].team_id}},
+            {},
+            client,
+        )
+        install = client.chat_postMessage.call_args.kwargs["text"]
+        assert "Acting Manager: SyncBot (Test)" in install
+        assert "Action: Install" in install
+        assert "Workspace: Workspace A" in install
+        assert "Ada Lovelace" not in install
+        person.assert_not_called()
+
+        peer["local"].workspace_name = "Workspace A"
+        notify_primary_action(peer["local"], "Uninstall")
+        uninstall = client.chat_postMessage.call_args.kwargs["text"]
+        assert "Acting Manager: SyncBot (Test)" in uninstall
+        assert "Action: Uninstall" in uninstall
+        assert "Ada Lovelace" not in uninstall
+
+
+def test_live_list_posts_install_and_a_later_move_still_posts_migration(real_db):
+    from db import DbManager, schemas
+    from helpers._cache import clear_all_caches
+    from helpers.workspace_kind import convert_workspace_to_stub
+
+    peer = _seed_peer()
+    DbManager.update_records(
+        schemas.Workspace,
+        [schemas.Workspace.id == peer["local"].id],
+        {schemas.Workspace.workspace_name: "Workspace A"},
+    )
+    now = datetime.now(UTC).replace(tzinfo=None)
+    other = DbManager.create_record(
+        schemas.Workspace(
+            team_id="TOTHER",
+            workspace_name="Workspace B",
+            instance_id=peer["local"].instance_id,
+        )
+    )
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=peer["group"].id,
+            workspace_id=other.id,
+            status="active",
+            role="member",
+            joined_at=now,
+        )
+    )
+    client = _slack_app_client()
+    with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-app"),
+        patch("helpers.notifications.WebClient", return_value=client),
+        patch("helpers.notifications.get_manager_ids", return_value=["U1"]),
+    ):
+        client.users_info.return_value["user"]["real_name"] = "SyncBot (GCP Test)"
+        client.users_info.return_value["user"]["profile"]["display_name"] = "SyncBot (GCP Test)"
+        client.users_info.return_value["user"]["profile"]["real_name"] = "SyncBot (GCP Test)"
+        assert (
+            convert_workspace_to_stub(
+                peer["local"].team_id,
+                peer["fed"].instance_id,
+                app_name="SyncBot (Test)",
+            )
+            == "refused_live"
+        )
+        install_count = client.chat_postMessage.call_count
+        assert install_count >= 1
+        for call in client.chat_postMessage.call_args_list:
+            text = call.kwargs["text"]
+            assert "Action: Install" in text
+            assert "Acting Manager: SyncBot (Test)" in text
+            assert "SyncBot (GCP Test)" not in text
+            assert "Workspace: Workspace A" in text
+        assert not DbManager.find_records(
+            schemas.InstanceSetting,
+            [schemas.InstanceSetting.key == "migration_notices"],
+        )
+        claim_key = f"install_from:{peer['local'].team_id}:{peer['fed'].instance_id}"[:64]
+        assert DbManager.get_record(schemas.InstanceSetting, claim_key) is not None
+
+        clear_all_caches()
+        assert (
+            convert_workspace_to_stub(
+                peer["local"].team_id,
+                peer["fed"].instance_id,
+                app_name="SyncBot (Test)",
+            )
+            == "refused_live"
+        )
+        assert client.chat_postMessage.call_count == install_count
+
+        DbManager.update_records(
+            schemas.Workspace,
+            [schemas.Workspace.id == peer["local"].id],
+            {schemas.Workspace.deleted_at: datetime.now(UTC)},
+        )
+        assert (
+            convert_workspace_to_stub(peer["local"].team_id, peer["fed"].instance_id, source="uninstall") == "converted"
+        )
+        assert client.chat_postMessage.call_count == install_count + 1
+        moved = client.chat_postMessage.call_args.kwargs["text"]
+        assert "Action: Migration" in moved
+        assert "Acting Manager: SyncBot (GCP Test)" in moved
+        assert "Workspace: Workspace A" in moved
+
+
+def test_teams_push_names_the_app_that_listed_the_workspace(real_db):
+    from federation.api import handle_teams
+
+    peer = _seed_peer()
+    with patch("helpers.workspace_kind.notify_live_workspace_conflict") as notified:
+        status, resp = handle_teams(
+            {
+                "workspaces": [{"team_id": peer["local"].team_id, "name": "Workspace A"}],
+                "app_name": "SyncBot (Test)",
+            },
+            peer["fed"],
+        )
+    assert status == 200
+    assert resp["results"][peer["local"].team_id] == "refused_live"
+    notified.assert_called_once_with(
+        peer["local"].team_id,
+        peer["fed"].instance_id,
+        app_name="SyncBot (Test)",
+    )
+
+
+def test_teams_payload_carries_this_app_name(real_db, monkeypatch):
+    from federation.core import teams_allowlist_payload
+
+    peer = _seed_peer()
+    monkeypatch.setenv("PRIMARY_WORKSPACE", peer["local"].team_id)
+    with (
+        patch("helpers.workspace.get_bot_token", return_value="xoxb-aws"),
+        patch("helpers.slack_api.get_app_display_name", return_value="SyncBot (Test)"),
+    ):
+        payload = teams_allowlist_payload(peer["fed"].instance_id)
+    assert payload["app_name"] == "SyncBot (Test)"

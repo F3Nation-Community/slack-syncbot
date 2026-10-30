@@ -499,12 +499,12 @@ class TestResolveChannelReferences:
 
 
 # -----------------------------------------------------------------------
-# lookup_channel_meta
+# lookup_channel_name
 # -----------------------------------------------------------------------
 
 
-class TestLookupChannelMeta:
-    """Name + private flag for Home and publish, without logging tokens."""
+class TestLookupChannelName:
+    """Channel name for Home and publish, without logging tokens."""
 
     def setup_method(self):
         helpers._CACHE.clear()
@@ -516,10 +516,9 @@ class TestLookupChannelMeta:
         client = MagicMock()
         client.conversations_info.return_value = {"channel": {"name": "2nd-f", "is_private": False}}
 
-        name, is_private = helpers.lookup_channel_meta("C123", None, client=client)
+        name = helpers.lookup_channel_name("C123", None, client=client)
 
         assert name == "2nd-f"
-        assert is_private is False
         client.conversations_info.assert_called_once_with(channel="C123")
 
     def test_user_token_is_used_when_bot_cannot_see_the_channel(self):
@@ -540,10 +539,9 @@ class TestLookupChannelMeta:
             patch("helpers.workspace.get_bot_token", return_value="xoxb-bot"),
             patch("helpers.workspace.WebClient", side_effect=web_client),
         ):
-            name, is_private = helpers.lookup_channel_meta("CPRIV", ws, user_token="xoxp-user")
+            name = helpers.lookup_channel_name("CPRIV", ws, user_token="xoxp-user")
 
         assert name == "leadership"
-        assert is_private is True
         user_client.conversations_info.assert_called_once_with(channel="CPRIV")
 
     def test_unresolved_name_is_the_channel_id_and_is_not_process_cached(self):
@@ -553,10 +551,9 @@ class TestLookupChannelMeta:
         client.conversations_info.side_effect = Exception("channel_not_found")
 
         # Without a request scope, misses are not memoized (process cache stays success-only).
-        name, is_private = helpers.lookup_channel_meta("C_UNRESOLVED", None, client=client)
-        helpers.lookup_channel_meta("C_UNRESOLVED", None, client=client)
+        name = helpers.lookup_channel_name("C_UNRESOLVED", None, client=client)
+        helpers.lookup_channel_name("C_UNRESOLVED", None, client=client)
         assert name == "C_UNRESOLVED"
-        assert is_private is False
         assert client.conversations_info.call_count == 2
 
         # Within one request, misses are memoized so Home/publish do not re-hit Slack.
@@ -564,10 +561,10 @@ class TestLookupChannelMeta:
         try:
             client.reset_mock()
             client.conversations_info.side_effect = Exception("channel_not_found")
-            helpers.lookup_channel_meta("C_UNRESOLVED2", None, client=client)
-            helpers.lookup_channel_meta("C_UNRESOLVED2", None, client=client)
+            helpers.lookup_channel_name("C_UNRESOLVED2", None, client=client)
+            helpers.lookup_channel_name("C_UNRESOLVED2", None, client=client)
             assert client.conversations_info.call_count == 1
-            assert "chan_meta:C_UNRESOLVED2" not in helpers._CACHE
+            assert "chan_label:C_UNRESOLVED2" not in helpers._CACHE
         finally:
             clear_request_scope()
 
@@ -575,8 +572,8 @@ class TestLookupChannelMeta:
         client = MagicMock()
         client.conversations_info.return_value = {"channel": {"name": "general", "is_private": False}}
 
-        helpers.lookup_channel_meta("C_CACHED_OK", None, client=client)
-        helpers.lookup_channel_meta("C_CACHED_OK", None, client=client)
+        helpers.lookup_channel_name("C_CACHED_OK", None, client=client)
+        helpers.lookup_channel_name("C_CACHED_OK", None, client=client)
 
         assert client.conversations_info.call_count == 1
 
@@ -588,9 +585,8 @@ class TestLookupChannelMeta:
             patch("helpers.workspace.get_bot_token", return_value=None),
             patch("helpers.workspace.stored_channel_name", return_value="announcements"),
         ):
-            name, is_private = helpers.lookup_channel_meta("CPEER", ws, client=client)
+            name = helpers.lookup_channel_name("CPEER", ws, client=client)
         assert name == "announcements"
-        assert is_private is False
 
 
 class TestRewriteEnvelopeChannelRefs:

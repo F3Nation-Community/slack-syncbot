@@ -160,8 +160,9 @@ class TestDataMigrationModal:
         assert ":outbox_tray: Export" in text
         assert ":link: Export and Request Connection" in text
         assert "admins of `Workspace A`" in text
-        assert "already connected" in text
+        assert "as a DM" in text
         assert "not connected yet" in text
+        assert "after an admin approves the request" in text
         assert "Export only" not in text
         assert "Home tab" not in text
 

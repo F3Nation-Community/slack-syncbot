@@ -27,6 +27,7 @@ from db.schemas import (
     WorkspaceGroup,
     WorkspaceGroupMember,
 )
+from helpers.synced_by import Viewer, viewer_context
 from logger import log_debug, log_warning
 from slack import actions, orm
 from slack.blocks import context as block_context
@@ -72,6 +73,7 @@ def _home_tab_content_hash(
     is_manager: bool = False,
     is_admin: bool = False,
     extra_manager_ids: tuple[str, ...] = (),
+    private_channel_ids: tuple[str, ...] | None = None,
 ) -> str:
     """Compute a stable hash of the data that drives the Home tab.
 
@@ -85,7 +87,10 @@ def _home_tab_content_hash(
     Non-managers only see Authorize, Refresh, and the lock line, so their hash skips
     groups and syncs. Managers and admins share the full payload (group names, sync titles,
     and External Connection fingerprint); ``is_admin`` and ``extra_manager_ids`` bust
-    the cache when Settings visibility changes.
+    the cache when Settings visibility changes. ``private_channel_ids`` is this
+    manager's sorted private Channel ids, ``()`` when Slack said there are none,
+    or ``None`` when private syncing is off or the set was not loaded. This
+    function does not call Slack.
     """
     workspace_id = workspace_record.id
     workspace_name = (workspace_record.workspace_name or "") or ""
@@ -123,6 +128,7 @@ def _home_tab_content_hash(
                     sync_channel.status or "active",
                     helpers.channel_publishes(sync_channel),
                     helpers.channel_subscribes(sync_channel),
+                    getattr(sync_channel, "is_private", None),
                 )
                 for sync_channel in sorted(channels, key=lambda c: (c.workspace_id, c.channel_id))
             )
@@ -136,12 +142,24 @@ def _home_tab_content_hash(
             ch_count = ch_by_ws.get(member.workspace_id, 0)
             mapped_count = mapped_by_ws.get(member.workspace_id, 0)
             if helpers.is_stub_workspace(member_ws):
-                # Never collapse remotes to workspace_id=0 — use team_id / name.
-                sig_key = (member_ws.team_id or member_ws.workspace_name or "") if member_ws else ""
+                # Never collapse remotes to workspace_id=0 — use team_id and the workspace's own name.
+                sig_key = (
+                    (member_ws.team_id or "") if member_ws else "",
+                    helpers.resolve_workspace_name(member_ws) if member_ws else "",
+                )
                 member_sigs.append((sig_key, member.role or "", ch_count, mapped_count))
             else:
                 member_sigs.append((member.workspace_id, member.role or "", ch_count, mapped_count))
-        member_sigs.sort(key=lambda x: (isinstance(x[0], str), x[0]))
+
+        def _member_sort_key(item: tuple) -> tuple:
+            key = item[0]
+            if isinstance(key, tuple):
+                return (1, tuple(str(part) for part in key))
+            if isinstance(key, str):
+                return (1, (key,))
+            return (0, (key,))
+
+        member_sigs.sort(key=_member_sort_key)
         sync_titles = tuple(sorted((sync.id, sync.title or "") for sync in syncs))
         group_payload.append(
             (
@@ -166,6 +184,8 @@ def _home_tab_content_hash(
         permission_lists,
         role_sig,
         _federation_home_fingerprint(),
+        None if private_channel_ids is None else tuple(sorted(private_channel_ids)),
+        bool(helpers.allow_private_channels(workspace_record.team_id)),
     )
     return hashlib.sha256(repr(payload).encode()).hexdigest()
 
@@ -417,6 +437,7 @@ def build_home_tab(
     return_blocks: bool = False,
     workspace: Workspace | None = None,
     content_hash: str | None = None,
+    viewer: Viewer | None = None,
 ) -> list[dict] | None:
     """Build and publish the App Home tab. If return_blocks is True, return block dicts and do not publish."""
     team_id = helpers.get_team_id_from_body(body)
@@ -435,6 +456,8 @@ def build_home_tab(
     is_admin = helpers.is_workspace_admin(client, user_id)
     is_manager = helpers.is_workspace_manager(client, user_id, team_id)
     extra_manager_ids = tuple(sorted(helpers.extra_manager_user_ids(team_id)))
+    if viewer is None:
+        viewer = viewer_context(workspace_record, user_id, client)
 
     blocks: list[orm.BaseBlock] = []
 
@@ -443,11 +466,11 @@ def build_home_tab(
     blocks.append(divider())
 
     if not is_manager:
-        blocks.append(block_context(":lock: This area of SyncBot is limited to Workspace managers."))
+        blocks.append(block_context(":lock: This area of SyncBot is limited to Workspace Admins and Managers."))
     else:
         # ── Workspace Groups ──────────────────────────────────────
         blocks.append(header("Workspace Groups"))
-        blocks.append(block_context("_Groups of Workspaces that can Create Sync and Join Sync._"))
+        blocks.append(block_context("Groups of Workspaces that can Create Sync and Join Sync."))
         blocks.append(
             orm.ActionsBlock(
                 elements=[
@@ -482,7 +505,16 @@ def build_home_tab(
             )
         else:
             for group, my_membership in my_groups:
-                _build_group_section(blocks, group, my_membership, workspace_record, context)
+                _build_group_section(
+                    blocks,
+                    group,
+                    my_membership,
+                    workspace_record,
+                    context,
+                    user_id=user_id,
+                    client=client,
+                    viewer=viewer,
+                )
 
         for invite in pending_invites:
             _build_pending_invite_section(blocks, invite, context)
@@ -497,6 +529,7 @@ def build_home_tab(
         is_manager=is_manager,
         is_admin=is_admin,
         extra_manager_ids=extra_manager_ids,
+        private_channel_ids=viewer.channel_ids_for_hash(),
     )
     block_dicts = orm.BlockView(blocks=blocks).as_form_field()
     helpers.remember_home_viewer(team_id, user_id)
@@ -548,7 +581,7 @@ def _build_pending_invite_section(
                 ws_client = WebClient(token=helpers.get_bot_token(inviter_ws))
                 admin_name, _ = helpers.get_user_info(ws_client, invite.invited_by_slack_user_id)
                 if admin_name:
-                    inviter_label = f"{admin_name} from {workspace_label}"
+                    inviter_label = helpers.code_ticked_display_name(admin_name, workspace_label)
             except Exception as exc:
                 # Keep the workspace-level fallback label if we cannot resolve the
                 # inviter's display name from Slack.
@@ -561,7 +594,11 @@ def _build_pending_invite_section(
 
     blocks.append(divider())
     blocks.append(header(f"{group.name}"))
-    blocks.append(section(f":punch: *{inviter_label}* has invited your Workspace to join this Group."))
+    if inviter_label.startswith("`"):
+        invite_line = f":punch: {inviter_label} has invited your Workspace to join this Group."
+    else:
+        invite_line = f":punch: *{inviter_label}* has invited your Workspace to join this Group."
+    blocks.append(section(invite_line))
     blocks.append(
         orm.ActionsBlock(
             elements=[
@@ -588,6 +625,10 @@ def _build_group_section(
     my_membership: WorkspaceGroupMember,
     workspace_record: Workspace,
     context: dict | None = None,
+    *,
+    user_id: str | None = None,
+    client=None,
+    viewer: Viewer | None = None,
 ) -> None:
     """Append blocks for a single workspace group."""
     blocks.append(divider())
@@ -661,26 +702,26 @@ def _build_group_section(
         if member.workspace_id:
             member_ws = helpers.get_workspace_by_id(member.workspace_id, context=context)
             is_stub = helpers.is_stub_workspace(member_ws)
-            if is_stub and member_ws and member_ws.instance_id:
-                fed_ws = DbManager.get_record(Instance, id=member_ws.instance_id)
-                peer_label = (fed_ws.name if fed_ws and fed_ws.name else None) or helpers.resolve_workspace_name(
-                    member_ws
-                )
-                name = f":globe_with_meridians: {peer_label}"
+            if is_stub and member_ws:
+                name = f":globe_with_meridians: {helpers.resolve_workspace_name(member_ws)}"
             else:
                 name = helpers.resolve_workspace_name(member_ws) if member_ws else f"Workspace {member.workspace_id}"
-                if member.role == "owner":
-                    name += " _(Group Owner)_"
         else:
             name = "Unknown"
 
         joined_str = f"{member.joined_at:%B %d, %Y}" if member.joined_at else "Unknown"
+        role = "Owner" if member.role == "owner" else "Member"
 
         ws_id = member.workspace_id
         channel_count = ch_by_ws.get(ws_id, 0) if ws_id else 0
         mapped_count = mapped_by_ws.get(ws_id, 0) if ws_id else 0
 
-        stats = f"Member Since: `{joined_str}`\nSynced Channels: `{channel_count}`\nMapped Users: `{mapped_count}` "
+        stats = (
+            f"Group Role: `{role}`\n"
+            f"Member Since: `{joined_str}`\n"
+            f"Synced Channels: `{channel_count}`\n"
+            f"Mapped Users: `{mapped_count}`"
+        )
         text = f"*{name}*\n{stats}"
         if member.workspace_id and member_ws and not is_stub:
             ws_info = _get_workspace_info(member_ws)
@@ -696,14 +737,30 @@ def _build_group_section(
                     )
                 )
             else:
-                blocks.append(block_context(text))
+                blocks.append(section(text))
+        elif is_stub:
+            blocks.append(section(text))
         else:
             blocks.append(block_context(text))
 
-        # Owners may promote any active local member. Demotion is self-only, and
-        # only while another owner remains to keep the group from losing its
-        # last owner. Stubs are never promotable.
+        # Owners may promote any active member, including one on another instance.
+        # Demotion is self-only, and only while another owner remains.
         role_actions: list[orm.ButtonElement] = []
+        if (
+            is_owner
+            and member.workspace_id
+            and member.workspace_id != workspace_record.id
+            and member.role != "owner"
+            and member_ws
+        ):
+            role_actions.append(
+                orm.ButtonElement(
+                    label=":eject: Remove from Group",
+                    action=f"{actions.CONFIG_REMOVE_GROUP_MEMBER}_{member.id}",
+                    value=str(member.id),
+                    style="danger",
+                )
+            )
         if is_owner and member.workspace_id and member.role != "owner" and helpers.can_promote(member_ws):
             role_actions.append(
                 orm.ButtonElement(
@@ -740,8 +797,9 @@ def _build_group_section(
             )
         else:
             pname = "Unknown"
-        stats_pending = "Member Since: `Pending Invite`"
-        text_pending = f"*{pname}*\n{stats_pending}"
+        if pending_ws and helpers.is_stub_workspace(pending_ws):
+            pname = f":globe_with_meridians: {pname}"
+        text_pending = f"*{pname}*\nGroup Role: `Invited`"
         if pending_member.workspace_id and pending_ws:
             ws_info = _get_workspace_info(pending_ws)
             icon_url = ws_info.get("icon_url")
@@ -756,9 +814,9 @@ def _build_group_section(
                     )
                 )
             else:
-                blocks.append(block_context(text_pending))
+                blocks.append(section(text_pending))
         else:
-            blocks.append(block_context(text_pending))
+            blocks.append(section(text_pending))
         blocks.append(
             orm.ActionsBlock(
                 elements=[
@@ -772,7 +830,16 @@ def _build_group_section(
             )
         )
 
-    _build_inline_channel_sync(blocks, group, workspace_record, other_members, context)
+    _build_inline_channel_sync(
+        blocks,
+        group,
+        workspace_record,
+        other_members,
+        context,
+        user_id=user_id,
+        client=client,
+        viewer=viewer,
+    )
 
 
 def _pairing_code_unexpired(pairing, *, now: datetime) -> bool:
@@ -848,7 +915,7 @@ def _append_federation_connection_row(
     if waiting:
         label_text += "\nWaiting for the other SyncBot to join."
     if webhook_url:
-        label_text += f"\n:globe_with_meridians: {webhook_url}"
+        label_text += f"\nURL: `{webhook_url}`"
     label_text += f"\nTrust Status: `{trust_value}`"
     label_text += f"\nLocal Workspaces: {local_line}"
     label_text += f"\nRemote Workspaces: {remote_line}"
@@ -912,8 +979,8 @@ def _build_federation_section(
     """Append the federation section to the home tab."""
     blocks.append(divider())
     blocks.append(block_context("\u200b"))
-    blocks.append(section("*External Connections*"))
-    blocks.append(block_context("Connect with Workspaces on other SyncBot deployments."))
+    blocks.append(header("External Connections"))
+    blocks.append(block_context("Connect with Workspaces on other SyncBot instances."))
     blocks.append(
         orm.ActionsBlock(
             elements=[

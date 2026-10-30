@@ -54,7 +54,7 @@ def event_db(tmp_path, monkeypatch):
 @pytest.fixture(autouse=True)
 def pipeline_guards():
     with (
-        patch("helpers.channel_has_membership", return_value=True),
+        patch("helpers.has_channel_sync", return_value=True),
         patch("helpers.origin_publishes_anywhere", return_value=True),
         patch("helpers.iter_publish_targets", return_value=[object()]),
         patch("helpers.post_meta_exists_for_channel_ts", return_value=False),
@@ -932,7 +932,7 @@ class TestHandleReactionClaim:
         body = self._reaction_body()
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
-            patch("helpers.channel_has_membership", return_value=False),
+            patch("helpers.has_channel_sync", return_value=False),
             patch("handlers.reaction_event.helpers.get_post_records") as post_meta,
             patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):

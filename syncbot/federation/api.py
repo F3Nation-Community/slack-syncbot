@@ -36,13 +36,11 @@ from helpers.user_action_echo import slack_message_ts
 from helpers.workspace import (
     get_allowed_local_workspace_ids,
     invalidate_fed_ws_for_sync_cache,
-    notify_sibling_sync_channels,
     replace_federation_allowlist,
-    resolve_workspace_name,
     soft_delete_workspace,
 )
 from helpers.workspace_kind import (
-    heal_workspace_to_stub,
+    convert_workspace_to_stub,
     is_local_workspace,
     mark_peer_untrusted,
     peer_is_trusted,
@@ -68,6 +66,8 @@ _KNOWN_POST_PATHS = frozenset(
         "/group-upsert",
         "/group-invite",
         "/group-leave",
+        "/group-member-remove",
+        "/workspace-release",
         "/sync-upsert",
         "/sync-channel-upsert",
         "/sync-channel-remove",
@@ -75,20 +75,25 @@ _KNOWN_POST_PATHS = frozenset(
 )
 
 
+_QUIET_SYNC_STATUSES = frozenset({"pending", "paused", "uninstalled"})
+
+
 def _inbound_channel(
     channel_id: str,
     fed_ws: schemas.Instance,
     *,
     empty: dict,
+    sync_uid: str | None = None,
 ) -> tuple[schemas.SyncChannel, schemas.Workspace] | tuple[int, dict]:
     """Resolve a live local target, or return an HTTP skip/404 response.
 
-    First element is ``int`` when skipped.
+    First element is ``int`` when skipped. A pending, paused, or uninstalled
+    row is an empty 200, the same as a row that does not subscribe.
     """
-    resolved = _resolve_channel_for_federated(channel_id, fed_ws, require_active=True)
+    resolved = _resolve_channel_for_federated(channel_id, fed_ws, sync_uid=sync_uid)
     if not resolved:
-        _heal_inbound_channel_target(channel_id, fed_ws)
-        resolved = _resolve_channel_for_federated(channel_id, fed_ws, require_active=True)
+        _convert_pending_target_to_stub(channel_id, fed_ws)
+        resolved = _resolve_channel_for_federated(channel_id, fed_ws, sync_uid=sync_uid)
     if not resolved:
         log_debug(
             "inbound_skip",
@@ -98,6 +103,15 @@ def _inbound_channel(
         )
         return _NOT_FOUND
     sync_channel, workspace = resolved
+    if (getattr(sync_channel, "status", None) or "active") in _QUIET_SYNC_STATUSES:
+        log_debug(
+            "inbound_skip",
+            reason="not_active",
+            status=sync_channel.status,
+            channel_id=channel_id,
+            peer_instance_id=fed_ws.instance_id,
+        )
+        return 200, empty
     if not _accept_inbound_workspace(workspace, fed_ws):
         log_debug(
             "inbound_skip",
@@ -579,22 +593,32 @@ def _resolve_channel_for_federated(
     channel_id: str,
     fed_ws: schemas.Instance,
     *,
-    require_active: bool = False,
+    sync_uid: str | None = None,
 ) -> tuple[schemas.SyncChannel, schemas.Workspace] | None:
     """Look up a sync channel, verify federated access, and return the workspace.
 
-    Returns ``(sync_channel, workspace)`` or *None* if any check fails.
+    ``sync_uid`` selects the Sync the origin already chose. Without it, the
+    first subscribing row is used. A paused, pending, or uninstalled row is not
+    a target. Returns ``(sync_channel, workspace)`` or *None* if any check fails.
     """
-    filters = [
-        schemas.SyncChannel.channel_id == channel_id,
-        schemas.SyncChannel.deleted_at.is_(None),
-    ]
-    if require_active:
-        filters.append(schemas.SyncChannel.status == "active")
-
-    records = DbManager.find_records(schemas.SyncChannel, filters)
+    records = DbManager.find_records(
+        schemas.SyncChannel,
+        [
+            schemas.SyncChannel.channel_id == channel_id,
+            schemas.SyncChannel.deleted_at.is_(None),
+        ],
+    )
     if not records:
         return None
+    if sync_uid:
+        syncs = DbManager.find_records(schemas.Sync, [schemas.Sync.uid == str(sync_uid)])
+        if not syncs:
+            return None
+        records = [row for row in records if row.sync_id == syncs[0].id]
+    else:
+        subscribing = [row for row in records if channel_subscribes(row)]
+        if subscribing:
+            records = subscribing
 
     for sync_channel in records:
         if not _federated_has_channel_access(fed_ws, sync_channel):
@@ -686,7 +710,7 @@ def _consume_pairing_code(pairing) -> None:
     federation.delete_pairing_code(pairing.id)
 
 
-def _heal_pair_teams(body: dict, pairing, peer: schemas.Instance) -> dict[str, str]:
+def _convert_pair_teams_to_stubs(body: dict, pairing, peer: schemas.Instance) -> dict[str, str]:
     """Heal every team_id in a pair request plus its subject hint."""
     team_ids: list[str] = []
     if isinstance(body.get("team_id"), str):
@@ -696,7 +720,7 @@ def _heal_pair_teams(body: dict, pairing, peer: schemas.Instance) -> dict[str, s
         team_ids.append(str(subject_team_id).strip())
     results: dict[str, str] = {}
     for team_id in dict.fromkeys(team_id for team_id in team_ids if team_id):
-        results[team_id] = heal_workspace_to_stub(team_id, peer.instance_id, source="pair")
+        results[team_id] = convert_workspace_to_stub(team_id, peer.instance_id, source="pair")
     return results
 
 
@@ -719,7 +743,7 @@ def _create_response_from_rows(rows: list) -> dict | None:
     }
 
 
-def _heal_inbound_channel_target(channel_id: str, peer: schemas.Instance) -> None:
+def _convert_pending_target_to_stub(channel_id: str, peer: schemas.Instance) -> None:
     """Heal a pending soft-deleted target before active-channel resolution."""
     channels = DbManager.find_records(
         schemas.SyncChannel,
@@ -739,7 +763,12 @@ def _heal_inbound_channel_target(channel_id: str, peer: schemas.Instance) -> Non
         if not pending:
             continue
         if workspace.deleted_at is not None:
-            heal_workspace_to_stub(workspace.team_id, peer.instance_id, source="inbound")
+            convert_workspace_to_stub(
+                workspace.team_id,
+                peer.instance_id,
+                source="inbound",
+                migration_notice=False,
+            )
 
 
 def _accept_inbound_workspace(workspace: schemas.Workspace, peer: schemas.Instance) -> bool:
@@ -792,25 +821,23 @@ def _invalidate_local_homes() -> None:
             invalidate_home_tab_caches_for_team(workspace.team_id)
 
 
+def _post_carried_group_notice(group_id: int, body: dict) -> None:
+    """DM this instance's managers the sentence the other instance already sent."""
+    notice = body.get("notice")
+    text = notice.strip() if isinstance(notice, str) else ""
+    if not text or not group_id:
+        return
+    from helpers.notifications import notify_group_managers
+
+    notify_group_managers(group_id, text)
+
+
 def _invalidate_replicated_group_homes(group_id: int, sync_id: int | None = None) -> None:
     """Drop Home hashes so replicated members and Channels show without a forced Refresh."""
+    from helpers.export_import import invalidate_group_member_homes
     from helpers.sync_participation import invalidate_sync_fanout_for_syncs
 
-    members = DbManager.find_records(
-        schemas.WorkspaceGroupMember,
-        [
-            schemas.WorkspaceGroupMember.group_id == group_id,
-            schemas.WorkspaceGroupMember.status == "active",
-            schemas.WorkspaceGroupMember.deleted_at.is_(None),
-        ],
-    )
-    for member in members:
-        if not member.workspace_id:
-            continue
-        rows = DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == member.workspace_id])
-        ws = rows[0] if rows else None
-        if ws and is_local_workspace(ws) and ws.team_id:
-            invalidate_home_tab_caches_for_team(ws.team_id)
+    invalidate_group_member_homes(group_id)
     if sync_id:
         invalidate_sync_fanout_for_syncs([sync_id])
 
@@ -903,7 +930,7 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
                     schemas.Instance.updated_at: datetime.now(UTC).replace(tzinfo=None),
                 },
             )
-            results = _heal_pair_teams(body, pairing, existing)
+            results = _convert_pair_teams_to_stubs(body, pairing, existing)
             _apply_pairing_allowlist(pairing, existing)
             _consume_pairing_code(pairing)
             invalidate_fed_ws_for_sync_cache()
@@ -920,7 +947,7 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
                 direction="inbound",
                 peer_instance_id=remote_instance_id,
                 url_updated=True,
-                heal=results,
+                convert=results,
             )
             _invalidate_local_homes()
             return 200, {
@@ -973,7 +1000,7 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
 
     # Heal matching teams. A live install stays live and records a pending stub.
     # subject_team_id is only a hint; process every team_id.
-    results = _heal_pair_teams(body, pairing, fed_ws)
+    results = _convert_pair_teams_to_stubs(body, pairing, fed_ws)
     _apply_pairing_allowlist(pairing, fed_ws)
 
     _consume_pairing_code(pairing)
@@ -994,7 +1021,7 @@ def handle_pair(body: dict, body_str: str, headers: dict) -> tuple[int, dict]:
         direction="inbound",
         peer_instance_id=remote_instance_id,
         url_updated=False,
-        heal=results,
+        convert=results,
     )
     _invalidate_local_homes()
 
@@ -1027,7 +1054,7 @@ def handle_message(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
     channel_id = body["channel_id"]
     post_id = str(body["post_id"])
     target_ts = _envelope_target_ts(body)
-    target = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "ts": None})
+    target = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "ts": None}, sync_uid=body.get("sync_uid"))
     if isinstance(target[0], int):
         return target
     rejected = _reject_unknown_source_team(body, fed_ws)
@@ -1124,7 +1151,7 @@ def handle_message_edit(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict
     post_id = str(body["post_id"])
     channel_id = body["channel_id"]
 
-    target = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "updated": 0})
+    target = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "updated": 0}, sync_uid=body.get("sync_uid"))
     if isinstance(target[0], int):
         return target
     rejected = _reject_unknown_source_team(body, fed_ws)
@@ -1182,7 +1209,7 @@ def handle_message_delete(body: dict, fed_ws: schemas.Instance) -> tuple[int, di
     post_id = str(body["post_id"])
     channel_id = body["channel_id"]
 
-    target = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "deleted": 0})
+    target = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "deleted": 0}, sync_uid=body.get("sync_uid"))
     if isinstance(target[0], int):
         return target
     rejected = _reject_unknown_source_team(body, fed_ws)
@@ -1240,7 +1267,7 @@ def handle_message_react(body: dict, fed_ws: schemas.Instance) -> tuple[int, dic
     post_id = str(body["post_id"])
     channel_id = body["channel_id"]
 
-    resolved = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "applied": 0})
+    resolved = _inbound_channel(channel_id, fed_ws, empty={"ok": True, "applied": 0}, sync_uid=body.get("sync_uid"))
     if isinstance(resolved[0], int):
         return resolved
     rejected = _reject_unknown_source_team(body, fed_ws)
@@ -1436,8 +1463,9 @@ def handle_users(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
 def handle_teams(body: dict, peer: schemas.Instance) -> tuple[int, dict]:
     """Convert peer Workspaces into stubs for *peer*.
 
-    Reads ``workspaces`` (``team_id`` + display ``name``) and optional
-    ``primary_team_id`` / ``primary_workspace_name``. Each listed team is healed
+    Reads ``workspaces`` (``team_id`` + display ``name``), optional
+    ``primary_team_id`` / ``primary_workspace_name``, and ``app_name`` (the sending
+    app's display name). Each listed team is healed
     to a stub for this peer. Stubs for this peer that left the payload are paused
     after the owner gate. Display names are refreshed; they are not used for
     trust. Never pauses a live install or a stub owned by a different peer.
@@ -1461,9 +1489,10 @@ def handle_teams(body: dict, peer: schemas.Instance) -> tuple[int, dict]:
         if isinstance(name, str) and name.strip():
             names[team_id] = name.strip()
 
+    app_name = body.get("app_name") if isinstance(body.get("app_name"), str) else None
     results: dict[str, str] = {}
     for team_id in dict.fromkeys(seen):
-        result = heal_workspace_to_stub(team_id, peer.instance_id, source="teams")
+        result = convert_workspace_to_stub(team_id, peer.instance_id, source="teams", app_name=app_name)
         if result == "missing":
             stub = ensure_stub_workspace(
                 team_id=team_id,
@@ -1512,9 +1541,26 @@ def handle_teams(body: dict, peer: schemas.Instance) -> tuple[int, dict]:
     for workspace in to_pause:
         if (workspace.team_id or "") in blocked_set:
             continue
-        soft_delete_workspace(workspace)
+        rows = soft_delete_workspace(workspace)
+        from helpers.leave_sync import group_name_for_sync_id
+        from helpers.sync_lifecycle import deliver_action_notice
 
-    log_debug("teams_heal", peer_instance_id=peer.instance_id, heal=results)
+        seen: set[int] = set()
+        for row in rows or []:
+            sync_id = getattr(row, "sync_id", None)
+            if not sync_id or sync_id in seen:
+                continue
+            seen.add(sync_id)
+            deliver_action_notice(
+                workspace,
+                row,
+                action="Leave Connection",
+                group_name=group_name_for_sync_id(sync_id),
+                post_in_channel=False,
+                dm=False,
+            )
+
+    log_debug("teams_convert", peer_instance_id=peer.instance_id, convert=results)
     invalidate_fed_ws_for_sync_cache()
     _invalidate_local_homes()
     if blocked:
@@ -1555,18 +1601,43 @@ def handle_group_upsert(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict
         return 400, {"error": err}
     uid = str(body["uid"])
     name = str(body["name"])[:100]
+    status = body.get("status")
+    if status not in (None, "active", "disbanded"):
+        status = None
     rows = DbManager.find_records(
         schemas.WorkspaceGroup,
         [schemas.WorkspaceGroup.uid == uid],
     )
     if rows:
+        group = rows[0]
+        if status == "disbanded":
+            _post_carried_group_notice(group.id, body)
+            DbManager.update_records(
+                schemas.WorkspaceGroup,
+                [schemas.WorkspaceGroup.id == group.id],
+                {schemas.WorkspaceGroup.name: name, schemas.WorkspaceGroup.status: "disbanded"},
+            )
+            DbManager.update_records(
+                schemas.WorkspaceGroupMember,
+                [schemas.WorkspaceGroupMember.group_id == group.id],
+                {
+                    schemas.WorkspaceGroupMember.status: "inactive",
+                    schemas.WorkspaceGroupMember.deleted_at: datetime.now(UTC),
+                },
+            )
+            _invalidate_replicated_group_homes(group.id)
+            return 200, {"ok": True, "uid": uid}
+        if (getattr(group, "status", None) or "active") == "disbanded":
+            return 200, {"ok": True, "uid": uid}
         DbManager.update_records(
             schemas.WorkspaceGroup,
-            [schemas.WorkspaceGroup.id == rows[0].id],
+            [schemas.WorkspaceGroup.id == group.id],
             {schemas.WorkspaceGroup.name: name, schemas.WorkspaceGroup.status: "active"},
         )
-        _invalidate_replicated_group_homes(rows[0].id)
+        _invalidate_replicated_group_homes(group.id)
         return 200, {"ok": True, "uid": uid}
+    if status == "disbanded":
+        return 200, {"ok": True}
     invite = "FED-" + secrets.token_hex(4).upper()
     created = DbManager.create_record(
         schemas.WorkspaceGroup(
@@ -1604,40 +1675,103 @@ def handle_group_invite(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict
     )
     if not ws:
         return 404, {"error": "workspace_not_found"}
-    existing = DbManager.find_records(
+    from helpers.group_roles import file_membership_role, upsert_group_membership
+
+    prior = DbManager.find_records(
         schemas.WorkspaceGroupMember,
         [
             schemas.WorkspaceGroupMember.group_id == group.id,
             schemas.WorkspaceGroupMember.workspace_id == ws.id,
-            schemas.WorkspaceGroupMember.deleted_at.is_(None),
         ],
     )
-    role = str(body.get("role") or "member").strip()
-    if role == "creator":
-        role = "member"
-    if role not in ("owner", "member"):
-        role = "member"
-    if not existing:
-        DbManager.create_record(
-            schemas.WorkspaceGroupMember(
-                group_id=group.id,
-                workspace_id=ws.id,
-                status="active",
-                role=role,
-                joined_at=datetime.now(UTC).replace(tzinfo=None),
-            )
-        )
-    else:
-        DbManager.update_records(
-            schemas.WorkspaceGroupMember,
-            [schemas.WorkspaceGroupMember.id == existing[0].id],
-            {
-                schemas.WorkspaceGroupMember.status: "active",
-                schemas.WorkspaceGroupMember.role: role,
-                schemas.WorkspaceGroupMember.deleted_at: None,
-            },
-        )
+    # set_role is Promote, Give Up Ownership, and succession. A snapshot invite omits it.
+    set_role = body.get("set_role") is True
+    incoming = file_membership_role(body.get("role"), "member") if set_role else "member"
+    upsert_group_membership(
+        group.id,
+        ws.id,
+        role=incoming,
+        now=datetime.now(UTC).replace(tzinfo=None),
+        apply_role=set_role or not prior,
+    )
+    # A snapshot invite may carry a leftover notice. Only a role change or an
+    # explicit join announcement is direct-messaged.
+    if set_role or body.get("announce") is True:
+        _post_carried_group_notice(group.id, body)
     _invalidate_replicated_group_homes(group.id)
+    return 200, {"ok": True}
+
+
+def handle_group_member_remove(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
+    """Hard-delete one workspace's membership and this group's mappings. Not a leave."""
+    err = _validate_fields(body, ["uid", "team_id"])
+    if err:
+        return 400, {"error": err}
+    uid = str(body["uid"])
+    team_id = str(body["team_id"])
+    groups = DbManager.find_records(
+        schemas.WorkspaceGroup,
+        [schemas.WorkspaceGroup.uid == uid],
+    )
+    if not groups:
+        return 200, {"ok": True}
+    ws = _workspace_for_replicated_team(fed_ws, team_id, create_stub=False)
+    if not ws:
+        return 200, {"ok": True}
+    _post_carried_group_notice(groups[0].id, body)
+    DbManager.delete_records(
+        schemas.UserMapping,
+        [
+            schemas.UserMapping.group_id == groups[0].id,
+            ((schemas.UserMapping.source_workspace_id == ws.id) | (schemas.UserMapping.target_workspace_id == ws.id)),
+        ],
+    )
+    DbManager.delete_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == groups[0].id,
+            schemas.WorkspaceGroupMember.workspace_id == ws.id,
+        ],
+    )
+    _invalidate_replicated_group_homes(groups[0].id)
+    return 200, {"ok": True}
+
+
+def handle_workspace_release(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
+    """Origin uninstalled. Write file roles, then resume pending rows if they are here."""
+    err = _validate_fields(body, ["team_id"])
+    if err:
+        return 400, {"error": err}
+    team_id = str(body["team_id"])
+    ws = DbManager.get_record(schemas.Workspace, id=team_id)
+    from helpers.workspace_kind import is_local_workspace
+
+    if ws and is_local_workspace(ws):
+        from helpers.group_roles import upsert_group_membership
+
+        now = datetime.now(UTC).replace(tzinfo=None)
+        for item in body.get("groups") or []:
+            if not isinstance(item, dict):
+                continue
+            uid = str(item.get("uid") or "").strip()
+            if not uid:
+                continue
+            groups = DbManager.find_records(
+                schemas.WorkspaceGroup,
+                [schemas.WorkspaceGroup.uid == uid],
+            )
+            if not groups:
+                continue
+            upsert_group_membership(
+                groups[0].id,
+                ws.id,
+                role=item.get("role") or "member",
+                now=now,
+                apply_role=True,
+            )
+        from helpers.workspace import restore_migrated_workspace
+
+        restore_migrated_workspace(team_id)
     return 200, {"ok": True}
 
 
@@ -1656,6 +1790,7 @@ def handle_group_leave(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]
     ws = _workspace_for_replicated_team(fed_ws, team_id, create_stub=False)
     if not ws:
         return 200, {"ok": True}
+    _post_carried_group_notice(groups[0].id, body)
     DbManager.update_records(
         schemas.WorkspaceGroupMember,
         [
@@ -1664,6 +1799,7 @@ def handle_group_leave(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]
         ],
         {
             schemas.WorkspaceGroupMember.status: "left",
+            schemas.WorkspaceGroupMember.role: "member",
             schemas.WorkspaceGroupMember.deleted_at: datetime.now(UTC).replace(tzinfo=None),
         },
     )
@@ -1706,6 +1842,22 @@ def handle_sync_upsert(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]
     return 200, {"ok": True, "uid": sync_uid}
 
 
+def _post_carried_notice(ws, sync_id: int, body: dict, *, fallback: str | None) -> None:
+    """Post the origin's sentence. An older peer with no ``notice`` may use *fallback*."""
+    from helpers.sync_lifecycle import post_to_other_sync_channels
+
+    notice = body.get("notice")
+    text = notice.strip() if isinstance(notice, str) else ""
+    if not text:
+        text = (fallback or "").strip()
+    if not text:
+        return
+    try:
+        post_to_other_sync_channels(ws, sync_id, text)
+    except Exception:
+        log_warning("inbound_sync_notice_failed", sync_id=sync_id, team_id=getattr(ws, "team_id", None))
+
+
 def handle_sync_channel_upsert(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
     err = _validate_fields(body, ["sync_uid", "team_id", "channel_id"])
     if err:
@@ -1733,38 +1885,59 @@ def handle_sync_channel_upsert(body: dict, fed_ws: schemas.Instance) -> tuple[in
             schemas.SyncChannel.workspace_id == ws.id,
         ],
     )
+    from helpers.sync_participation import channel_publishes
+    from helpers.workspace import get_workspace_by_id
+
+    channel_name = str(body.get("channel_name") or "").strip().removeprefix("#")[:100] or None
+    if is_local_workspace(ws):
+        # A peer is never the authority for a local row: take the name, nothing else.
+        if existing and channel_name:
+            DbManager.update_records(
+                schemas.SyncChannel,
+                [schemas.SyncChannel.id == existing[0].id],
+                {schemas.SyncChannel.channel_name: channel_name},
+            )
+        _post_carried_notice(ws, sync.id, body, fallback=None)
+        _invalidate_replicated_group_homes(sync.group_id, sync.id)
+        return 200, {"ok": True}
     publishes = bool(body.get("publishes", True))
     subscribes = bool(body.get("subscribes", True))
     status = str(body.get("status") or "active")[:20]
     reaction_style = body.get("reaction_style")
-    channel_name = str(body.get("channel_name") or "").strip().removeprefix("#")[:100] or None
+    payload_private = bool(body["is_private"]) if body.get("is_private") is not None else None
+    live_local = DbManager.find_records(
+        schemas.SyncChannel,
+        [schemas.SyncChannel.sync_id == sync.id, schemas.SyncChannel.deleted_at.is_(None)],
+    )
+    local_rows = []
+    for row in live_local:
+        row_ws = get_workspace_by_id(row.workspace_id)
+        if row_ws and is_local_workspace(row_ws):
+            local_rows.append(row)
+    local_flags = {row.is_private for row in local_rows if getattr(row, "is_private", None) is not None}
+    if payload_private is not None and any(flag is not payload_private for flag in local_flags):
+        return 400, {"error": "private_mismatch"}
+    if payload_private is None and any(
+        channel_publishes(row) and getattr(row, "is_private", None) is True for row in local_rows
+    ):
+        return 400, {"error": "private_publisher"}
     if existing:
-        prior = existing[0]
-        was_inactive = (prior.status or "") != "active" or prior.deleted_at is not None
         updates = {
             schemas.SyncChannel.status: status,
             schemas.SyncChannel.publishes: publishes,
             schemas.SyncChannel.subscribes: subscribes,
-            schemas.SyncChannel.deleted_at: None,
         }
+        if status == "uninstalled":
+            updates[schemas.SyncChannel.deleted_at] = datetime.now(UTC).replace(tzinfo=None)
+        else:
+            updates[schemas.SyncChannel.deleted_at] = None
         if reaction_style is not None:
             updates[schemas.SyncChannel.reaction_style] = str(reaction_style)[:32]
         if channel_name:
             updates[schemas.SyncChannel.channel_name] = channel_name
+        if payload_private is not None:
+            updates[schemas.SyncChannel.is_private] = payload_private
         DbManager.update_records(schemas.SyncChannel, [schemas.SyncChannel.id == existing[0].id], updates)
-        if was_inactive and status == "active":
-            try:
-                notify_sibling_sync_channels(
-                    ws,
-                    sync.id,
-                    f":arrow_forward: Syncing with `{resolve_workspace_name(ws)}` has been resumed.",
-                )
-            except Exception:
-                log_warning(
-                    "inbound_sync_channel_resume_notice_failed",
-                    team_id=getattr(ws, "team_id", None),
-                    sync_id=sync.id,
-                )
     else:
         DbManager.create_record(
             schemas.SyncChannel(
@@ -1775,10 +1948,14 @@ def handle_sync_channel_upsert(body: dict, fed_ws: schemas.Instance) -> tuple[in
                 status=status,
                 publishes=publishes,
                 subscribes=subscribes,
+                is_private=payload_private,
                 reaction_style=str(reaction_style)[:32] if reaction_style else None,
                 created_at=datetime.now(UTC).replace(tzinfo=None),
+                deleted_at=datetime.now(UTC).replace(tzinfo=None) if status == "uninstalled" else None,
             )
         )
+    fallback = None
+    _post_carried_notice(ws, sync.id, body, fallback=fallback)
     _invalidate_replicated_group_homes(sync.group_id, sync.id)
     return 200, {"ok": True}
 
@@ -1796,19 +1973,58 @@ def handle_sync_channel_remove(body: dict, fed_ws: schemas.Instance) -> tuple[in
     ws = _workspace_for_replicated_team(fed_ws, str(body["team_id"]), create_stub=False)
     if not ws:
         return 200, {"ok": True}
-    DbManager.update_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.sync_id == syncs[0].id,
-            schemas.SyncChannel.workspace_id == ws.id,
-            schemas.SyncChannel.channel_id == str(body["channel_id"]),
-        ],
-        {
-            schemas.SyncChannel.status: "left",
-            schemas.SyncChannel.deleted_at: datetime.now(UTC).replace(tzinfo=None),
-        },
-    )
-    _invalidate_replicated_group_homes(syncs[0].group_id, syncs[0].id)
+    from federation.replicate import FORWARDED_REMOVE_REASONS
+    from helpers.leave_sync import soft_delete_sync_channels
+
+    sync = syncs[0]
+    channel_id = str(body["channel_id"])
+    reason = body.get("reason")
+    accepted = reason in FORWARDED_REMOVE_REASONS
+    if body.get("purge") is True and is_local_workspace(ws):
+        from helpers.sync_cleanup import purge_sync_channels
+
+        doomed = DbManager.find_records(
+            schemas.SyncChannel,
+            [
+                schemas.SyncChannel.sync_id == sync.id,
+                schemas.SyncChannel.workspace_id == ws.id,
+                schemas.SyncChannel.channel_id == channel_id,
+            ],
+        )
+        if doomed:
+            purge_sync_channels(doomed)
+        carried = body.get("notice")
+        carried = carried.strip() if isinstance(carried, str) else ""
+        if doomed and carried:
+            _post_carried_notice(ws, sync.id, body, fallback=None)
+        _invalidate_replicated_group_homes(sync.group_id, sync.id)
+        return 200, {"ok": True}
+    if is_local_workspace(ws):
+        carried = body.get("notice")
+        carried = carried.strip() if isinstance(carried, str) else ""
+        if accepted or "reason" not in body:
+            soft_delete_sync_channels(
+                ws,
+                channel_id,
+                reason if accepted else "remote_ended",
+                sync_ids={sync.id},
+                replicate=False,
+                channel_notice=carried or None,
+            )
+        elif carried:
+            _post_carried_notice(ws, sync.id, body, fallback=None)
+    else:
+        carried = body.get("notice")
+        carried = carried.strip() if isinstance(carried, str) else ""
+        soft_delete_sync_channels(
+            ws,
+            channel_id,
+            reason if accepted else "remote_ended",
+            sync_ids={sync.id},
+            replicate=False,
+            channel_notice=carried or None,
+        )
+    _invalidate_replicated_group_homes(sync.group_id, sync.id)
     return 200, {"ok": True}
 
 
@@ -1961,6 +2177,10 @@ def _dispatch_federation_request(
         return handle_group_invite(body, verified)
     if subpath == "/group-leave":
         return handle_group_leave(body, verified)
+    if subpath == "/group-member-remove":
+        return handle_group_member_remove(body, verified)
+    if subpath == "/workspace-release":
+        return handle_workspace_release(body, verified)
     if subpath == "/sync-upsert":
         return handle_sync_upsert(body, verified)
     if subpath == "/sync-channel-upsert":

@@ -354,7 +354,7 @@ class TestJoinSeedsOnly:
 
 class TestCreateSyncAnnouncement:
     def test_create_sync_posts_announcement_after_membership(self):
-        workspace = SimpleNamespace(id=10, team_id="T1")
+        workspace = SimpleNamespace(id=10, team_id="T1", workspace_name="Workspace A")
         client = MagicMock()
         body = {"view": {"team_id": "T1"}, "user": {"id": "U1"}}
         created: list = []
@@ -371,24 +371,29 @@ class TestCreateSyncAnnouncement:
             ),
             patch("handlers.channel_sync._get_selected_conversation_or_option", return_value="Cpub"),
             patch("handlers.channel_sync._get_selected_option_value", return_value=None),
-            patch("handlers.channel_sync._validate_channel_selection", return_value=None),
+            patch("handlers.channel_sync._validate_channel_selection", return_value=(None, False)),
             patch("handlers.channel_sync.helpers.get_user_token", return_value=None),
-            patch("handlers.channel_sync.helpers.lookup_channel_meta", return_value=("general", False)),
+            patch("handlers.channel_sync.helpers.lookup_channel_name", return_value="general"),
             patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
-            patch("handlers.channel_sync.DbManager.find_records", return_value=[SimpleNamespace(name="Region")]),
-            patch("handlers.channel_sync._ensure_membership_or_rollback", return_value=True),
-            patch("handlers.channel_sync.helpers.format_admin_label", return_value=("Ada", "Ada (WS)")),
+            patch("handlers.channel_sync.DbManager.find_records", return_value=[SimpleNamespace(name="Partner Org")]),
+            patch("handlers.channel_sync.DbManager.update_records"),
+            patch("handlers.channel_sync.DbManager.get_record", return_value=None),
+            patch("handlers.channel_sync._ensure_membership_or_rollback", return_value=False),
+            patch("handlers.channel_sync.set_channel_private") as stamp_private,
+            patch("handlers.channel_sync.helpers.format_admin_label", return_value="`Ada (Workspace A)`"),
             patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
-            patch("handlers.channel_sync._refresh_group_member_homes"),
+            patch("handlers.channel_sync.invalidate_group_member_homes") as invalidate_homes,
+            patch("handlers.channel_sync.deliver_action_notice") as announce,
         ):
             handle_create_sync_submit_work(body, client, MagicMock(), {})
 
-        assert client.chat_postMessage.called
-        announce = [c for c in client.chat_postMessage.call_args_list if c.kwargs.get("channel") == "Cpub"]
-        assert len(announce) == 1
-        text = announce[0].kwargs["text"]
-        assert "created a Sync for this Channel" in text
-        assert "Ada" in text
+        announce.assert_called_once()
+        assert announce.call_args.kwargs["action"] == "Create"
+        assert "Ada" in announce.call_args.kwargs["manager"]
+        sync_channel = created[1]
+        assert sync_channel.is_private is False
+        stamp_private.assert_not_called()
+        invalidate_homes.assert_called_once_with(5, exclude_workspace_id=10)
 
 
 class TestEnsureMappedTargetUserId:

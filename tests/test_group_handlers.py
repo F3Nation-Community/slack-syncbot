@@ -14,6 +14,7 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from handlers.group import (  # noqa: E402
     handle_accept_group_invite,
+    handle_cancel_group_invite_confirm,
     handle_create_group_submit,
     handle_decline_group_invite,
     handle_join_group_submit,
@@ -61,6 +62,7 @@ class TestAcceptGroupInviteAuthorization:
             patch("handlers.group.DbManager.find_records", return_value=[]),
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
             patch("handlers.group.helpers.resolve_workspace_name", return_value="WS"),
+            patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
             patch("handlers.group._activate_group_membership"),
             patch("handlers.group._update_invite_dms"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
@@ -93,6 +95,37 @@ class TestAcceptGroupInviteAuthorization:
         assert not get_record.called
         assert not update_records.called
 
+    def test_accept_uses_the_join_group_notice(self):
+        member = _pending_member()
+        group = SimpleNamespace(id=GROUP_ID, name="Group")
+        acting = SimpleNamespace(id=INVITED_WS_ID, team_id="T1", deleted_at=None)
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", acting)),
+            patch("handlers.group.DbManager.get_record", side_effect=[member, group]),
+            patch("handlers.group.DbManager.update_records"),
+            patch("handlers.group.DbManager.find_records", return_value=[]),
+            patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
+            patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
+            patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
+            patch("handlers.group._activate_group_membership"),
+            patch("handlers.group._update_invite_dms") as updated,
+            patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+            patch("federation.replicate.replicate_group_invite") as replicate,
+            patch("helpers.notifications.notify_group_managers") as group_dms,
+        ):
+            handle_accept_group_invite(
+                _invite_body(actions.CONFIG_ACCEPT_GROUP_INVITE), MagicMock(), MagicMock(), context={}
+            )
+        text = updated.call_args.args[2]
+        assert text.startswith(":punch: *SyncBot Action Notice*")
+        assert "Action: Join Group" in text
+        assert "Workspace: Workspace A" in text
+        assert "Workspaces in Sync" not in text
+        assert group_dms.call_args.args[1] == text
+        assert group_dms.call_args.kwargs["exclude_workspace_id"] == INVITED_WS_ID
+        assert replicate.call_args.kwargs["notice"] == text
+        assert replicate.call_args.kwargs["announce"] is True
+
 
 class TestDeclineGroupInviteAuthorization:
     """Decline is an invitee action; cancel is an inviter action. Both destroy the row."""
@@ -108,10 +141,18 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.DbManager.delete_records") as delete_records,
             patch("handlers.group.DbManager.find_records", return_value=[]),
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
+            patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
+            patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
             patch("handlers.group._update_invite_dms"),
+            patch("helpers.notifications.notify_group_managers"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
-            handle_decline_group_invite(_invite_body(action_id), MagicMock(), MagicMock(), context={})
+            fn = (
+                handle_cancel_group_invite_confirm
+                if action_id == actions.CONFIG_CANCEL_GROUP_INVITE
+                else handle_decline_group_invite
+            )
+            fn(_invite_body(action_id), MagicMock(), MagicMock(), context={})
         return delete_records
 
     def test_invited_workspace_may_decline(self):
@@ -145,10 +186,13 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.DbManager.find_records", return_value=[]),
             patch("handlers.group.helpers.is_workspace_owner", return_value=True),
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
+            patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
+            patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
             patch("handlers.group._update_invite_dms"),
+            patch("helpers.notifications.notify_group_managers"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
-            handle_decline_group_invite(
+            handle_cancel_group_invite_confirm(
                 _invite_body(actions.CONFIG_CANCEL_GROUP_INVITE), MagicMock(), MagicMock(), context={}
             )
 
@@ -166,6 +210,60 @@ class TestDeclineGroupInviteAuthorization:
 
         assert not get_record.called
         assert not delete_records.called
+
+    def test_decline_rewrites_the_invite_with_the_action_notice(self):
+        member = _pending_member()
+        group = SimpleNamespace(id=GROUP_ID, name="Group")
+        acting = SimpleNamespace(id=INVITED_WS_ID, team_id="T1", deleted_at=None)
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", acting)),
+            patch("handlers.group.DbManager.get_record", side_effect=[member, group]),
+            patch("handlers.group.DbManager.delete_records"),
+            patch("handlers.group.DbManager.find_records", return_value=[]),
+            patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
+            patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
+            patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
+            patch("handlers.group._update_invite_dms") as updated,
+            patch("helpers.notifications.notify_group_managers") as group_dms,
+            patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_decline_group_invite(
+                _invite_body(actions.CONFIG_DECLINE_GROUP_INVITE), MagicMock(), MagicMock(), context={}
+            )
+        text = updated.call_args.args[2]
+        assert text.startswith(":eject: *SyncBot Action Notice*")
+        assert "Action: Decline" in text
+        assert "Workspace: Workspace A" in text
+        assert "Workspaces in Sync" not in text
+        assert "invitation to join" not in text
+        assert group_dms.call_args.args[1] == text
+        assert group_dms.call_args.kwargs["exclude_workspace_id"] == INVITED_WS_ID
+
+    def test_cancel_rewrites_the_invite_with_the_action_notice(self):
+        member = _pending_member()
+        group = SimpleNamespace(id=GROUP_ID, name="Group")
+        acting = SimpleNamespace(id=INVITER_WS_ID, team_id="T1", deleted_at=None)
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", acting)),
+            patch("handlers.group.DbManager.get_record", side_effect=[member, group]),
+            patch("handlers.group.DbManager.delete_records"),
+            patch("handlers.group.DbManager.find_records", return_value=[]),
+            patch("handlers.group.helpers.is_workspace_owner", return_value=False),
+            patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
+            patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace B"),
+            patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
+            patch("handlers.group._update_invite_dms") as updated,
+            patch("helpers.notifications.notify_group_managers"),
+            patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+        ):
+            handle_cancel_group_invite_confirm(
+                _invite_body(actions.CONFIG_CANCEL_GROUP_INVITE), MagicMock(), MagicMock(), context={}
+            )
+        text = updated.call_args.args[2]
+        assert text.startswith(":eject: *SyncBot Action Notice*")
+        assert "Action: Cancel Invite" in text
+        assert "Workspace: Workspace B" in text
+        assert "Workspaces in Sync" not in text
 
 
 class TestWorkspaceManagerGate:

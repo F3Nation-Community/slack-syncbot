@@ -731,9 +731,9 @@ def _lookup_channel_name(
         return inline_label
     if source_client:
         try:
-            from helpers.workspace import lookup_channel_meta
+            from helpers.workspace import lookup_channel_name
 
-            name, _is_private = lookup_channel_meta(channel_id, client=source_client)
+            name = lookup_channel_name(channel_id, client=source_client)
             if name and name != channel_id:
                 return name
         except Exception as exc:

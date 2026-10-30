@@ -91,10 +91,10 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
     """Build the settings modal for *team_id*."""
     blocks: list[orm.BaseBlock] = [
         orm.InputBlock(
-            label="Extra managers",
+            label="Extra Managers",
             action=actions.CONFIG_SETTINGS_EXTRA_MANAGERS,
             element=orm.MultiUsersSelectElement(
-                placeholder="Optional — members who can configure groups and syncs",
+                placeholder="Optional — Users who can manage Groups and Syncs",
                 initial_value=helpers.extra_manager_user_ids(team_id),
             ),
             optional=True,
@@ -102,19 +102,19 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
         orm.ContextBlock(
             element=orm.ContextElement(
                 initial_value=(
-                    "Extra managers may create groups, publish, and subscribe, but they cannot open "
-                    "Settings, Backup/Restore, Reset Database, or External Connections."
+                    "Slack owners and admins already have full access to SyncBot for their Workspace. "
+                    "Managers have access to Groups and Syncs, but they cannot open other SyncBot settings."
                 ),
             ),
         ),
         orm.InputBlock(
-            label="Allow private Channels in this Workspace",
+            label="Allow Private Channels in this Workspace",
             action=actions.CONFIG_SETTINGS_ALLOW_PRIVATE_CHANNELS,
             element=orm.RadioButtonsElement(
                 initial_value=_BOOL_YES if helpers.allow_private_channels(team_id) else _BOOL_NO,
                 options=[
-                    orm.SelectorOption(name="No — public Channels only (recommended)", value=_BOOL_NO),
-                    orm.SelectorOption(name="Yes — allow private Channels", value=_BOOL_YES),
+                    orm.SelectorOption(name="Public Channels Only (default)", value=_BOOL_NO),
+                    orm.SelectorOption(name="Public and Private Channels Allowed", value=_BOOL_YES),
                 ],
             ),
             optional=False,
@@ -122,9 +122,8 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
         orm.ContextBlock(
             element=orm.ContextElement(
                 initial_value=(
-                    "When this is on, a manager can publish a private Channel in this Workspace, and "
-                    "its messages will be copied into other Workspaces. Anyone who can see the synced "
-                    "Channel elsewhere will be able to read that content."
+                    "When private Channels are allowed, a Manager can Sync a Private Channel in this Workspace. "
+                    "Private Channels can only Sync with other Private Channels."
                 ),
             ),
         ),
@@ -134,13 +133,13 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
         blocks.extend(
             [
                 orm.InputBlock(
-                    label="Enable Federation",
+                    label="Allow External Connections (Federation)",
                     action=actions.CONFIG_SETTINGS_FEDERATION_ENABLED,
                     element=orm.RadioButtonsElement(
                         initial_value=_BOOL_YES if helpers.federation_enabled() else _BOOL_NO,
                         options=[
-                            orm.SelectorOption(name="No — external connections disabled", value=_BOOL_NO),
-                            orm.SelectorOption(name="Yes — allow external connections", value=_BOOL_YES),
+                            orm.SelectorOption(name="External Connections Disabled (default)", value=_BOOL_NO),
+                            orm.SelectorOption(name="External Connections Enabled", value=_BOOL_YES),
                         ],
                     ),
                     optional=False,
@@ -148,14 +147,14 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
                 orm.ContextBlock(
                     element=orm.ContextElement(
                         initial_value=(
-                            "When this is off, External Connections are hidden and other instances cannot "
-                            "reach this one (except ping). Turning it off does not remove existing peers; "
-                            "turn it back on to resume."
+                            "When this is disabled, external SyncBot instances cannot connect to this one. "
+                            "Disabling does not remove established peer information. Connections can resume "
+                            "after re-enabling."
                         ),
                     ),
                 ),
                 orm.InputBlock(
-                    label="Days to retain a removed Workspace",
+                    label="Days to Retain Soft-Deleted Data",
                     action=actions.CONFIG_SETTINGS_RETENTION_DAYS,
                     element=orm.NumberInputElement(
                         initial_value=helpers.soft_delete_retention_days(),
@@ -168,8 +167,10 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
                 orm.ContextBlock(
                     element=orm.ContextElement(
                         initial_value=(
-                            "When a Workspace uninstalls SyncBot, its data is kept for this many days so a "
-                            "reinstall picks up where it left off. After that it is permanently deleted."
+                            "Leaving a Sync or a Group, removing a Workspace, disbanding a Group, leaving an "
+                            "External Connection, and a Channel changing privacy all use this timer. "
+                            "Pausing a Sync or archiving a Channel keeps the Sync and does not start this timer. "
+                            "Deleting a Channel in Slack removes that Workspace's Sync history immediately."
                         ),
                     ),
                 ),
@@ -188,7 +189,7 @@ def _build_settings_form(team_id: str, context: dict | None = None) -> orm.Block
                         initial_value=(
                             "Slack Team IDs, separated by commas or spaces. A listed Workspace is "
                             "uninstalled and cannot reinstall until you remove the ID. A Workspace that "
-                            "owns a group cannot be added until you promote another Owner."
+                            "owns a Group cannot be blocked until it is no longer an Owner."
                         ),
                     ),
                 ),
@@ -296,6 +297,7 @@ def handle_settings_submit(
     selected = _build_settings_form(team_id).get_selected_values(body)
 
     allow_private = selected.get(actions.CONFIG_SETTINGS_ALLOW_PRIVATE_CHANNELS)
+    was_private = helpers.allow_private_channels(team_id)
     if allow_private in (_BOOL_YES, _BOOL_NO):
         helpers.set_workspace_setting(
             workspace_record.id,
@@ -303,10 +305,20 @@ def handle_settings_submit(
             allow_private,
             team_id=team_id,
         )
+        if was_private and allow_private == _BOOL_NO:
+            from helpers.sync_lifecycle import soft_delete_private_syncs_for_settings
+
+            soft_delete_private_syncs_for_settings(workspace_record, client)
 
     if actions.CONFIG_SETTINGS_EXTRA_MANAGERS in values:
+        previous = set(helpers.extra_manager_user_ids(team_id))
         extra = selected.get(actions.CONFIG_SETTINGS_EXTRA_MANAGERS) or []
         helpers.set_extra_manager_user_ids(team_id, extra)
+        from helpers.sync_lifecycle import soft_delete_rows_for_user
+
+        for removed_id in sorted(previous - set(extra)):
+            if not helpers.is_workspace_manager(client, removed_id, team_id):
+                soft_delete_rows_for_user(workspace_record, removed_id, "manager_removed", client=client)
 
     if helpers.is_primary_workspace(team_id):
         federation = selected.get(actions.CONFIG_SETTINGS_FEDERATION_ENABLED)

@@ -78,11 +78,26 @@ Not ``leave_group_confirm``: that string is prefix-matched onto
 to the modal-opening handler. Destructive confirmations are red in-modal buttons
 (a modal submit button cannot be coloured), so this is a block action."""
 
+CONFIG_REMOVE_GROUP_MEMBER = "remove_group_member"
+"""Action: owner clicked Remove from Group (prefix-matched with member id)."""
+
+CONFIG_REMOVE_GROUP_MEMBER_CONFIRM = "confirm_remove_group_member"
+"""Action (block): red confirm inside the Remove from Group modal.
+
+Not ``remove_group_member_confirm``: that string prefix-matches
+``CONFIG_REMOVE_GROUP_MEMBER`` and would reopen the modal."""
+
 CONFIG_ACCEPT_GROUP_INVITE = "accept_group_invite"
 """Action: user clicked "Accept" on an incoming group invite (prefix-matched with member_id)."""
 
 CONFIG_CANCEL_GROUP_INVITE = "cancel_group_invite"
 """Action: user clicked "Cancel Invite" on an outgoing group invite (prefix-matched with member_id)."""
+
+CONFIG_CANCEL_GROUP_INVITE_CONFIRM = "confirm_cancel_group_invite"
+"""Action (block): red confirm inside the Cancel Invite modal.
+
+Not ``cancel_group_invite_confirm``: that string prefix-matches
+``CONFIG_CANCEL_GROUP_INVITE`` and would reopen the modal."""
 
 CONFIG_INVITE_WORKSPACE = "invite_workspace"
 """Action: user clicked "Invite Workspace" button on a group (value carries group_id)."""
@@ -97,10 +112,21 @@ CONFIG_DECLINE_GROUP_INVITE = "decline_group_invite"
 """Action: user clicked "Decline" on an incoming group invite DM (prefix-matched with member_id)."""
 
 CONFIG_PROMOTE_TO_OWNER = "promote_to_owner"
-"""Action: an owner promoted another member to owner (prefix-matched with member_id)."""
+"""Action: an owner clicked Promote to Owner (prefix-matched with member_id)."""
+
+CONFIG_PROMOTE_TO_OWNER_CONFIRM = "confirm_promote_to_owner"
+"""Action (block): confirm inside the Promote to Owner modal.
+
+Not ``promote_to_owner_confirm``: that string prefix-matches
+``CONFIG_PROMOTE_TO_OWNER`` and would reopen the modal."""
 
 CONFIG_DEMOTE_SELF = "demote_self"
-"""Action: an owner gave up its own ownership (prefix-matched with member_id). Self-demotion only."""
+"""Action: an owner clicked Give Up Ownership (prefix-matched with member_id). Self-demotion only."""
+
+CONFIG_DEMOTE_SELF_CONFIRM = "confirm_demote_self"
+"""Action (block): confirm inside the Give Up Ownership modal.
+
+Not ``demote_self_confirm``: that string prefix-matches ``CONFIG_DEMOTE_SELF``."""
 
 CONFIG_DISBAND_GROUP = "disband_group"
 """Action: sole owner clicked "Disband Group" (prefix-matched with group_id)."""
@@ -110,6 +136,9 @@ CONFIG_DISBAND_GROUP_CONFIRM = "confirm_disband_group"
 
 Not ``disband_group_confirm``: that string is prefix-matched onto
 ``CONFIG_DISBAND_GROUP`` and would misroute to the modal-opening handler."""
+
+CONFIG_DISBAND_DELETE_HISTORY_NOW = "disband_delete_history_now"
+"""Checkbox on the Disband confirm modal. Off by default. Ticked, it hard-deletes every workspace's history in the group."""
 
 # ---------------------------------------------------------------------------
 # Instance settings (PRIMARY_WORKSPACE only)

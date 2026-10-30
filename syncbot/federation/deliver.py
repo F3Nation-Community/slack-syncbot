@@ -61,10 +61,17 @@ def _strip_local_file_refs(file_refs: list[dict] | None) -> list[dict]:
     return out
 
 
-def build_remote_envelope(envelope: dict[str, Any], channel_id: str) -> dict[str, Any]:
+def build_remote_envelope(
+    envelope: dict[str, Any],
+    channel_id: str,
+    *,
+    sync_uid: str | None = None,
+) -> dict[str, Any]:
     """Serialize a source-canonical envelope for the peer plus target channel_id."""
     remote = dict(envelope)
     remote["channel_id"] = channel_id
+    if sync_uid:
+        remote["sync_uid"] = str(sync_uid)
     remote.pop("path", None)
     if remote.get("file_refs"):
         remote["file_refs"] = _strip_local_file_refs(remote.get("file_refs"))
@@ -255,12 +262,20 @@ def deliver_remote(
     action = envelope.get("action")
     channel_id = sync_channel.channel_id
 
+    sync_uid = None
+    if getattr(sync_channel, "sync_id", None):
+        try:
+            sync = DbManager.get_record(schemas.Sync, id=sync_channel.sync_id)
+        except Exception:
+            sync = None
+        sync_uid = getattr(sync, "uid", None) if sync else None
+
     if kind == KIND_MESSAGE and action == ACTION_CREATE:
         file_refs = list(envelope.get("file_refs") or [])
         if stage_files and file_refs and not _stage_files_to_peer(fed_ws, file_refs):
             _notify_remote_file_failed(envelope, source_client, channel_id, reason="stage_failed")
             return []
-        remote = build_remote_envelope(envelope, channel_id)
+        remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
         result = push_message(fed_ws, remote)
         status = (result or {}).get("_http_status")
         error = (result or {}).get("error")
@@ -287,7 +302,7 @@ def deliver_remote(
                 thread_post_id=envelope.get("thread_post_id"),
             )
             return []
-        if status not in (None, 200):
+        if result is None or status not in (None, 200):
             log_warning(
                 "deliver_remote_failed",
                 channel_id=channel_id,
@@ -296,14 +311,14 @@ def deliver_remote(
                 post_id=envelope.get("post_id"),
                 thread_post_id=envelope.get("thread_post_id"),
             )
-            return []
+            return None
         return _postmeta_from_peer_response(envelope, sync_channel, result)
 
     if kind == KIND_MESSAGE and action == ACTION_EDIT:
-        remote = build_remote_envelope(envelope, channel_id)
+        remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
         result = push_edit(fed_ws, remote)
         status = (result or {}).get("_http_status")
-        if status not in (None, 200):
+        if result is None or status not in (None, 200):
             log_warning(
                 "deliver_remote_failed",
                 channel_id=channel_id,
@@ -311,13 +326,14 @@ def deliver_remote(
                 error=(result or {}).get("error"),
                 post_id=envelope.get("post_id"),
             )
+            return None
         return []
 
     if kind == KIND_MESSAGE and action == ACTION_DELETE:
-        remote = build_remote_envelope(envelope, channel_id)
+        remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
         result = push_delete(fed_ws, remote)
         status = (result or {}).get("_http_status")
-        if status not in (None, 200):
+        if result is None or status not in (None, 200):
             log_warning(
                 "deliver_remote_failed",
                 channel_id=channel_id,
@@ -325,13 +341,14 @@ def deliver_remote(
                 error=(result or {}).get("error"),
                 post_id=envelope.get("post_id"),
             )
+            return None
         return []
 
     if kind == KIND_REACTION and action in (ACTION_ADD, ACTION_REMOVE):
-        remote = build_remote_envelope(envelope, channel_id)
+        remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
         result = push_reaction(fed_ws, remote)
         status = (result or {}).get("_http_status")
-        if status not in (None, 200):
+        if result is None or status not in (None, 200):
             log_warning(
                 "deliver_remote_failed",
                 channel_id=channel_id,
@@ -339,6 +356,7 @@ def deliver_remote(
                 error=(result or {}).get("error"),
                 post_id=envelope.get("post_id"),
             )
+            return None
         return []
 
     log_warning("deliver_remote_unsupported", kind=kind, action=action)

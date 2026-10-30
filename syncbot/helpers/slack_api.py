@@ -115,6 +115,49 @@ def get_own_bot_id(client: WebClient, context: dict) -> str | None:
     return info["bot_id"] if info else None
 
 
+def get_app_display_name(client: WebClient) -> str:
+    """This Slack app's display name for *client*'s bot token.
+
+    ``users.info`` on the bot user from ``auth.test``. Cached per token for the
+    same hour as ``auth.test``. ``SyncBot`` when Slack has no name. Does not
+    call ``users.list``.
+    """
+    fingerprint = _token_fingerprint(client)
+    cache_key = f"app_display_name:{fingerprint}" if fingerprint else None
+    if cache_key:
+        cached = _cache_get(cache_key)
+        if isinstance(cached, str) and cached:
+            return cached
+    info = _get_auth_info(client)
+    user_id = info.get("user_id") if info else None
+    if not isinstance(user_id, str) or not user_id:
+        return "SyncBot"
+    try:
+        res = _users_info(client, user_id)
+    except Exception:
+        log_warning("app_display_name_lookup_failed")
+        return "SyncBot"
+    user = safe_get(res, "user")
+    profile = user.get("profile") if isinstance(user, dict) else None
+    if not isinstance(profile, dict):
+        profile = {}
+    name = ""
+    for candidate in (
+        profile.get("display_name"),
+        profile.get("real_name"),
+        user.get("real_name") if isinstance(user, dict) else None,
+        user.get("name") if isinstance(user, dict) else None,
+    ):
+        if isinstance(candidate, str) and candidate.strip():
+            name = candidate.strip()
+            break
+    if not name:
+        name = "SyncBot"
+    if cache_key:
+        _cache_set(cache_key, name, ttl=3600)
+    return name
+
+
 def get_own_bot_user_id(
     client: WebClient,
     context: dict | None = None,

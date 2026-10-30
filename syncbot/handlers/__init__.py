@@ -10,6 +10,11 @@ from handlers._common import (
     _parse_private_metadata,
     _sanitize_text,
 )
+from handlers.channel_events import (
+    handle_channel_deleted,
+    handle_channel_left,
+    handle_member_left_channel,
+)
 from handlers.channel_sync import (
     handle_create_sync,
     handle_create_sync_submit_ack,
@@ -65,6 +70,8 @@ from handlers.federation_cmds import (
 )
 from handlers.group import (
     handle_accept_group_invite,
+    handle_cancel_group_invite,
+    handle_cancel_group_invite_confirm,
     handle_create_group,
     handle_create_group_submit,
     handle_decline_group_invite,
@@ -75,11 +82,16 @@ from handlers.group import (
 )
 from handlers.group_manage import (
     handle_demote_self,
+    handle_demote_self_confirm,
+    handle_disband_delete_history,
     handle_disband_group,
     handle_disband_group_confirm,
     handle_leave_group,
     handle_leave_group_confirm,
     handle_promote_to_owner,
+    handle_promote_to_owner_confirm,
+    handle_remove_group_member,
+    handle_remove_group_member_confirm,
 )
 from handlers.message import (
     _is_own_bot_message,
@@ -138,6 +150,8 @@ __all__ = [
     "handle_accept_group_invite",
     "handle_create_group",
     "handle_create_group_submit",
+    "handle_cancel_group_invite",
+    "handle_cancel_group_invite_confirm",
     "handle_decline_group_invite",
     "handle_create_external_connection",
     "handle_create_external_connection_submit",
@@ -162,15 +176,23 @@ __all__ = [
     "handle_join_group",
     "handle_join_group_submit",
     "handle_demote_self",
+    "handle_demote_self_confirm",
+    "handle_disband_delete_history",
     "handle_disband_group",
     "handle_disband_group_confirm",
     "handle_leave_group",
     "handle_leave_group_confirm",
+    "handle_remove_group_member",
+    "handle_remove_group_member_confirm",
     "handle_open_settings",
     "handle_promote_to_owner",
+    "handle_promote_to_owner_confirm",
     "handle_settings_submit",
     "handle_settings_submit_ack",
+    "handle_channel_deleted",
+    "handle_channel_left",
     "handle_member_joined_channel",
+    "handle_member_left_channel",
     "handle_pause_sync",
     "handle_pause_sync_confirm",
     "handle_create_sync",

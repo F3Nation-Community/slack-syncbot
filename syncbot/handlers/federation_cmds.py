@@ -1252,7 +1252,8 @@ def handle_leave_external_connection(
             section(
                 f":warning: *Are you sure you want to leave {peer_name}?*\n\n"
                 "This will:\n"
-                "\u2022 Pause remote Workspaces for this connection on this instance\n"
+                "\u2022 Soft-delete remote Workspaces for this connection on this instance. "
+                "Their Channel rows become uninstalled\n"
                 f"\u2022 Keep their Sync history for {retention_days} days "
                 "(reconnect or reinstall within that window restores it)\n"
                 "\u2022 Leave the other instance still listing this connection until they leave too\n\n"
@@ -1288,7 +1289,7 @@ def handle_leave_external_connection_confirm(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Deactivate the peer and pause its stub workspaces for the retention window."""
+    """Deactivate the peer and soft-delete its stub workspaces for the retention window."""
     workspace_record = _require_primary_admin(body, client, context, action="leave_external_connection_confirm")
     if not workspace_record:
         return
@@ -1305,8 +1306,22 @@ def handle_leave_external_connection_confirm(
         schemas.Workspace,
         [schemas.Workspace.instance_id == peer.instance_id],
     )
+    from helpers.leave_sync import group_name_for_sync_id
+    from helpers.sync_lifecycle import deliver_action_notice
+
     for stub in stubs:
-        helpers.soft_delete_workspace(stub)
+        removed = helpers.soft_delete_workspace(stub)
+        seen: set[int] = set()
+        for row in removed or []:
+            if not getattr(row, "sync_id", None) or row.sync_id in seen:
+                continue
+            seen.add(row.sync_id)
+            deliver_action_notice(
+                stub,
+                row,
+                action="Leave Connection",
+                group_name=group_name_for_sync_id(row.sync_id),
+            )
 
     DbManager.delete_records(
         schemas.FederationWorkspaceAllowlist,

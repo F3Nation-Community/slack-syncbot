@@ -127,6 +127,29 @@ class _RequestScopedLazyListenerRunner:
         build_runnable_function(func=function, logger=self.logger, request=request)()
 
 
+class _AckFirstLazyListenerRunner:
+    """Stash lazy work so the HTTP server can write Slack's ack first.
+
+    ``drain`` runs that work before the request handler returns, so CPU stays
+    available and sqlite still has one writer. Lambda keeps the synchronous runner.
+    """
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self.logger = logger
+        self._pending: list[tuple] = []
+
+    def start(self, function, request) -> None:  # noqa: ANN001 — Bolt LazyListenerRunner shape
+        self._pending.append((function, request))
+
+    def drain(self) -> None:
+        from slack_bolt.lazy_listener.internals import build_runnable_function
+
+        pending = self._pending
+        self._pending = []
+        for function, request in pending:
+            build_runnable_function(func=function, logger=self.logger, request=request)()
+
+
 app.listener_runner.lazy_listener_runner = _RequestScopedLazyListenerRunner(app.logger)
 
 
@@ -486,6 +509,8 @@ def run_syncbot_http_server(
     """
     listen_port = port if port is not None else _http_listen_port()
     _bolt_app = app
+    _ack_first = _AckFirstLazyListenerRunner(app.logger)
+    app.listener_runner.lazy_listener_runner = _ack_first
     _bolt_oauth_flow = app.oauth_flow
     _bolt_endpoint_path = bolt_path
     _http_log = http_server_logger_enabled
@@ -599,6 +624,7 @@ def run_syncbot_http_server(
             )
             bolt_resp = _bolt_app.dispatch(bolt_req)
             self._send_bolt_response(bolt_resp)
+            _ack_first.drain()
 
         def _handle_federation(self, method: str) -> None:
             from constants import federation_json_max_bytes, file_chunk_bytes

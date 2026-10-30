@@ -19,7 +19,7 @@ def real_db(tmp_path):
     from db import initialize_database
     from helpers._cache import clear_all_caches
 
-    url = f"sqlite:///{tmp_path / 'heal_sync.db'}"
+    url = f"sqlite:///{tmp_path / 'resume_restored_sync.db'}"
     old_engine = db_mod.GLOBAL_ENGINE
     old_session = db_mod.GLOBAL_SESSION
     old_schema = db_mod.GLOBAL_SCHEMA
@@ -117,7 +117,7 @@ def _client_for(is_private: bool, is_member: bool) -> MagicMock:
 
 def test_heal_public_channel_pauses_joins_and_resumes(real_db):
     from db import DbManager, schemas
-    from helpers.workspace import heal_restored_sync_channels
+    from helpers.workspace import resume_restored_sync_channels
 
     local, _other, here, _there = _seed_pair()
     client = _client_for(is_private=False, is_member=False)
@@ -128,13 +128,16 @@ def test_heal_public_channel_pauses_joins_and_resumes(real_db):
         return 1
 
     with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
         patch("helpers.workspace.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.sync_lifecycle.get_bot_token", return_value="xoxb-test"),
         patch("helpers.notifications.notify_synced_channels", side_effect=capture),
+        patch("helpers.sync_lifecycle.notify_synced_channels", side_effect=capture),
         patch("helpers.notifications.notify_admins_dm"),
         patch("helpers.workspace.WebClient", return_value=MagicMock()),
         patch("federation.replicate.replicate_sync_channel_upsert"),
     ):
-        counts = heal_restored_sync_channels(local, client=client, source="reinstall")
+        counts = resume_restored_sync_channels(local, client=client, source="reinstall")
 
     client.conversations_join.assert_called_once_with(channel="CHERE")
     row = DbManager.get_record(schemas.SyncChannel, id=here.id)
@@ -142,15 +145,13 @@ def test_heal_public_channel_pauses_joins_and_resumes(real_db):
     assert counts["resumed"] == 1
     assert counts["joined"] == 1
     local_texts = [text for channel_id, text in posts if channel_id == "CHERE"]
-    assert any("paused while SyncBot restores" in text for text in local_texts)
-    assert any("has been resumed" in text for text in local_texts)
-    assert any("joined this Channel to restore" in text for text in local_texts)
-    assert any(channel_id == "CTHERE" and "has been resumed" in text for channel_id, text in posts)
+    assert any("Action: Resume" in text for text in local_texts)
+    assert any(channel_id == "CTHERE" and "Action: Resume" in text for channel_id, text in posts)
 
 
 def test_heal_private_channel_stays_paused_with_notice(real_db):
     from db import DbManager, schemas
-    from helpers.workspace import heal_restored_sync_channels
+    from helpers.workspace import resume_restored_sync_channels
 
     local, _other, here, _there = _seed_pair()
     client = _client_for(is_private=True, is_member=False)
@@ -161,41 +162,49 @@ def test_heal_private_channel_stays_paused_with_notice(real_db):
         return 0 if channel_ids[0] == "CHERE" else 1
 
     with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
         patch("helpers.workspace.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.sync_lifecycle.get_bot_token", return_value="xoxb-test"),
         patch("helpers.notifications.notify_synced_channels", side_effect=capture),
-        patch("helpers.notifications.notify_admins_dm") as admin_dm,
+        patch("helpers.sync_lifecycle.notify_synced_channels", side_effect=capture),
+        patch("helpers.sync_lifecycle.notify_managers") as managers,
         patch("helpers.workspace.WebClient", return_value=MagicMock()),
         patch("federation.replicate.replicate_sync_channel_upsert"),
     ):
-        counts = heal_restored_sync_channels(local, client=client, source="import")
+        counts = resume_restored_sync_channels(local, client=client, source="import")
 
     client.conversations_join.assert_not_called()
     row = DbManager.get_record(schemas.SyncChannel, id=here.id)
     assert row.status == "paused"
     assert counts["paused_private"] == 1
-    assert any(channel_id == "CHERE" and "This Channel is private" in text for channel_id, text in posts)
-    assert any(channel_id == "CTHERE" and "is paused" in text for channel_id, text in posts)
-    assert admin_dm.called
+    assert posts == []
+    assert managers.called
+    assert "Authorize SyncBot, then Resume this Channel." in managers.call_args.args[1]
 
 
 def test_heal_skips_public_channel_already_joined(real_db):
     from db import DbManager, schemas
-    from helpers.workspace import heal_restored_sync_channels
+    from helpers.workspace import resume_restored_sync_channels
 
     local, _other, here, _there = _seed_pair()
     client = _client_for(is_private=False, is_member=True)
 
     with (
+        patch("helpers.notifications.get_bot_token", return_value="xoxb-test"),
+        patch("helpers.workspace.get_bot_token", return_value="xoxb-test"),
         patch("helpers.notifications.notify_synced_channels") as notify,
         patch("helpers.notifications.notify_admins_dm") as admin_dm,
     ):
-        counts = heal_restored_sync_channels(local, client=client, source="import")
+        counts = resume_restored_sync_channels(local, client=client, source="import")
 
     client.conversations_join.assert_not_called()
-    notify.assert_not_called()
+    assert notify.called
+    posted = " ".join(call.args[2] for call in notify.call_args_list)
+    assert "Resume" in posted
     admin_dm.assert_not_called()
     row = DbManager.get_record(schemas.SyncChannel, id=here.id)
     assert row.status == "active"
+    assert counts["resumed"] == 1
     assert counts["skipped"] == 1
 
 
@@ -279,7 +288,7 @@ def test_inbound_upsert_resumes_sibling_on_original_instance(real_db):
             created_at=now,
         )
     )
-    local_channel = DbManager.create_record(
+    DbManager.create_record(
         schemas.SyncChannel(
             sync_id=sync.id,
             workspace_id=local.id,
@@ -324,8 +333,7 @@ def test_inbound_upsert_resumes_sibling_on_original_instance(real_db):
     row = DbManager.get_record(schemas.SyncChannel, id=stub_channel.id)
     assert row.status == "active"
     assert row.deleted_at is None
-    assert any(channel_id == local_channel.channel_id and "has been resumed" in text for channel_id, text in posts)
-    assert any("Workspace B" in text for _channel_id, text in posts)
+    assert posts == []
 
     posts.clear()
     with (

@@ -62,6 +62,33 @@ class TestUpdateOpenedView:
         client.chat_postMessage.assert_not_called()
         assert orm.modal_was_updated()
 
+    def test_a_rejected_update_is_what_the_denial_shows(self):
+        client = MagicMock()
+        client.views_update.side_effect = [
+            SlackApiError(
+                "invalid_arguments",
+                {
+                    "ok": False,
+                    "error": "invalid_arguments",
+                    "response_metadata": {
+                        "messages": ["[ERROR] must define `submit` to use an `input` block in modals"]
+                    },
+                },
+            ),
+            {"ok": True},
+        ]
+        body = {"team": {"id": "T1"}, "user": {"id": "U1"}}
+        orm.reset_modal_updated()
+        orm.update_opened_view(client, body, "trig", {"type": "modal", "blocks": []})
+        assert not orm.modal_was_updated()
+        orm.update_denied_modal(client, body, "trig")
+        view = client.views_update.call_args.kwargs["view"]
+        text = view["blocks"][0]["text"]["text"]
+        assert "invalid_arguments" in text
+        assert "must define `submit`" in text
+        assert "You can't open that." not in text
+        client.chat_postMessage.assert_not_called()
+
 
 class TestLoadingModal:
     def test_ack_opens_loading_view(self):

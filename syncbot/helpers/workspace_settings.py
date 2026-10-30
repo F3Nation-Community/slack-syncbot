@@ -205,7 +205,7 @@ def remember_home_viewer(team_id: str | None, user_id: str | None) -> None:
 
 
 def home_viewer_user_ids(team_id: str | None) -> list[str]:
-    """Extra managers first, then remembered Home viewers, unique, capped."""
+    """Managers first, then remembered Home viewers, unique, capped."""
     workspace_id = _workspace_id_for_team(team_id)
     if workspace_id is None:
         return []

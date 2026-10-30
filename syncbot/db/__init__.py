@@ -555,9 +555,10 @@ class DbManager:
     def update_records(cls: T, filters, fields, schema=None):
         session = get_session(schema=schema)
         try:
-            session.query(cls).filter(and_(*filters)).update(fields, synchronize_session="fetch")
+            count = session.query(cls).filter(and_(*filters)).update(fields, synchronize_session="fetch")
             session.flush()
             session.commit()
+            return count
         except Exception:
             session.rollback()
             raise

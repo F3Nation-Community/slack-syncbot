@@ -14,8 +14,8 @@ constraint can express it; it lives here plus the backfill in migration
 Ownership is lost only by choice. Uninstall, token revocation, and every other
 offline event leave it intact: remaining members still see the group, with no
 owner listed, until retention ends. After that window, the purge promotes the
-earliest-joined remaining local member, or disbands the group if none remain.
-``PRIMARY_WORKSPACE`` may join or be invited like any other workspace; it is
+earliest-joined remaining member, on this instance or another, or disbands
+the group if none remain. ``PRIMARY_WORKSPACE`` may join or be invited like any other workspace; it is
 never added or made owner for being primary. Home does not promote on read.
 
 These are workspace-level gates that layer *on top of*
@@ -28,7 +28,7 @@ Imports submodules only, per the import-direction constraint in
 from datetime import datetime
 
 from db import DbManager, schemas
-from logger import log_info
+from logger import log_info, log_warning
 
 OWNER = "owner"
 MEMBER = "member"
@@ -75,8 +75,8 @@ def is_workspace_owner(group_id: int, workspace_id: int) -> bool:
     return any(member.workspace_id == workspace_id for member in get_active_owners(group_id))
 
 
-def _is_local_member(member: schemas.WorkspaceGroupMember) -> bool:
-    """True when the member's workspace is a live install on this instance."""
+def _is_promotable_member(member: schemas.WorkspaceGroupMember) -> bool:
+    """True when this active membership's workspace may become an owner."""
     if not member.workspace_id:
         return False
     from helpers.workspace import get_workspace_by_id
@@ -89,18 +89,14 @@ def _promotion_candidate(
     members: list[schemas.WorkspaceGroupMember],
     exclude_workspace_id: int | None = None,
 ) -> schemas.WorkspaceGroupMember | None:
-    """Pick the earliest-joined active local member, excluding a departing workspace.
-
-    Federated members are never eligible: promoting one would hand group control
-    to a remote instance.
-    """
+    """Pick the earliest-joined active member, excluding a departing workspace."""
     eligible = [
         member
         for member in members
         if member.workspace_id
         and member.workspace_id != exclude_workspace_id
         and member.role != OWNER
-        and _is_local_member(member)
+        and _is_promotable_member(member)
     ]
     if not eligible:
         return None
@@ -131,15 +127,31 @@ def can_workspace_leave(group_id: int, workspace_id: int) -> tuple[bool, str]:
     return False, "sole_owner"
 
 
+def _replicate_owner_role(group_id: int, workspace_id: int | None, notice: str) -> None:
+    """Send this membership's role on the group invite. A snapshot invite does not."""
+    if not workspace_id:
+        return
+    try:
+        from federation.replicate import replicate_group_invite
+        from helpers.workspace import get_workspace_by_id
+
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
+        workspace = get_workspace_by_id(workspace_id)
+        if not group or not workspace:
+            return
+        replicate_group_invite(group, workspace, set_role=True, notice=notice)
+    except Exception:
+        log_warning("federation_replicate_group_invite_failed", group_id=group_id)
+
+
 def succeed_ownership(group_id: int, departing_workspace_id: int | None = None) -> schemas.WorkspaceGroupMember | None:
-    """Promote the earliest-joined remaining local member, or disband the group.
+    """Promote the earliest-joined remaining member, or disband the group.
 
     Only the retention purge calls this, after the last owner's membership is
     permanently deleted. An uninstalled owner still on the row (retention)
-    blocks it. Only an existing local member can be promoted. Federated stubs
-    are never promoted. ``PRIMARY_WORKSPACE`` is never added as a member; if it
-    already joined, it may be promoted like any other local member after
-    retention.
+    blocks it. The successor is the earliest-joined active member, on this
+    instance or another. ``PRIMARY_WORKSPACE`` is never added as a member; if
+    it already joined, it may be promoted like any other member after retention.
     """
     if not group_id:
         return None
@@ -151,12 +163,31 @@ def succeed_ownership(group_id: int, departing_workspace_id: int | None = None) 
     candidate = _promotion_candidate(members, exclude_workspace_id=departing_workspace_id)
     if candidate:
         _set_role(candidate.id, OWNER)
+        candidate.role = OWNER
+        from helpers.workspace import get_workspace_by_id, resolve_workspace_name
+
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=group_id)
+        workspace = get_workspace_by_id(candidate.workspace_id)
+        name = resolve_workspace_name(workspace) if workspace else "Workspace"
+        from helpers.notifications import notify_group_managers
+        from helpers.sync_participation import format_action_notice
+
+        notice = format_action_notice(
+            action="Promote",
+            workspace_name=name,
+            group_name=group.name if group else None,
+            manager=None,
+            for_managers=True,
+            workspace_line=True,
+        )
+        _replicate_owner_role(group_id, candidate.workspace_id, notice)
+        notify_group_managers(group_id, notice)
         log_info(
             "group_owner_succeeded",
             group_id=group_id,
             member_id=candidate.id,
             workspace_id=candidate.workspace_id,
-            reason="earliest_active_local_member",
+            reason="earliest_active_member",
         )
         return candidate
 
@@ -180,14 +211,14 @@ def _disband_group(group_id: int) -> None:
 
 
 def get_promotable_members(group_id: int) -> list[schemas.WorkspaceGroupMember]:
-    """Return members an owner may promote: active, local, and not already owners.
+    """Return members an owner may promote: active and not already owners.
 
-    Pending invitees and federated stub members are excluded.
+    Pending invites are excluded. A workspace on another instance is included.
     """
     return [
         member
         for member in get_active_members(group_id)
-        if member.workspace_id and member.role != OWNER and _is_local_member(member)
+        if member.workspace_id and member.role != OWNER and _is_promotable_member(member)
     ]
 
 
@@ -275,6 +306,79 @@ def get_owner_ids_blocking_allowlist_drop(instance_id: str, dropped_workspace_id
                 continue
             break
     return blocked
+
+
+def file_membership_role(raw, existing: str | None) -> str:
+    """Role to store from a migration file.
+
+    A missing role does not demote an owner and does not promote a member.
+    ``creator`` is ``owner``.
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return existing if existing in (OWNER, MEMBER) else MEMBER
+    role = str(raw).strip()
+    if role == "creator":
+        role = OWNER
+    if role not in (OWNER, MEMBER):
+        role = MEMBER
+    return role
+
+
+def upsert_group_membership(
+    group_id: int,
+    workspace_id: int,
+    *,
+    role: str,
+    now: datetime,
+    apply_role: bool,
+) -> None:
+    """One active membership for this group and workspace.
+
+    A soft-deleted row is reused. Extra active rows are soft-deleted, keeping
+    the oldest ``joined_at``.
+    """
+    rows = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == group_id,
+            schemas.WorkspaceGroupMember.workspace_id == workspace_id,
+        ],
+    )
+    rows.sort(key=lambda row: (row.joined_at is None, row.joined_at or now, row.id or 0))
+    if not rows:
+        DbManager.create_record(
+            schemas.WorkspaceGroupMember(
+                group_id=group_id,
+                workspace_id=workspace_id,
+                status="active",
+                role=role if role in (OWNER, MEMBER) else MEMBER,
+                joined_at=now,
+            )
+        )
+        return
+    keeper = rows[0]
+    stored = file_membership_role(role, keeper.role) if apply_role else (keeper.role or MEMBER)
+    if stored not in (OWNER, MEMBER):
+        stored = MEMBER
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == keeper.id],
+        {
+            schemas.WorkspaceGroupMember.status: "active",
+            schemas.WorkspaceGroupMember.role: stored,
+            schemas.WorkspaceGroupMember.deleted_at: None,
+        },
+    )
+    for extra in rows[1:]:
+        if extra.deleted_at is None:
+            DbManager.update_records(
+                schemas.WorkspaceGroupMember,
+                [schemas.WorkspaceGroupMember.id == extra.id],
+                {
+                    schemas.WorkspaceGroupMember.deleted_at: now,
+                    schemas.WorkspaceGroupMember.status: "inactive",
+                },
+            )
 
 
 def get_owner_team_ids_blocking_stub_pause(peer_instance_id: str, stub_team_ids) -> list[str]:

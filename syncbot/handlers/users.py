@@ -14,7 +14,9 @@ from builders.user_mapping import (
     update_user_mapping_modal,
 )
 from db import DbManager, schemas
+from db.event_claims import run_claimed
 from handlers._common import _get_authorized_workspace, _parse_private_metadata, _update_wait_modal
+from helpers.sync_lifecycle import end_user_authorization
 from helpers.user_map import (
     _AUTO_MAP_RUNNING_TTL,
     auto_map_running_key,
@@ -64,6 +66,15 @@ def handle_user_profile_changed(
     context: dict,
 ) -> None:
     """Handle a user_profile_changed event: update directory and notify group members."""
+    run_claimed(body, lambda: _user_profile_changed(body, client, logger, context))
+
+
+def _user_profile_changed(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
     event = body.get("event", {})
     user_data = event.get("user", {})
     team_id = helpers.get_team_id_from_body(body)
@@ -72,6 +83,10 @@ def handle_user_profile_changed(
         return
 
     if user_data.get("is_bot") or user_data.get("id") == "USLACKBOT":
+        return
+
+    if user_data.get("deleted") or user_data.get("account_inactive") or event.get("account_inactive"):
+        end_user_authorization(team_id, user_data.get("id"), client=client)
         return
 
     workspace_record = DbManager.get_record(schemas.Workspace, id=team_id)

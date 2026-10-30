@@ -64,9 +64,14 @@ pre-commit install --hook-type commit-msg
 - Run **`pre-commit run --all-files`** (install with `pip install pre-commit && pre-commit install && pre-commit install --hook-type commit-msg` if needed).
 - Ensure **CI passes**: requirements export check, SAM template lint, ruff, pip-audit, and tests (see [.github/workflows/ci.yml](.github/workflows/ci.yml)). Local pytest should finish with no warnings you introduced; do not skip tests to hide them.
 - If you change dependencies in `pyproject.toml`, refresh the lockfile and `syncbot/requirements.txt` as described in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).
+- A review looks for a Conventional Commit title, one-line changelog bullets, no secrets, and tests for the behavior change. Pytest must finish with no new warnings.
+
+## CI
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) is the gate. The required check on `main` is **`ci-gate`**. It rolls up requirements sync, ruff, pip-audit, SAM lint, Terraform validate, a Cloud Run image build with no push, pytest, and the forbidden-edit and forbidden-import checks. A skipped path-filtered job still counts as success.
 
 ## Questions
 
 Use [GitHub Issues](https://github.com/F3Nation-Community/slack-syncbot/issues) for bugs and feature ideas, or check [docs/DEPLOY.md](docs/DEPLOY.md) for deploy-related questions.
 
-**AI / coding agents:** see [docs/AI_AGENTS.md](docs/AI_AGENTS.md) and root [AGENTS.md](AGENTS.md).
+**AI / coding agents:** coding rules are in root [AGENTS.md](AGENTS.md). CI and branch protection are in [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md).

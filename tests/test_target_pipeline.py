@@ -428,7 +428,7 @@ def test_build_envelope_carries_post_id_and_people():
 
 def test_apply_target_does_not_unthread_a_reply():
     with (
-        patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+        patch("helpers.sync_apply.get_active_sync_channel", side_effect=lambda sc: sc),
         patch("helpers.sync_apply.slack_write_create") as write,
         patch("helpers.sync_apply.DbManager.create_records"),
     ):
@@ -444,7 +444,7 @@ def test_apply_target_does_not_unthread_a_reply():
 
 def test_apply_target_records_sticky_posted_as_user():
     with (
-        patch("helpers.sync_apply.get_live_sync_channel", side_effect=lambda sc: sc),
+        patch("helpers.sync_apply.get_active_sync_channel", side_effect=lambda sc: sc),
         patch(
             "helpers.sync_apply.slack_write_create",
             return_value=("10.0", "U_TARGET"),
@@ -494,6 +494,7 @@ def test_run_sync_pipeline_applies_once_per_unique_target():
     ]
     with (
         patch("helpers.sync_pipeline.iter_publish_targets", return_value=targets),
+        patch("helpers.sync_pipeline.get_active_sync_channel", side_effect=lambda row: row),
         patch("helpers.sync_pipeline.is_local_workspace", return_value=True),
         patch("helpers.sync_pipeline.get_post_records_for_post_id", return_value=[]),
         patch("helpers.workspace.get_workspace_by_id", return_value=None),

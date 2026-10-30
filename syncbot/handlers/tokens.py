@@ -8,6 +8,8 @@ from slack_sdk.web import WebClient
 import builders
 import helpers
 from db import DbManager, schemas
+from db.event_claims import run_claimed
+from helpers.sync_lifecycle import end_user_authorization
 from logger import log_error, log_info, log_warning
 
 
@@ -23,10 +25,19 @@ def handle_tokens_revoked(
     ``event.tokens.bot``. A personal **Authorize SyncBot** revoke is
     ``InstallationStore.delete_installation`` for that user_id, then republish
     Home. Slack sometimes also fills ``tokens.bot`` on that event; only run the
-    uninstall path (``delete_all`` + workspace pause) when the stored bot token
+    uninstall path (``delete_all``, then soft-delete the workspace) when the stored bot token
     fails ``auth.test``. Bolt's ``enable_token_revocation_listeners()`` would
     delete the bot whenever ``tokens.bot`` is present, which blanks Home.
     """
+    run_claimed(body, lambda: _tokens_revoked(body, client, logger, context))
+
+
+def _tokens_revoked(
+    body: dict,
+    client: WebClient,
+    logger: Logger,
+    context: dict,
+) -> None:
     team_id = helpers.get_team_id_from_body(body)
     if not team_id:
         log_warning("handle_tokens_revoked", reason="missing team_id")
@@ -48,7 +59,7 @@ def handle_tokens_revoked(
             return
 
     for user_id in oauth_users:
-        helpers.clear_user_authorization(team_id, user_id)
+        end_user_authorization(team_id, user_id, client=client)
         _republish_home_after_user_revoke(team_id, user_id, logger)
 
 
@@ -58,11 +69,7 @@ def handle_app_uninstalled(
     logger: Logger,
     context: dict,
 ) -> None:
-    """Handle ``app_uninstalled``: Bolt ``delete_all`` plus SyncBot workspace pause.
-
-    This is the event Bolt's built-in listener uses for a workspace uninstall.
-    We call the same store method, then pause groups and channel syncs.
-    """
+    """Handle ``app_uninstalled``: Bolt ``delete_all``, then soft-delete the workspace (its rows become ``uninstalled``)."""
     team_id = helpers.get_team_id_from_body(body)
     if not team_id:
         log_warning("handle_app_uninstalled", reason="missing team_id")

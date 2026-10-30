@@ -84,7 +84,7 @@ def handle_reaction(
             fingerprint = helpers.reaction_echo_fingerprint(channel_id, msg_ts, reaction)
             if helpers.take_user_action_echo(str(team_id), user_id, event_type, fingerprint):
                 return
-        if not helpers.channel_has_membership(channel_id):
+        if not helpers.has_channel_sync(channel_id):
             return
         if not helpers.origin_publishes_anywhere(channel_id):
             return

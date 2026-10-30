@@ -194,6 +194,10 @@ def get_workspace_record(team_id: str, body: dict, context: dict, client: WebCli
 
     if announce_live:
         _push_live_team_to_trusted_peers(team_id)
+        from helpers.notifications import forget_migration_notices, notify_primary_action
+
+        forget_migration_notices(team_id)
+        notify_primary_action(workspace_record, "Install")
 
     return workspace_record
 
@@ -220,7 +224,7 @@ def _push_live_team_to_trusted_peers(team_id: str) -> None:
                 team_id=team_id,
                 peer_instance_id=peer.instance_id,
                 ok=ok,
-                heal=result.get("results") if isinstance(result, dict) else None,
+                convert=result.get("results") if isinstance(result, dict) else None,
             )
         except Exception:
             log_error(
@@ -311,9 +315,10 @@ def _is_stub_workspace(workspace_record: schemas.Workspace) -> bool:
 
 
 def soft_delete_workspace(workspace_record: schemas.Workspace) -> list:
-    """Pause a workspace like uninstall: keep PostMeta until retention purge.
+    """Soft-delete a workspace: ``deleted_at`` on the row and its memberships; its rows become ``uninstalled``.
 
     Does not change ``instance_id`` (live vs stub). No-op if already deleted.
+    Channel rows are written first so a crash cannot leave live rows under a deleted workspace.
     """
     if workspace_record is None or getattr(workspace_record, "id", None) is None:
         return []
@@ -321,11 +326,21 @@ def soft_delete_workspace(workspace_record: schemas.Workspace) -> list:
         return []
 
     now = datetime.now(UTC)
-    DbManager.update_records(
-        schemas.Workspace,
-        [schemas.Workspace.id == workspace_record.id],
-        {schemas.Workspace.deleted_at: now},
+    my_channels = DbManager.find_records(
+        schemas.SyncChannel,
+        [
+            schemas.SyncChannel.workspace_id == workspace_record.id,
+            schemas.SyncChannel.deleted_at.is_(None),
+        ],
     )
+    for sync_channel in my_channels:
+        DbManager.update_records(
+            schemas.SyncChannel,
+            [schemas.SyncChannel.id == sync_channel.id],
+            {schemas.SyncChannel.deleted_at: now, schemas.SyncChannel.status: "uninstalled"},
+        )
+        sync_channel.status = "uninstalled"
+        sync_channel.deleted_at = now
 
     active_memberships = DbManager.find_records(
         schemas.WorkspaceGroupMember,
@@ -342,19 +357,12 @@ def soft_delete_workspace(workspace_record: schemas.Workspace) -> list:
             {schemas.WorkspaceGroupMember.deleted_at: now},
         )
 
-    my_channels = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.workspace_id == workspace_record.id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
+    DbManager.update_records(
+        schemas.Workspace,
+        [schemas.Workspace.id == workspace_record.id],
+        {schemas.Workspace.deleted_at: now},
     )
-    for sync_channel in my_channels:
-        DbManager.update_records(
-            schemas.SyncChannel,
-            [schemas.SyncChannel.id == sync_channel.id],
-            {schemas.SyncChannel.deleted_at: now, schemas.SyncChannel.status: "paused"},
-        )
+    workspace_record.deleted_at = now
 
     from helpers.sync_participation import invalidate_sync_fanout_for_syncs
 
@@ -363,22 +371,19 @@ def soft_delete_workspace(workspace_record: schemas.Workspace) -> list:
         "workspace_soft_deleted",
         workspace_id=workspace_record.id,
         team_id=getattr(workspace_record, "team_id", None),
-        memberships_paused=len(active_memberships),
-        channels_paused=len(my_channels),
+        memberships_soft_deleted=len(active_memberships),
+        channels_uninstalled=len(my_channels),
     )
     return my_channels
 
 
-_PAUSE_RESTORE_PUBLIC = ":double_vertical_bar: This Sync is paused while SyncBot restores membership."
-_PAUSE_RESTORE_PRIVATE = (
-    ":double_vertical_bar: This Sync is paused. This Channel is private, so Authorize SyncBot "
-    "and Resume Sync to add it."
-)
-_RESUME_RESTORE = ":arrow_forward: This Sync has been resumed."
-_JOIN_RESTORE = ":arrows_counterclockwise: SyncBot joined this Channel to restore the Sync."
-
-
-def _set_restored_channel_status(sync_channel: schemas.SyncChannel, status: str, workspace: schemas.Workspace) -> None:
+def _set_restored_channel_status(
+    sync_channel: schemas.SyncChannel,
+    status: str,
+    workspace: schemas.Workspace,
+    *,
+    notice: str | None = None,
+) -> None:
     """Write SyncChannel status, drop fan-out cache, and replicate when possible."""
     DbManager.update_records(
         schemas.SyncChannel,
@@ -387,64 +392,24 @@ def _set_restored_channel_status(sync_channel: schemas.SyncChannel, status: str,
     )
     sync_channel.status = status
     sync_channel.deleted_at = None
+    from helpers.sync_lifecycle import announce_sync_channels, replicate_sync_channel_status
     from helpers.sync_participation import invalidate_sync_fanout_for_syncs
 
     invalidate_sync_fanout_for_syncs([sync_channel.sync_id])
-    try:
-        from federation.replicate import replicate_sync_channel_upsert
-
-        sync = DbManager.get_record(schemas.Sync, id=sync_channel.sync_id)
-        group = DbManager.get_record(schemas.WorkspaceGroup, id=sync.group_id) if sync and sync.group_id else None
-        if sync and group:
-            replicate_sync_channel_upsert(sync, group, sync_channel, workspace)
-    except Exception:
-        log_warning(
-            "heal_sync_channels_replicate_failed",
-            channel_id=sync_channel.channel_id,
-            workspace_id=workspace.id,
-        )
+    if notice:
+        announce_sync_channels(workspace, sync_channel, notice)
+    else:
+        replicate_sync_channel_status(sync_channel, workspace)
 
 
-def notify_sibling_sync_channels(workspace: schemas.Workspace, sync_id: int, message: str) -> None:
-    """Post *message* on other Workspaces' Channels in this Sync that still have a bot token."""
-    from helpers.notifications import notify_synced_channels
-
-    siblings = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.sync_id == sync_id,
-            schemas.SyncChannel.workspace_id != workspace.id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
-    posted: set[tuple[int, str]] = set()
-    for sibling in siblings:
-        member_ws = get_workspace_by_id(sibling.workspace_id)
-        token = get_bot_token(member_ws) if member_ws else None
-        if not token or not sibling.channel_id:
-            continue
-        key = (sibling.workspace_id, sibling.channel_id)
-        if key in posted:
-            continue
-        posted.add(key)
-        try:
-            notify_synced_channels(WebClient(token=token), [sibling.channel_id], message)
-        except Exception as exc:
-            log_warning(
-                "heal_sync_channels_sibling_failed",
-                channel_id=sibling.channel_id,
-                workspace_id=sibling.workspace_id,
-                error=str(exc),
-            )
-
-
-def heal_restored_sync_channels(
+def resume_restored_sync_channels(
     workspace: schemas.Workspace,
     *,
     client: WebClient,
     acting_user_id: str | None = None,
     context: dict | None = None,
     source: str | None = None,
+    rows: list | None = None,
 ) -> dict[str, int]:
     """Rejoin public Sync Channels after reinstall or import; leave private paused.
 
@@ -454,32 +419,56 @@ def heal_restored_sync_channels(
     when the bot can post, and on the twin Channels otherwise.
     """
     from helpers.conversations import ConversationAccessError, ensure_bot_in_conversation, inspect_bot_channel_access
-    from helpers.notifications import notify_admins_dm, notify_synced_channels
+    from helpers.leave_sync import group_name_for_sync_id
     from helpers.workspace_kind import is_local_workspace
 
     counts = {"resumed": 0, "joined": 0, "paused_private": 0, "skipped": 0}
     if workspace is None or not is_local_workspace(workspace) or not getattr(workspace, "id", None):
         return counts
     if client is None:
-        log_debug("heal_sync_channels", reason="missing_client", workspace_id=workspace.id, source=source)
+        log_debug("resume_restored_sync_channels", reason="missing_client", workspace_id=workspace.id, source=source)
         return counts
 
-    ws_name = resolve_workspace_name(workspace)
-    channels = DbManager.find_records(
-        schemas.SyncChannel,
-        [
-            schemas.SyncChannel.workspace_id == workspace.id,
-            schemas.SyncChannel.deleted_at.is_(None),
-        ],
-    )
-    private_need_admin = False
-    changed = False
+    if rows is None:
+        channels = DbManager.find_records(
+            schemas.SyncChannel,
+            [
+                schemas.SyncChannel.workspace_id == workspace.id,
+                schemas.SyncChannel.deleted_at.is_(None),
+            ],
+        )
+    else:
+        channels = list(rows)
+    if source != "migration" and peer_still_hosts_team(getattr(workspace, "team_id", None) or ""):
+        for sync_channel in channels:
+            if not sync_channel.channel_id or getattr(sync_channel, "status", None) == "paused":
+                counts["skipped"] += 1
+                continue
+            _set_restored_channel_status(sync_channel, "pending", workspace)
+            counts["skipped"] += 1
+        log_info(
+            "resume_restored_sync_channels",
+            source=source,
+            workspace_id=workspace.id,
+            team_id=workspace.team_id,
+            resumed=0,
+            joined=0,
+            paused_private=0,
+            skipped=counts["skipped"],
+            held="origin_live",
+        )
+        return counts
     for sync_channel in channels:
         channel_id = sync_channel.channel_id
         if not channel_id:
             continue
         is_private, is_member = inspect_bot_channel_access(client, channel_id)
-        if not is_private and is_member:
+        group_name = group_name_for_sync_id(sync_channel.sync_id)
+        if not is_private and is_member and getattr(sync_channel, "status", None) != "pending":
+            from helpers.sync_lifecycle import deliver_action_notice
+
+            deliver_action_notice(workspace, sync_channel, action="Resume", group_name=group_name)
+            counts["resumed"] += 1
             counts["skipped"] += 1
             continue
 
@@ -487,18 +476,19 @@ def heal_restored_sync_channels(
             if sync_channel.status == "paused":
                 counts["skipped"] += 1
                 continue
+            from helpers.sync_lifecycle import deliver_action_notice
+
             _set_restored_channel_status(sync_channel, "paused", workspace)
-            posted = notify_synced_channels(client, [channel_id], _PAUSE_RESTORE_PRIVATE)
-            notify_sibling_sync_channels(
+            deliver_action_notice(
                 workspace,
-                sync_channel.sync_id,
-                f":double_vertical_bar: Syncing with `{ws_name}` is paused. That Channel is "
-                "private, so someone there needs to Resume Sync after Authorize.",
+                sync_channel,
+                action="Pause",
+                group_name=group_name,
+                note="Authorize SyncBot, then Resume this Channel.",
+                post_in_channel=False,
+                announce=False,
             )
-            if not posted:
-                private_need_admin = True
             counts["paused_private"] += 1
-            changed = True
             continue
 
         _set_restored_channel_status(sync_channel, "paused", workspace)
@@ -515,91 +505,36 @@ def heal_restored_sync_channels(
                 joined = True
             except ConversationAccessError as exc:
                 log_warning(
-                    "heal_sync_channels_join_failed",
+                    "resume_restored_sync_channels_join_failed",
                     channel_id=channel_id,
                     workspace_id=workspace.id,
                     error=str(exc),
                 )
-                notify_synced_channels(
-                    client,
-                    [channel_id],
-                    ":double_vertical_bar: This Sync is paused. SyncBot could not rejoin this Channel.",
-                )
-                notify_sibling_sync_channels(
+                from helpers.sync_lifecycle import deliver_action_notice
+
+                _set_restored_channel_status(sync_channel, "paused", workspace)
+                deliver_action_notice(
                     workspace,
-                    sync_channel.sync_id,
-                    f":double_vertical_bar: Syncing with `{ws_name}` is paused. SyncBot could not rejoin that Channel.",
+                    sync_channel,
+                    action="Pause",
+                    group_name=group_name,
+                    note="SyncBot could not rejoin the Channel.",
+                    post_in_channel=False,
+                    announce=False,
                 )
                 counts["paused_private"] += 1
-                changed = True
                 continue
 
-        notify_synced_channels(client, [channel_id], _PAUSE_RESTORE_PUBLIC)
-        _set_restored_channel_status(sync_channel, "active", workspace)
-        notify_synced_channels(client, [channel_id], _RESUME_RESTORE)
-        if joined:
-            notify_synced_channels(client, [channel_id], _JOIN_RESTORE)
-            counts["joined"] += 1
-        notify_sibling_sync_channels(
-            workspace,
-            sync_channel.sync_id,
-            f":arrow_forward: Syncing with `{ws_name}` has been resumed.",
-        )
-        counts["resumed"] += 1
-        changed = True
+        from helpers.sync_lifecycle import deliver_action_notice
 
-    if private_need_admin:
-        notify_admins_dm(
-            client,
-            ":double_vertical_bar: A private Channel Sync stayed paused. Authorize SyncBot, "
-            "then Resume Sync to add it.",
-            team_id=workspace.team_id,
-        )
-    if changed:
-        notified_ws: set[int] = set()
-        memberships = DbManager.find_records(
-            schemas.WorkspaceGroupMember,
-            [
-                schemas.WorkspaceGroupMember.workspace_id == workspace.id,
-                schemas.WorkspaceGroupMember.status == "active",
-                schemas.WorkspaceGroupMember.deleted_at.is_(None),
-            ],
-        )
-        admin_msg = (
-            f":double_vertical_bar: `{ws_name}` is back. Public Channel Syncs will resume. "
-            "Private Channels stay paused until someone Resumes Sync."
-            if counts["paused_private"]
-            else f":arrow_forward: `{ws_name}` has been restored. Group syncing will resume."
-        )
-        for membership in memberships:
-            peers = DbManager.find_records(
-                schemas.WorkspaceGroupMember,
-                [
-                    schemas.WorkspaceGroupMember.group_id == membership.group_id,
-                    schemas.WorkspaceGroupMember.workspace_id != workspace.id,
-                    schemas.WorkspaceGroupMember.status == "active",
-                    schemas.WorkspaceGroupMember.deleted_at.is_(None),
-                ],
-            )
-            for peer in peers:
-                if not peer.workspace_id or peer.workspace_id in notified_ws:
-                    continue
-                member_ws = get_workspace_by_id(peer.workspace_id)
-                token = get_bot_token(member_ws) if member_ws else None
-                if not token:
-                    continue
-                notified_ws.add(peer.workspace_id)
-                try:
-                    notify_admins_dm(WebClient(token=token), admin_msg, team_id=member_ws.team_id)
-                except Exception as exc:
-                    log_warning(
-                        "heal_sync_channels_admin_dm_failed",
-                        workspace_id=peer.workspace_id,
-                        error=str(exc),
-                    )
+        _set_restored_channel_status(sync_channel, "active", workspace)
+        deliver_action_notice(workspace, sync_channel, action="Resume", group_name=group_name)
+        if joined:
+            counts["joined"] += 1
+        counts["resumed"] += 1
 
     log_info(
-        "heal_sync_channels",
+        "resume_restored_sync_channels",
         source=source,
         workspace_id=workspace.id,
         team_id=workspace.team_id,
@@ -618,19 +553,19 @@ def _restore_workspace(
 ) -> schemas.Workspace:
     """Reclaim a paused or stub workspace as a live install on this instance."""
     from helpers.settings import team_id_is_blocked
-    from helpers.workspace_kind import heal_workspace_to_local
+    from helpers.workspace_kind import convert_workspace_to_local
 
     if team_id_is_blocked(workspace_record.team_id):
         log_info("workspace_restore_blocked", team_id=workspace_record.team_id)
         return workspace_record
 
     new_token = safe_get(context, "bot_token")
-    heal_workspace_to_local(workspace_record.team_id, source="reinstall")
+    convert_workspace_to_local(workspace_record.team_id, source="reinstall")
     if new_token:
         _maybe_refresh_bot_token(workspace_record, context)
 
     workspace_record = DbManager.get_record(schemas.Workspace, id=workspace_record.team_id)
-    heal_restored_sync_channels(
+    resume_restored_sync_channels(
         workspace_record,
         client=client,
         context=context,
@@ -726,7 +661,7 @@ def resolve_channel_name(channel_id: str, workspace=None) -> str:
     if cached:
         return cached
 
-    ch_name, _is_private = lookup_channel_meta(channel_id, workspace)
+    ch_name = lookup_channel_name(channel_id, workspace)
     ws_name = getattr(workspace, "workspace_name", None) if workspace else None
 
     if ws_name:
@@ -775,14 +710,14 @@ def remember_channel_name(channel_id: str, workspace_id: int | None, name: str |
     )
 
 
-def lookup_channel_meta(
+def lookup_channel_name(
     channel_id: str,
     workspace=None,
     *,
     user_token: str | None = None,
     client: WebClient | None = None,
-) -> tuple[str, bool]:
-    """Return ``(name, is_private)`` for a Slack channel.
+) -> str:
+    """Return the Slack Channel name. Privacy lives on the SyncChannel row.
 
     Tries *client* (the request bot), then the workspace bot token, then
     *user_token*. The bot cannot see a private Channel it has not joined yet,
@@ -791,20 +726,20 @@ def lookup_channel_meta(
     Never log *user_token*.
     """
     if not channel_id:
-        return channel_id, False
+        return channel_id
 
     from helpers._cache import request_scope_get, request_scope_set
 
-    req_key = f"chan_meta:{channel_id}"
+    req_key = f"chan_label:{channel_id}"
     cached_req = request_scope_get(req_key)
-    if isinstance(cached_req, tuple) and len(cached_req) == 2:
-        return str(cached_req[0]), bool(cached_req[1])
+    if isinstance(cached_req, str):
+        return cached_req
 
-    cache_key = f"chan_meta:{channel_id}"
+    cache_key = f"chan_label:{channel_id}"
     cached = _cache_get(cache_key)
-    if isinstance(cached, tuple) and len(cached) == 2:
+    if isinstance(cached, str):
         request_scope_set(req_key, cached)
-        return str(cached[0]), bool(cached[1])
+        return cached
 
     clients: list[WebClient] = []
     if client is not None:
@@ -814,11 +749,11 @@ def lookup_channel_meta(
         try:
             clients.append(WebClient(token=bot_token))
         except Exception as exc:
-            log_debug("lookup_channel_meta", channel_id=channel_id, error=str(exc))
+            log_debug("lookup_channel_name", channel_id=channel_id, error=str(exc))
     if user_token:
         clients.append(WebClient(token=user_token))
 
-    name, is_private = channel_id, False
+    name = channel_id
     for slack_client in clients:
         try:
             info = slack_client.conversations_info(channel=channel_id)
@@ -826,10 +761,9 @@ def lookup_channel_meta(
             found = channel.get("name")
             if isinstance(found, str) and found:
                 name = found
-                is_private = bool(channel.get("is_private"))
                 break
         except Exception as exc:
-            log_debug("lookup_channel_meta", channel_id=channel_id, error=str(exc))
+            log_debug("lookup_channel_name", channel_id=channel_id, error=str(exc))
 
     workspace_id = getattr(workspace, "id", None)
     if name == channel_id:
@@ -837,13 +771,10 @@ def lookup_channel_meta(
         if stored:
             name = stored
 
-    # Always memoize in request scope (including misses) so publish/Home does not
-    # re-hit Slack for the same unknown private channel. Process cache stays
-    # success-only so a later join can resolve the name.
-    request_scope_set(req_key, (name, is_private))
+    request_scope_set(req_key, name)
     if name != channel_id:
-        _cache_set(cache_key, (name, is_private), ttl=3600)
-    return name, is_private
+        _cache_set(cache_key, name, ttl=3600)
+    return name
 
 
 def slack_apps_uninstall(token: str | None) -> None:
@@ -860,6 +791,135 @@ def slack_apps_uninstall(token: str | None) -> None:
         log_warning("apps_uninstall_failed", error=str(exc))
 
 
+def restore_migrated_workspace(team_id: str, *, context: dict | None = None) -> dict[str, int]:
+    """Resume this workspace's ``pending`` rows after the origin has released it.
+
+    A no-op when the workspace is not local here or it has no ``pending`` rows.
+    Messages from the gap are not replayed.
+    """
+    from helpers.workspace_kind import is_local_workspace
+
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
+    if workspace is None or not is_local_workspace(workspace):
+        return {"resumed": 0, "joined": 0, "paused_private": 0, "skipped": 0}
+    pending = DbManager.find_records(
+        schemas.SyncChannel,
+        [
+            schemas.SyncChannel.workspace_id == workspace.id,
+            schemas.SyncChannel.deleted_at.is_(None),
+            schemas.SyncChannel.status == "pending",
+        ],
+    )
+    if not pending:
+        return {"resumed": 0, "joined": 0, "paused_private": 0, "skipped": 0}
+    token = get_bot_token(workspace)
+    if not token:
+        log_warning("restore_migrated_workspace", reason="no_bot_token", team_id=team_id)
+        return {"resumed": 0, "joined": 0, "paused_private": 0, "skipped": 0}
+    from helpers.notifications import notify_migration
+
+    notify_migration(team_id, "local")
+    return resume_restored_sync_channels(
+        workspace,
+        client=WebClient(token=token),
+        context=context,
+        source="migration",
+        rows=pending,
+    )
+
+
+def peer_still_hosts_team(team_id: str) -> bool:
+    """True when a trusted peer still has *team_id* live, or cannot be asked.
+
+    No trusted peer means this instance is the only one, so the team is not held.
+    """
+    from federation.core import push_teams, teams_allowlist_payload
+    from helpers.workspace_kind import is_local_workspace, peer_is_trusted
+
+    team_id = (team_id or "").strip()
+    if not team_id:
+        return False
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
+    if workspace is None or not is_local_workspace(workspace):
+        return False
+    peers = DbManager.find_records(
+        schemas.Instance,
+        [
+            schemas.Instance.private_key_encrypted.is_(None),
+            schemas.Instance.status == "active",
+        ],
+    )
+    peers = [peer for peer in peers if peer_is_trusted(peer)]
+    if not peers:
+        return False
+    for peer in peers:
+        payload = teams_allowlist_payload(peer.instance_id)
+        listed = payload.setdefault("workspaces", [])
+        if not any(item.get("team_id") == team_id for item in listed):
+            listed.append({"team_id": team_id, "name": workspace.workspace_name or team_id})
+        result = push_teams(peer, payload)
+        if not result:
+            return True
+        answer = (result.get("results") or {}).get(team_id)
+        if answer in ("refused_live", None):
+            return True
+    return False
+
+
+def consider_migration_release(team_id: str) -> None:
+    """Ask trusted peers whether *team_id* is still live there, then restore if not.
+
+    A peer that cannot be reached counts as still live. No trusted peer means
+    this instance is the only one, so the rows resume at once.
+    """
+    from helpers.workspace_kind import is_local_workspace
+
+    team_id = (team_id or "").strip()
+    if not team_id:
+        return
+    workspace = DbManager.get_record(schemas.Workspace, id=team_id)
+    if workspace is None or not is_local_workspace(workspace):
+        return
+    if peer_still_hosts_team(team_id):
+        return
+    restore_migrated_workspace(team_id)
+
+
+def apply_teams_release_results(results: dict | None) -> None:
+    """Restore a local workspace when a peer reports it is no longer live there."""
+    if not isinstance(results, dict):
+        return
+    for team_id, answer in results.items():
+        if answer in ("already_stub", "converted"):
+            restore_migrated_workspace(str(team_id))
+
+
+def _push_workspace_release(workspace: schemas.Workspace, peer: schemas.Instance) -> None:
+    """Tell *peer* this workspace uninstalled, with each group role, so it can restore."""
+    from federation.core import push_workspace_release
+
+    memberships = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.workspace_id == workspace.id],
+    )
+    groups = []
+    seen: set[str] = set()
+    for membership in memberships:
+        group = DbManager.get_record(schemas.WorkspaceGroup, id=membership.group_id)
+        uid = getattr(group, "uid", None) if group else None
+        if not uid or uid in seen:
+            continue
+        seen.add(uid)
+        role = "owner" if membership.role == "creator" else membership.role
+        if role not in ("owner", "member"):
+            role = "member"
+        groups.append({"uid": uid, "role": role})
+    try:
+        push_workspace_release(peer, {"team_id": workspace.team_id, "groups": groups})
+    except Exception as exc:
+        log_warning("workspace_release_push_failed", team_id=workspace.team_id, error=str(exc))
+
+
 def uninstall_workspace(team_id: str) -> None:
     """Wipe Bolt install rows for this team, then pause SyncBot workspace data."""
     from helpers.conversations import clear_workspace_installations
@@ -870,18 +930,18 @@ def uninstall_workspace(team_id: str) -> None:
 
 def _soft_delete_uninstalled_workspace(team_id: str) -> None:
     """Soft-delete the workspace after Slack uninstalled the app."""
-    from helpers.notifications import notify_admins_dm, notify_synced_channels
-    from helpers.settings import soft_delete_retention_days
+    from helpers.notifications import claim_once
+    from helpers.sync_lifecycle import deliver_action_notice
 
     workspace_record = DbManager.get_record(schemas.Workspace, team_id)
     if not workspace_record:
         log_warning("uninstall_workspace_unknown", team_id=team_id)
         return
+    if not claim_once(f"uninstall_notice:{team_id}"):
+        return
     if workspace_record.deleted_at is not None:
         return
 
-    ws_name = resolve_workspace_name(workspace_record)
-    retention_days = soft_delete_retention_days()
     my_channels = soft_delete_workspace(workspace_record)
 
     pending_stubs = DbManager.find_records(
@@ -892,74 +952,31 @@ def _soft_delete_uninstalled_workspace(team_id: str) -> None:
         peer = DbManager.get_record(schemas.Instance, id=pending.instance_id)
         if not peer or peer.status != "active" or peer.trust_status != "trusted":
             continue
-        from helpers.workspace_kind import heal_workspace_to_stub
+        from helpers.workspace_kind import convert_workspace_to_stub
 
-        if heal_workspace_to_stub(team_id, peer.instance_id, source="uninstall") == "converted":
+        if convert_workspace_to_stub(team_id, peer.instance_id, source="uninstall") == "converted":
             from helpers.sync_participation import invalidate_sync_fanout_for_syncs
 
             invalidate_sync_fanout_for_syncs(c.sync_id for c in my_channels)
-            return
+            _push_workspace_release(workspace_record, peer)
+            break
 
-    notified_ws: set[int] = set()
-    paused_memberships = DbManager.find_records(
-        schemas.WorkspaceGroupMember,
-        [
-            schemas.WorkspaceGroupMember.workspace_id == workspace_record.id,
-            schemas.WorkspaceGroupMember.status == "active",
-            schemas.WorkspaceGroupMember.deleted_at.isnot(None),
-        ],
-    )
-    for membership in paused_memberships:
-        group_members = DbManager.find_records(
-            schemas.WorkspaceGroupMember,
-            [
-                schemas.WorkspaceGroupMember.group_id == membership.group_id,
-                schemas.WorkspaceGroupMember.workspace_id != workspace_record.id,
-                schemas.WorkspaceGroupMember.status == "active",
-                schemas.WorkspaceGroupMember.deleted_at.is_(None),
-            ],
+    from helpers.leave_sync import group_name_for_sync_id
+
+    seen: set[int] = set()
+    for row in my_channels or []:
+        if not getattr(row, "sync_id", None) or row.sync_id in seen:
+            continue
+        seen.add(row.sync_id)
+        deliver_action_notice(
+            workspace_record,
+            row,
+            action="Pause",
+            group_name=group_name_for_sync_id(row.sync_id),
+            post_in_channel=False,
+            dm=False,
+            label_for={workspace_record.id: "Paused"},
         )
-        for member in group_members:
-            if not member.workspace_id or member.workspace_id in notified_ws:
-                continue
-            member_ws = get_workspace_by_id(member.workspace_id)
-            if not member_ws or member_ws.deleted_at is not None or not get_bot_token(member_ws):
-                continue
-            notified_ws.add(member.workspace_id)
+    from helpers.notifications import notify_primary_action
 
-            try:
-                member_client = WebClient(token=get_bot_token(member_ws))
-
-                notify_admins_dm(
-                    member_client,
-                    f":double_vertical_bar: `{ws_name}` has uninstalled SyncBot. "
-                    f"Syncing has been paused. If they reinstall within {retention_days} days, "
-                    "Syncing will resume automatically.",
-                    team_id=member_ws.team_id,
-                )
-
-                member_channel_ids = []
-                for sync_channel in my_channels:
-                    sibling_channels = DbManager.find_records(
-                        schemas.SyncChannel,
-                        [
-                            schemas.SyncChannel.sync_id == sync_channel.sync_id,
-                            schemas.SyncChannel.workspace_id == member.workspace_id,
-                            schemas.SyncChannel.deleted_at.is_(None),
-                        ],
-                    )
-                    for sibling in sibling_channels:
-                        member_channel_ids.append(sibling.channel_id)
-
-                if member_channel_ids:
-                    notify_synced_channels(
-                        member_client,
-                        member_channel_ids,
-                        f":double_vertical_bar: Syncing with `{ws_name}` has been paused because they uninstalled the app.",
-                    )
-            except Exception as exc:
-                log_warning(
-                    "uninstall_notify_failed",
-                    workspace_id=member.workspace_id,
-                    error=str(exc),
-                )
+    notify_primary_action(workspace_record, "Uninstall")

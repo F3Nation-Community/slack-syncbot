@@ -55,20 +55,22 @@ class TestValidateChannelSelection:
     ACTION = actions.CONFIG_CREATE_SYNC_SELECT
 
     def test_missing_selection_is_an_error(self, client):
-        result = _validate_channel_selection(client, None, self.ACTION)
-        assert result["response_action"] == "errors"
-        assert self.ACTION in result["errors"]
+        error, _flag = _validate_channel_selection(client, None, self.ACTION)
+        assert error["response_action"] == "errors"
+        assert self.ACTION in error["errors"]
 
     def test_placeholder_selection_is_an_error(self, client):
-        result = _validate_channel_selection(client, "__none__", self.ACTION)
-        assert result["response_action"] == "errors"
+        error, _flag = _validate_channel_selection(client, "__none__", self.ACTION)
+        assert error["response_action"] == "errors"
 
     def test_channel_in_another_sync_is_allowed(self, client):
         client.conversations_info.return_value = {"channel": {"is_private": False}}
         with (
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False),
         ):
-            assert _validate_channel_selection(client, "C1", self.ACTION) is None
+            error, flag = _validate_channel_selection(client, "C1", self.ACTION)
+            assert error is None
+            assert flag is False
 
     def test_workspace_already_subscribed_to_source_is_rejected(self, client):
         source = SimpleNamespace(workspace_id=1, channel_id="CSOURCE", publishes=True)
@@ -84,7 +86,7 @@ class TestValidateChannelSelection:
                 source_sync_id=42,
             )
 
-        assert "already subscribes" in result["errors"][self.ACTION]
+        assert "already subscribes" in result[0]["errors"][self.ACTION]
 
     def test_duplicate_subscribe_checks_every_publisher_in_the_sync(self, client):
         original = SimpleNamespace(workspace_id=1, channel_id="C_OLD", publishes=False)
@@ -104,7 +106,7 @@ class TestValidateChannelSelection:
                 source_sync_id=42,
             )
 
-        assert "already subscribes" in result["errors"][self.ACTION]
+        assert "already subscribes" in result[0]["errors"][self.ACTION]
         assert already.call_count == 1
         assert already.call_args.kwargs["source_channel_id"] == "C_NEW"
 
@@ -114,7 +116,9 @@ class TestValidateChannelSelection:
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False),
         ):
-            assert _validate_channel_selection(client, "C1", self.ACTION) is None
+            error, flag = _validate_channel_selection(client, "C1", self.ACTION)
+            assert error is None
+            assert flag is False
 
     def test_private_channel_rejected_by_default(self, client):
         client.conversations_info.return_value = {"channel": {"is_private": True}}
@@ -124,22 +128,21 @@ class TestValidateChannelSelection:
         ):
             result = _validate_channel_selection(client, "C1", self.ACTION)
 
-        assert "Private Channels cannot be synced" in result["errors"][self.ACTION]
+        assert "Private Channels cannot be synced" in result[0]["errors"][self.ACTION]
 
     def test_private_channel_allowed_when_setting_is_on_and_a_token_exists(self, client):
-        """With a user token to invite with, the pick is accepted without a lookup.
-
-        The bot often cannot see a private channel at all, so its own view of the
-        channel says nothing useful once either path would work.
-        """
+        """With a user token, the pick is accepted and privacy is read once."""
+        client.conversations_info.return_value = {"channel": {"is_private": True}}
         with (
             patch("handlers.channel_sync.DbManager.find_records", return_value=[]),
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
             patch("handlers.channel_sync.helpers.has_user_token", return_value=True),
         ):
-            assert _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1") is None
+            error, flag = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
 
-        client.conversations_info.assert_not_called()
+        assert error is None
+        assert flag is True
+        client.conversations_info.assert_called()
 
     def test_private_pick_without_a_user_token_points_at_authorize(self, client):
         """Only a member can add an app to a private channel, so say so up front."""
@@ -151,7 +154,7 @@ class TestValidateChannelSelection:
         ):
             result = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
 
-        assert "Authorize SyncBot" in result["errors"][self.ACTION]
+        assert "Authorize SyncBot" in result[0]["errors"][self.ACTION]
 
     def test_public_pick_without_a_user_token_still_passes(self, client):
         """A public channel is joined with the bot token, so no authorization is needed."""
@@ -161,7 +164,9 @@ class TestValidateChannelSelection:
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=True),
             patch("handlers.channel_sync.helpers.has_user_token", return_value=False),
         ):
-            assert _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1") is None
+            error, flag = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
+            assert error is None
+            assert flag is False
 
     def test_unreadable_channel_is_treated_as_private_when_private_is_allowed(self, client):
         """A private channel the bot has never been in is invisible to the bot token."""
@@ -173,7 +178,7 @@ class TestValidateChannelSelection:
         ):
             result = _validate_channel_selection(client, "C1", self.ACTION, team_id="T1", acting_user_id="U1")
 
-        assert "Authorize SyncBot" in result["errors"][self.ACTION]
+        assert "Authorize SyncBot" in result[0]["errors"][self.ACTION]
 
     def test_unreadable_channel_fails_closed(self, client):
         """A channel SyncBot cannot inspect is one it cannot join either."""
@@ -184,14 +189,16 @@ class TestValidateChannelSelection:
         ):
             result = _validate_channel_selection(client, "C1", self.ACTION)
 
-        assert "could not read that Channel" in result["errors"][self.ACTION]
+        assert "could not read that Channel" in result[0]["errors"][self.ACTION]
 
     def test_republishing_a_previously_used_channel_is_allowed(self, client):
         client.conversations_info.return_value = {"channel": {"is_private": False}}
         with (
             patch("handlers.channel_sync.helpers.allow_private_channels", return_value=False),
         ):
-            assert _validate_channel_selection(client, "C1", self.ACTION) is None
+            error, flag = _validate_channel_selection(client, "C1", self.ACTION)
+            assert error is None
+            assert flag is False
 
 
 class TestJoinSyncAckSurfacesErrors:
@@ -207,10 +214,13 @@ class TestJoinSyncAckSurfacesErrors:
             patch("handlers.channel_sync._get_selected_conversation_or_option", return_value="Cdup"),
             patch(
                 "handlers.channel_sync._validate_channel_selection",
-                return_value={
-                    "response_action": "errors",
-                    "errors": {actions.CONFIG_JOIN_SYNC_SELECT: "duplicate"},
-                },
+                return_value=(
+                    {
+                        "response_action": "errors",
+                        "errors": {actions.CONFIG_JOIN_SYNC_SELECT: "duplicate"},
+                    },
+                    None,
+                ),
             ),
         ):
             result = handle_join_sync_submit_ack({}, client, {})

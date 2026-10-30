@@ -122,10 +122,15 @@ def test_ensure_bootstrap_passes_and_refreshes_immutable_repository() -> None:
 
 
 def _resolve_immutable_repository(env: dict[str, str], repo: str = "owner/repo") -> str:
-    """Run ensure_bootstrap.sh's helper without executing the script body."""
-    definitions = ENSURE.split("stack_exists()")[0]
+    """Run ensure_bootstrap.sh's helper without executing the script body.
+
+    bash -c leaves BASH_SOURCE unset. The script preamble uses that under
+    set -u, and bash 4+ exits. Define only the function.
+    """
+    start = ENSURE.index("resolve_immutable_repository()")
+    helper = ENSURE[start:].split("stack_exists()", 1)[0]
     result = subprocess.run(
-        ["bash", "-c", f'{definitions}\nresolve_immutable_repository "{repo}"'],
+        ["bash", "-c", f'{helper}\nresolve_immutable_repository "{repo}"'],
         cwd=INFRA_AWS / "scripts",
         env={"PATH": "/usr/bin:/bin", **env},
         capture_output=True,

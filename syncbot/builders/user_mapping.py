@@ -155,11 +155,11 @@ def build_user_mapping_list_blocks(
         blocks.append(block_context("_No users have been mapped in this Workspace Group yet._"))
     else:
         for m in page_rows:
-            label = _display_for_mapping(m, ws_lookup)
+            label = f"`{_display_for_mapping(m, ws_lookup)}`"
             if m.target_user_id and m.map_method != "none":
-                row_text = f"*{label}*  \u2192  <@{m.target_user_id}> _[{m.map_method}]_"
+                row_text = f"{label}  \u2192  <@{m.target_user_id}> _[{m.map_method}]_"
             else:
-                row_text = f":warning: *{label}*"
+                row_text = f":warning: {label}"
             blocks.append(section(row_text))
             blocks.append(blocks_actions(button("Edit", f"{actions.CONFIG_USER_MAPPING_EDIT}_{m.id}", value=group_val)))
 
@@ -306,7 +306,10 @@ def build_user_mapping_edit_modal(
 
     has_mapping = mapping.target_user_id is not None and mapping.map_method != "none"
     blocks: list[orm.BaseBlock] = [
-        orm.SectionBlock(label=f"*{display}*\n_{source_ws_name}_", element=avatar_accessory),
+        orm.SectionBlock(
+            label=f"{helpers.code_ticked_display_name(display, source_ws_name)}",
+            element=avatar_accessory,
+        ),
     ]
     if has_mapping:
         blocks.append(block_context(f"Currently mapped to <@{mapping.target_user_id}> _[{mapping.map_method}]_"))

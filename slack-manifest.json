@@ -42,7 +42,6 @@
         "reactions:read",
         "reactions:write",
         "team:read",
-        "usergroups:read",
         "users:read",
         "users:read.email"
       ],
@@ -69,7 +68,12 @@
       "bot_events": [
         "app_home_opened",
         "app_uninstalled",
+        "channel_deleted",
+        "channel_left",
+        "group_deleted",
+        "group_left",
         "member_joined_channel",
+        "member_left_channel",
         "message.channels",
         "message.groups",
         "reaction_added",
