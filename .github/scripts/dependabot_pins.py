@@ -20,6 +20,11 @@ _LOCK_BLOCK = re.compile(
     re.MULTILINE,
 )
 _TABLE_ROW = re.compile(r"^\|(.+)\|\s*$")
+_UPDATE_LINE = re.compile(
+    r"^(?:Bumps|Updates)\s+"
+    r"(?:\[([^\]]+)\]\([^)]*\)|`([^`]+)`|([A-Za-z0-9_.-]+))"
+    r"\s+from\s+\S+\s+to\s+(\d\S*?)\.?\s*$"
+)
 
 
 def normalize(name: str) -> str:
@@ -54,8 +59,22 @@ def _strip_cell(cell: str) -> str:
     return text
 
 
+def _preamble(text: str) -> str:
+    """Body text before Dependabot's changelog details block."""
+    details = text.lower().find("<details>")
+    if details == -1:
+        return text
+    return text[:details]
+
+
 def body_targets(text: str) -> dict[str, str]:
     targets: dict[str, str] = {}
+    for line in _preamble(text).splitlines():
+        update = _UPDATE_LINE.match(line.strip())
+        if not update:
+            continue
+        name = next(group for group in update.groups()[:3] if group)
+        targets[normalize(name)] = update.group(4)
     for line in text.splitlines():
         match = _TABLE_ROW.match(line.strip())
         if not match:

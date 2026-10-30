@@ -154,8 +154,15 @@ jobs:
               --lock poetry.lock \
               --body /tmp/pr-body.md \
               --requirements-diff /tmp/requirements.diff
-            if [[ -z "$(git diff --name-only "origin/${BASE_REF}")" ]]; then
-              echo "::error::Dependabot pull request changes no files against ${BASE_REF}."
+            # Merge-base (three-dot) plus uncommitted lock/export edits. A two-dot
+            # diff against the tip of main counts commits that landed on main only.
+            names="$(
+              git diff --name-only "origin/${BASE_REF}"...HEAD
+              git diff --name-only
+              git diff --cached --name-only
+            )"
+            if [[ -z "${names}" ]]; then
+              echo "::error::Dependabot pull request changes no files against the merge base of ${BASE_REF}."
               exit 1
             fi
           fi

@@ -71,7 +71,8 @@ jobs:
         run: |
           names="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files" --jq '.[].filename')"
           if [[ -z "${names}" ]]; then
-            echo "Dependabot pull request changes no files; leaving auto-merge disabled."
+            echo "Dependabot pull request changes no files; disabling auto-merge."
+            gh pr merge --disable-auto "$PR_URL" || echo "Auto-merge was already off."
             exit 0
           fi
           gh pr merge --auto --squash "$PR_URL"

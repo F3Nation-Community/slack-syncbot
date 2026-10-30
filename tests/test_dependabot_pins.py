@@ -75,6 +75,19 @@ def test_body_table_names_mako_until_the_lock_catches_up(tmp_path: Path) -> None
     assert checked.returncode == 0
 
 
+def test_bump_sentence_names_certifi_and_ignores_the_changelog(tmp_path: Path) -> None:
+    body = """\
+Bumps [certifi](https://github.com/certifi/python-certifi) from 2026.2.25 to 2026.10.18.
+<details>
+<summary>Commits</summary>
+Bumps actions/checkout from 1.0.0 to 2.0.0.
+</details>
+"""
+    result = _run(tmp_path, "list", LOCK, body, "")
+    assert result.returncode == 0
+    assert result.stdout.split() == ["certifi"]
+
+
 def test_a_lowered_pin_is_not_printed(tmp_path: Path) -> None:
     lowered = """\
 -certifi==2026.10.19 ; python_version >= "3.12"
