@@ -31,6 +31,26 @@ def test_bolt_view_listener_uses_view_ack_when_not_local_dev():
     assert view_ack_listeners, "expected view listener with ack_function=view_ack and lazy main_response"
 
 
+def test_ack_first_runner_stashes_until_drain():
+    """The HTTP server writes Slack's ack before the lazy listener runs."""
+    from slack_bolt.request import BoltRequest
+
+    from app import _AckFirstLazyListenerRunner
+
+    order: list[str] = []
+    runner = _AckFirstLazyListenerRunner(logger=__import__("logging").getLogger("test"))
+
+    def _listener(body: dict) -> None:
+        order.append("work")
+        assert body["ok"] is True
+
+    runner.start(_listener, BoltRequest(body='{"ok": true}'))
+    assert order == []
+    order.append("ack")
+    runner.drain()
+    assert order == ["ack", "work"]
+
+
 def test_lazy_listener_finishes_on_the_calling_thread():
     """Listener work finishes inside ``start``, on the request thread."""
     import threading
