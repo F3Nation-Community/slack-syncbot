@@ -169,7 +169,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- NOTICE: Environment change in this release; `TOKEN_ENCRYPTION_KEY` still loads when `DATA_ENCRYPTION_KEY` is unset, and logs a warning
+- REQUIRED: Environment change in this release; set `DATA_ENCRYPTION_KEY` on the running process, and deploy scripts copy `TOKEN_ENCRYPTION_KEY`
 - User Mapping leftover match names are gone (`matched_at` is `mapped_at`; old backup keys still import)
 
 ## [1.5.2] - 2026-09-03
@@ -398,7 +398,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - REQUIRED: Slack manifest needs to be updated; request, interactivity, and redirect URLs
-- NOTICE: Environment change in this release; `TOKEN_ENCRYPTION_KEY` is now `DATA_ENCRYPTION_KEY` and the old name still works
+- REQUIRED: Environment change in this release; set `DATA_ENCRYPTION_KEY` on the running process, and deploy scripts copy `TOKEN_ENCRYPTION_KEY`
 - REQUIRED: Environment change in this release; `DATABASE_USER` is a GitHub variable, not a secret
 - AWS uses Lambda Function URLs (no API Gateway or Secrets Manager); GCP secrets are Terraform variables
 
