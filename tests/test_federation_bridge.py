@@ -901,6 +901,198 @@ def test_handle_group_invite_without_set_role_keeps_an_owner(real_db):
     dm.assert_not_called()
 
 
+def _add_workspace_b(peer):
+    from db import DbManager, schemas
+    from federation.core import get_instance_id
+
+    workspace_b = DbManager.create_record(
+        schemas.Workspace(
+            team_id="TLOCALB",
+            workspace_name="Workspace B",
+            instance_id=get_instance_id(),
+        )
+    )
+    DbManager.create_record(
+        schemas.FederationWorkspaceAllowlist(
+            instance_id=peer["fed"].instance_id,
+            workspace_id=workspace_b.id,
+        )
+    )
+    return workspace_b
+
+
+def _memberships(group_id, workspace_id):
+    from db import DbManager, schemas
+
+    return DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == group_id,
+            schemas.WorkspaceGroupMember.workspace_id == workspace_id,
+        ],
+    )
+
+
+def test_group_invite_for_a_local_workspace_waits_for_accept(real_db):
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    with patch("helpers.send_group_invite_dm") as dm:
+        status, resp = handle_group_invite({"uid": peer["group"].uid, "team_id": "TLOCALB"}, peer["fed"])
+    assert status == 200
+    assert resp["ok"] is True
+    rows = _memberships(peer["group"].id, workspace_b.id)
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
+    assert rows[0].deleted_at is None
+    assert rows[0].invited_by_workspace_id is None
+    dm.assert_called_once()
+    assert "Action: Invite" in dm.call_args.args[2]
+
+
+def test_new_group_invite_names_the_inviting_workspace(real_db):
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    notice = "Workspace A invited Workspace B."
+    with patch("helpers.send_group_invite_dm") as dm:
+        handle_group_invite(
+            {
+                "uid": peer["group"].uid,
+                "team_id": "TLOCALB",
+                "invited_by_team_id": "TSTUB",
+                "notice": notice,
+            },
+            peer["fed"],
+        )
+    rows = [row for row in _memberships(peer["group"].id, workspace_b.id) if row.deleted_at is None]
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
+    assert rows[0].invited_by_workspace_id == peer["stub"].id
+    assert dm.call_args.args[2] == notice
+
+
+def test_group_invite_does_not_bring_back_a_local_workspace_that_left(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=peer["group"].id,
+            workspace_id=workspace_b.id,
+            status="inactive",
+            role="member",
+            joined_at=now,
+            deleted_at=now,
+        )
+    )
+    with patch("helpers.send_group_invite_dm") as dm:
+        handle_group_invite({"uid": peer["group"].uid, "team_id": "TLOCALB"}, peer["fed"])
+    live = [row for row in _memberships(peer["group"].id, workspace_b.id) if row.deleted_at is None]
+    assert live == []
+    dm.assert_not_called()
+
+
+def test_new_group_invite_asks_a_local_workspace_that_left(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    now = datetime.now(UTC).replace(tzinfo=None)
+    ended = DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=peer["group"].id,
+            workspace_id=workspace_b.id,
+            status="inactive",
+            role="member",
+            joined_at=now,
+            deleted_at=now,
+        )
+    )
+    with patch("helpers.send_group_invite_dm") as dm:
+        handle_group_invite(
+            {"uid": peer["group"].uid, "team_id": "TLOCALB", "invited_by_team_id": "TSTUB"},
+            peer["fed"],
+        )
+    rows = _memberships(peer["group"].id, workspace_b.id)
+    pending = [row for row in rows if row.deleted_at is None]
+    still_ended = [row for row in rows if row.id == ended.id]
+    assert len(pending) == 1
+    assert pending[0].status == "pending"
+    assert still_ended[0].deleted_at is not None
+    assert still_ended[0].status == "inactive"
+    dm.assert_called_once()
+
+
+def test_a_pending_local_invite_gets_one_dm(real_db):
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    body = {"uid": peer["group"].uid, "team_id": "TLOCALB"}
+    with patch("helpers.send_group_invite_dm") as dm:
+        handle_group_invite(body, peer["fed"])
+        handle_group_invite(body, peer["fed"])
+    pending = [row for row in _memberships(peer["group"].id, workspace_b.id) if row.deleted_at is None]
+    assert len(pending) == 1
+    assert pending[0].status == "pending"
+    dm.assert_called_once()
+
+
+def test_a_role_change_does_not_add_a_local_workspace(real_db):
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    with patch("helpers.send_group_invite_dm") as dm:
+        handle_group_invite(
+            {"uid": peer["group"].uid, "team_id": "TLOCALB", "set_role": True, "role": "owner"},
+            peer["fed"],
+        )
+    assert _memberships(peer["group"].id, workspace_b.id) == []
+    dm.assert_not_called()
+
+
+def test_a_peer_report_turns_its_pending_invite_active(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_invite
+
+    peer = _seed_peer()
+    now = datetime.now(UTC).replace(tzinfo=None)
+    ended_rows = _memberships(peer["group"].id, peer["stub"].id)
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == ended_rows[0].id],
+        {
+            schemas.WorkspaceGroupMember.joined_at: now,
+            schemas.WorkspaceGroupMember.deleted_at: now,
+            schemas.WorkspaceGroupMember.status: "inactive",
+        },
+    )
+    pending = DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=peer["group"].id,
+            workspace_id=peer["stub"].id,
+            status="pending",
+            role="member",
+            joined_at=None,
+        )
+    )
+    handle_group_invite({"uid": peer["group"].uid, "team_id": "TSTUB"}, peer["fed"])
+    rows = _memberships(peer["group"].id, peer["stub"].id)
+    by_id = {row.id: row for row in rows}
+    assert by_id[pending.id].status == "active"
+    assert by_id[pending.id].joined_at is not None
+    assert by_id[pending.id].deleted_at is None
+    assert by_id[ended_rows[0].id].deleted_at is not None
+
+
 def test_group_upsert_disbanded_ends_the_group_and_a_later_upsert_leaves_it(real_db):
     from db import DbManager, schemas
     from federation.api import handle_group_upsert

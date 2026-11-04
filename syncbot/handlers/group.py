@@ -521,8 +521,6 @@ def handle_invite_workspace_submit(
 
     person = helpers.format_admin_label(client, acting_user_id, workspace_record)
 
-    target_client = WebClient(token=helpers.get_bot_token(target_ws))
-
     from helpers.sync_participation import format_action_notice
 
     invite_text = format_action_notice(
@@ -533,42 +531,7 @@ def handle_invite_workspace_submit(
         for_managers=True,
         workspace_line=True,
     )
-    invite_blocks = [
-        {
-            "type": "section",
-            "text": {
-                "type": "mrkdwn",
-                "text": invite_text,
-            },
-        },
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": ":white_check_mark: Accept"},
-                    "style": "primary",
-                    "action_id": f"{actions.CONFIG_ACCEPT_GROUP_INVITE}_{member.id}",
-                    "value": str(member.id),
-                },
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": ":eject: Decline"},
-                    "style": "danger",
-                    "action_id": f"{actions.CONFIG_DECLINE_GROUP_INVITE}_{member.id}",
-                    "value": str(member.id),
-                },
-            ],
-        },
-    ]
-
-    dm_entries = helpers.notify_admins_dm_blocks(
-        target_client,
-        invite_text,
-        invite_blocks,
-        team_id=target_ws.team_id,
-    )
-    helpers.save_dm_messages_to_group_member(member.id, dm_entries)
+    helpers.send_group_invite_dm(member, target_ws, invite_text)
 
     log_info("group_invite_sent", group_id=group_id, target_workspace_id=target_ws_id, member_id=member.id)
 
