@@ -34,6 +34,11 @@ def test_deferred_ack_is_subset_of_view_ack_mapper():
     assert frozenset(VIEW_ACK_MAPPER.keys()) >= DEFERRED_ACK_VIEW_CALLBACK_IDS
 
 
+def test_join_group_checks_the_code_in_the_ack():
+    assert actions.CONFIG_JOIN_GROUP_SUBMIT in VIEW_ACK_MAPPER
+    assert actions.CONFIG_JOIN_GROUP_SUBMIT in VIEW_MAPPER
+
+
 def test_create_and_join_submit_on_the_final_modal():
     assert actions.CONFIG_CREATE_SYNC_SUBMIT in VIEW_ACK_MAPPER
     assert actions.CONFIG_CREATE_SYNC_SUBMIT in VIEW_MAPPER

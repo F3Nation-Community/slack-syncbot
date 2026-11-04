@@ -163,7 +163,8 @@ def handle_create_group_submit(
                 client.chat_postMessage(
                     channel=dm_channel,
                     text=f":raised_hands: *New Workspace Group Created!*\n\n*Group Name:* `{group_name}`\n\n*Invite Code:* `{code}`\n\n"
-                    "You can share the Invite Code with an Admin from another Workspace and they can join the Group.",
+                    "You can share the Invite Code with an Admin from another Workspace on this SyncBot instance, "
+                    "and they can join the Group.",
                 )
         except Exception as e:
             log_warning("failed_to_dm_invite_code", error=str(e))
@@ -198,7 +199,10 @@ def handle_join_group(
             ),
             orm.ContextBlock(
                 element=orm.ContextElement(
-                    initial_value="Enter the invite code shared by an Admin from another Workspace in the Group.",
+                    initial_value=(
+                        "Enter the Invite Code from an Admin of a Workspace in the Group. "
+                        "A code works only on the SyncBot instance it came from."
+                    ),
                 ),
             ),
         ]
@@ -210,6 +214,69 @@ def handle_join_group(
         title_text="Join Group",
         body=body,
     )
+
+
+def _read_join_code(body: dict) -> str:
+    """Return the Join Group code, stripped, uppercased, and dashed."""
+    raw_code = (_get_text_input_value(body, actions.CONFIG_JOIN_GROUP_CODE) or "").strip().upper()
+    if "-" not in raw_code and len(raw_code) >= 6:
+        raw_code = f"{raw_code[:3]}-{raw_code[3:]}"
+    return raw_code
+
+
+def _join_attempt_state(raw) -> dict:
+    if isinstance(raw, dict):
+        return {"count": int(raw.get("count") or 0), "view_id": raw.get("view_id")}
+    return {"count": int(raw or 0), "view_id": None}
+
+
+def handle_join_group_submit_ack(body: dict, client: WebClient, context: dict) -> dict | None:
+    """Tell the person in the modal when a Join Group code does not match."""
+    auth_result = _get_authorized_workspace(body, client, context, "join_group_submit")
+    if not auth_result:
+        return None
+    _user_id, workspace_record = auth_result
+    rate_key = f"group_join_attempts:{workspace_record.id}"
+    stored = _join_attempt_state(helpers._cache_get(rate_key))
+    if stored["count"] >= 5:
+        log_warning("group_join_rate_limited", workspace_id=workspace_record.id)
+        return {
+            "response_action": "errors",
+            "errors": {
+                actions.CONFIG_JOIN_GROUP_CODE: "Too many codes were tried. Wait 15 minutes, then try again.",
+            },
+        }
+    code = _read_join_code(body)
+    groups = DbManager.find_records(
+        schemas.WorkspaceGroup,
+        [
+            schemas.WorkspaceGroup.invite_code == code,
+            schemas.WorkspaceGroup.status == "active",
+        ],
+    )
+    if groups:
+        return None
+    view_id = helpers.safe_get(body, "view", "id")
+    if view_id and stored["view_id"] == view_id:
+        attempt = stored["count"]
+    else:
+        attempt = stored["count"] + 1
+        helpers._cache_set(rate_key, {"count": attempt, "view_id": view_id}, ttl=900)
+    log_warning(
+        "group_code_invalid",
+        workspace_id=workspace_record.id,
+        attempt=attempt,
+        code_length=len(code),
+    )
+    return {
+        "response_action": "errors",
+        "errors": {
+            actions.CONFIG_JOIN_GROUP_CODE: (
+                "That code does not match a Group on this SyncBot instance. "
+                "A Workspace on another instance joins when a Group member uses Invite Workspace."
+            ),
+        },
+    }
 
 
 def handle_join_group_submit(
@@ -224,19 +291,9 @@ def handle_join_group_submit(
         return
     user_id, workspace_record = auth_result
 
-    raw_code = (_get_text_input_value(body, actions.CONFIG_JOIN_GROUP_CODE) or "").strip().upper()
-
-    if "-" not in raw_code and len(raw_code) >= 6:
-        raw_code = f"{raw_code[:3]}-{raw_code[3:]}"
+    raw_code = _read_join_code(body)
 
     acting_user_id = user_id
-
-    rate_key = f"group_join_attempts:{workspace_record.id}"
-    attempts = helpers._cache_get(rate_key) or 0
-    if attempts >= 5:
-        log_warning("group_join_rate_limited", workspace_id=workspace_record.id)
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
-        return
 
     groups = DbManager.find_records(
         schemas.WorkspaceGroup,
@@ -247,11 +304,6 @@ def handle_join_group_submit(
     )
 
     if not groups:
-        helpers._cache_set(rate_key, attempts + 1, ttl=900)
-        log_warning(
-            "group_code_invalid", workspace_id=workspace_record.id, attempt=attempts + 1, code_length=len(raw_code)
-        )
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
         return
 
     group = groups[0]
@@ -428,7 +480,8 @@ def handle_invite_workspace(
     modal_blocks.append(section(":memo: *Invite Code*"))
     modal_blocks.append(
         block_context(
-            f"Alternatively, share this Invite Code with an Admin from another Workspace:\n\n`{group.invite_code}`"
+            "Alternatively, share this Invite Code with an Admin from another Workspace "
+            f"on this SyncBot instance:\n\n`{group.invite_code}`"
         )
     )
 

@@ -298,8 +298,9 @@ class TestWorkspaceManagerGate:
 
 class TestJoinGroupSubmit:
     def test_invalid_group_code_log_is_sanitized(self):
+        from handlers.group import handle_join_group_submit_ack
+
         client = MagicMock()
-        logger = MagicMock()
         workspace = SimpleNamespace(id=42)
 
         body = {
@@ -312,10 +313,9 @@ class TestJoinGroupSubmit:
             patch("handlers.group.helpers._cache_get", return_value=0),
             patch("handlers.group.helpers._cache_set"),
             patch("handlers.group.DbManager.find_records", return_value=[]),
-            patch("handlers.group.builders.refresh_home_tab_for_workspace"),
             patch("handlers.group.log_warning") as warn_log,
         ):
-            handle_join_group_submit(body, client, logger, context={})
+            result = handle_join_group_submit_ack(body, client, context={})
 
         matched = [call for call in warn_log.call_args_list if call.args and call.args[0] == "group_code_invalid"]
         assert matched, "Expected group_code_invalid warning"
@@ -324,6 +324,57 @@ class TestJoinGroupSubmit:
         assert extra["workspace_id"] == workspace.id
         assert extra["attempt"] == 1
         assert "code_length" in extra
+        assert actions.CONFIG_JOIN_GROUP_CODE in result["errors"]
+
+    def test_join_group_ack_stops_after_five_tries(self):
+        from handlers.group import handle_join_group_submit_ack
+
+        workspace = SimpleNamespace(id=42)
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.group.helpers._cache_get", return_value=5),
+            patch("handlers.group.DbManager.find_records") as find_records,
+        ):
+            result = handle_join_group_submit_ack({"user": {"id": "U1"}, "view": {}}, MagicMock(), {})
+        assert result["response_action"] == "errors"
+        find_records.assert_not_called()
+
+    def test_join_group_ack_accepts_a_matching_code(self):
+        from handlers.group import handle_join_group_submit_ack
+
+        workspace = SimpleNamespace(id=42)
+        group = SimpleNamespace(id=7)
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.group.helpers._cache_get", return_value=0),
+            patch("handlers.group._get_text_input_value", return_value="ABC-DEF"),
+            patch("handlers.group.DbManager.find_records", return_value=[group]),
+        ):
+            result = handle_join_group_submit_ack({"user": {"id": "U1"}, "view": {}}, MagicMock(), {})
+        assert result is None
+
+    def test_join_group_ack_counts_one_view_once(self):
+        from handlers.group import handle_join_group_submit_ack
+
+        workspace = SimpleNamespace(id=42)
+        store: dict = {}
+
+        def cache_get(key):
+            return store.get(key)
+
+        def cache_set(key, value, ttl=900):
+            store[key] = value
+
+        body = {"user": {"id": "U1"}, "view": {"id": "V1", "state": {"values": {}}}}
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.group.helpers._cache_get", side_effect=cache_get),
+            patch("handlers.group.helpers._cache_set", side_effect=cache_set),
+            patch("handlers.group.DbManager.find_records", return_value=[]),
+        ):
+            handle_join_group_submit_ack(body, MagicMock(), {})
+            handle_join_group_submit_ack(body, MagicMock(), {})
+        assert store[f"group_join_attempts:{workspace.id}"]["count"] == 1
 
     def test_join_by_code_tells_connected_instances(self):
         workspace = SimpleNamespace(id=42, team_id="T1", workspace_name="Workspace A", deleted_at=None)
@@ -549,6 +600,7 @@ def test_invite_workspace_modal_has_one_invite_code_section():
     assert text.count("*Invite Code*") == 1
     assert "External Workspace" not in text
     assert "immediately" not in text
+    assert "on this SyncBot instance" in text
 
 
 @pytest.fixture
