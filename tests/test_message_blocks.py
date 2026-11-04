@@ -7,6 +7,7 @@ from handlers.message import _parse_event_fields
 from helpers.message_blocks import (
     build_content_blocks_for_sync,
     choose_message_text,
+    collect_slack_file_ids_from_blocks,
     event_has_slack_hosted_media_blocks,
     text_from_blocks,
 )
@@ -69,6 +70,24 @@ class TestContentBlocksForSync:
     def test_skips_image_blocks_without_public_url(self):
         blocks = build_content_blocks_for_sync([{"type": "image", "slack_file": {"id": "F123"}, "alt_text": "private"}])
         assert blocks == []
+
+    def test_collects_slack_file_ids_from_image_blocks(self):
+        blocks = [
+            {"type": "image", "slack_file": {"id": "F0EXAMPLE1"}, "alt_text": "one"},
+            {
+                "type": "image",
+                "slack_file": {"url": "https://ws-a.example/files/U0EXAMPLE/F0EXAMPLE2/photo.png"},
+                "alt_text": "two",
+            },
+            {
+                "type": "image",
+                "image_url": "https://files.slack.com/files-pri/T0EXAMPLE-F0EXAMPLE3/photo.png",
+                "alt_text": "three",
+            },
+            {"type": "image", "image_url": "https://ws-a.example/F0EXAMPLE4.png", "alt_text": "public"},
+            {"type": "image", "slack_file": {"id": "F0EXAMPLE1"}, "alt_text": "again"},
+        ]
+        assert collect_slack_file_ids_from_blocks(blocks) == ["F0EXAMPLE1", "F0EXAMPLE2", "F0EXAMPLE3"]
 
     def test_skips_slack_hosted_image_and_video_blocks(self):
         blocks = build_content_blocks_for_sync(
@@ -141,6 +160,45 @@ class TestParseEventUsesBlocks:
         assert all(b["type"] != "actions" for b in ctx["content_blocks"])
         client.conversations_history.assert_not_called()
         client.conversations_replies.assert_not_called()
+
+    def test_bot_message_keeps_the_files_its_images_show(self):
+        body = {
+            "team_id": "T001",
+            "event": {
+                "type": "message",
+                "subtype": "bot_message",
+                "channel": "C001",
+                "text": "Backblast",
+                "ts": "1.0",
+                "blocks": [{"type": "image", "slack_file": {"id": "F0EXAMPLE1"}, "alt_text": "photo"}],
+            },
+        }
+        ctx = _parse_event_fields(body, MagicMock())
+        assert ctx["block_file_ids"] == ["F0EXAMPLE1"]
+
+    def test_bot_message_without_blocks_keeps_the_files_its_images_show(self):
+        body = {
+            "team_id": "T001",
+            "event": {
+                "type": "message",
+                "subtype": "bot_message",
+                "bot_id": "B001",
+                "channel": "C001",
+                "text": "Backblast",
+                "ts": "1.0",
+            },
+        }
+        client = MagicMock()
+        client.conversations_replies.return_value = {
+            "messages": [
+                {
+                    "text": "Backblast",
+                    "blocks": [{"type": "image", "slack_file": {"id": "F0EXAMPLE1"}, "alt_text": "photo"}],
+                }
+            ]
+        }
+        ctx = _parse_event_fields(body, client)
+        assert ctx["block_file_ids"] == ["F0EXAMPLE1"]
 
     def test_bot_message_without_blocks_loads_replies(self):
         body = {

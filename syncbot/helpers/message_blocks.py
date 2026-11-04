@@ -66,6 +66,7 @@ _INTERACTIVE_ACCESSORY = frozenset(
 )
 _BODY_BLOCK_TYPES = frozenset({"section", "header", "rich_text", "context", "markdown"})
 _SLACK_HOSTED_MEDIA_HOSTS = frozenset({"files.slack.com", "slack-files.com"})
+_SLACK_FILE_ID = re.compile(r"^F[0-9A-Z]{8,}$")
 
 
 def is_slack_hosted_media_url(url: object) -> bool:
@@ -220,6 +221,42 @@ def collect_user_ids_from_blocks(blocks: list[dict] | None) -> list[str]:
                 walk(item)
 
     walk(blocks)
+    return ids
+
+
+def _slack_file_id_from_url(url: object) -> str | None:
+    """First Slack file id in a URL path, or None."""
+    if not isinstance(url, str) or not url.strip():
+        return None
+    for segment in urlparse(url).path.split("/"):
+        if not segment:
+            continue
+        for part in segment.split("-"):
+            if _SLACK_FILE_ID.match(part):
+                return part
+    return None
+
+
+def collect_slack_file_ids_from_blocks(blocks: list[dict] | None) -> list[str]:
+    """Slack file ids that image blocks show. The caller reads each id with ``files.info``."""
+    ids: list[str] = []
+    seen: set[str] = set()
+    for raw in blocks or []:
+        if not isinstance(raw, dict) or raw.get("type") != "image":
+            continue
+        found: str | None = None
+        slack_file = raw.get("slack_file")
+        if isinstance(slack_file, dict):
+            file_id = slack_file.get("id")
+            if isinstance(file_id, str) and _SLACK_FILE_ID.match(file_id):
+                found = file_id
+            else:
+                found = _slack_file_id_from_url(slack_file.get("url"))
+        if not found and is_slack_hosted_media_url(raw.get("image_url")):
+            found = _slack_file_id_from_url(raw.get("image_url"))
+        if found and found not in seen:
+            seen.add(found)
+            ids.append(found)
     return ids
 
 
