@@ -299,6 +299,13 @@ def handle_join_group_submit(
         workspace_line=True,
     )
 
+    try:
+        from federation.replicate import replicate_group_invite
+
+        replicate_group_invite(group, workspace_record, notice=notice, announce=True)
+    except Exception:
+        log_warning("federation_replicate_group_invite_failed", group_id=group.id)
+
     from helpers.notifications import notify_group_managers
 
     for member_ws in notify_group_managers(group.id, notice, exclude_workspace_id=workspace_record.id):

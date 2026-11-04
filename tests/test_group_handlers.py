@@ -325,6 +325,35 @@ class TestJoinGroupSubmit:
         assert extra["attempt"] == 1
         assert "code_length" in extra
 
+    def test_join_by_code_tells_connected_instances(self):
+        workspace = SimpleNamespace(id=42, team_id="T1", workspace_name="Workspace A", deleted_at=None)
+        group = SimpleNamespace(id=7, name="Shared")
+        body = {"user": {"id": "U1"}, "view": {"state": {"values": {}}}}
+
+        def create_record(record):
+            record.id = 3
+            return record
+
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.group._get_text_input_value", return_value="ABC-DEF"),
+            patch("handlers.group.helpers._cache_get", return_value=0),
+            patch("handlers.group.DbManager.find_records", side_effect=[[group], []]),
+            patch("handlers.group.DbManager.create_record", side_effect=create_record),
+            patch("handlers.group.helpers.format_admin_label", return_value="Ada Lovelace"),
+            patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
+            patch("handlers.group._activate_group_membership"),
+            patch("helpers.notifications.notify_group_managers", return_value=[]),
+            patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+            patch("federation.replicate.replicate_group_invite") as replicate,
+        ):
+            handle_join_group_submit(body, MagicMock(), MagicMock(), {})
+        replicate.assert_called_once()
+        assert replicate.call_args.args[0] is group
+        assert replicate.call_args.args[1] is workspace
+        assert replicate.call_args.kwargs["announce"] is True
+        assert "Join Group" in replicate.call_args.kwargs["notice"]
+
 
 def test_decline_of_an_invite_from_another_instance_tells_that_instance(real_db):
     from datetime import UTC, datetime
