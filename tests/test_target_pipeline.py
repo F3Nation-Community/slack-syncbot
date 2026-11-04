@@ -618,6 +618,86 @@ def test_empty_create_does_not_post():
     notify.assert_not_called()
 
 
+def _block_refusal():
+    from slack_sdk.errors import SlackApiError
+
+    return SlackApiError("refused", {"ok": False, "error": "invalid_blocks"})
+
+
+def test_create_posts_the_text_when_slack_refuses_the_blocks():
+    blocks = [{"type": "video", "video_url": "https://peer.example/clip"}]
+    with (
+        patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value=None),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch(
+            "helpers.slack_write.get_display_name_and_icon_for_synced_message",
+            return_value=("Ada", "https://icon", True, None),
+        ),
+        patch("helpers.slack_write.post_message", side_effect=[_block_refusal(), {"ts": "9.0"}]) as post,
+        patch("helpers.slack_write.log_warning") as warn,
+    ):
+        ts, _posted = slack_write_create(
+            envelope=_envelope(text="hello", blocks=blocks, mapped_user_id=None),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+        )
+    assert ts == "9.0"
+    assert post.call_count == 2
+    assert post.call_args_list[1].kwargs["blocks"] is None
+    assert post.call_args_list[1].kwargs["msg_text"] == post.call_args_list[0].kwargs["msg_text"]
+    refused = [call for call in warn.call_args_list if call.args and call.args[0] == "slack_write_blocks_refused"]
+    assert len(refused) == 1
+    assert refused[0].kwargs["block_types"] == ["video"]
+
+
+def test_edit_posts_the_text_when_slack_refuses_the_blocks():
+    blocks = [{"type": "video", "video_url": "https://peer.example/clip"}]
+    meta = SimpleNamespace(ts="10.000000", posted_as_user_id=None)
+    with (
+        patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value=None),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch("helpers.slack_write.post_message", side_effect=[_block_refusal(), {"ts": "10.000000"}]) as post,
+        patch("helpers.slack_write.log_warning") as warn,
+    ):
+        result = slack_write_edit(
+            envelope=_envelope(action="edit", text="hello", blocks=blocks, mapped_user_id=None),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+            target_post_meta=meta,
+        )
+    assert result is True
+    assert post.call_count == 2
+    assert post.call_args_list[1].kwargs["blocks"] is None
+    refused = [call for call in warn.call_args_list if call.args and call.args[0] == "slack_write_blocks_refused"]
+    assert len(refused) == 1
+    assert refused[0].kwargs["block_types"] == ["video"]
+
+
+def test_a_create_with_no_blocks_is_not_retried():
+    with (
+        patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
+        patch("helpers.slack_write.get_user_token", return_value=None),
+        patch("helpers.slack_write.WebClient"),
+        patch("helpers.workspace.get_workspace_by_id", return_value=None),
+        patch(
+            "helpers.slack_write.get_display_name_and_icon_for_synced_message",
+            return_value=("Ada", "https://icon", True, None),
+        ),
+        patch("helpers.slack_write.post_message", side_effect=_block_refusal()) as post,
+    ):
+        result = slack_write_create(
+            envelope=_envelope(text="hello", mapped_user_id=None),
+            sync_channel=_sync_channel(),
+            workspace=_workspace(),
+        )
+    assert result == (None, None)
+    assert post.call_count == 1
+
+
 def test_omitted_file_share_ts_does_not_dm():
     def fake_upload(**kwargs):
         after = kwargs.get("after_upload")
