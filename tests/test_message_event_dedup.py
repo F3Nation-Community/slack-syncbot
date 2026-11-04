@@ -167,6 +167,19 @@ class TestRespondToMessageEventDedup:
         mock_new.assert_called_once()
         notify.assert_not_called()
 
+    def test_a_message_that_is_only_a_table_is_copied(self):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "bot_message"
+        body["event"]["text"] = ""
+        body["event"]["blocks"] = [{"type": "table", "rows": [[{"type": "raw_text", "text": "Ada"}]]}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._handle_new_post") as mock_new,
+            patch("handlers.message._build_file_context", return_value=([], [])),
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+        mock_new.assert_called_once()
+
     def test_text_only_no_subtype_still_calls_new_post(self):
         client = MagicMock()
         logger = MagicMock()

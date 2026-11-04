@@ -803,7 +803,7 @@ def respond_to_message_event(
             )
             log_debug("message_skip", reason="empty_file_share", has_files=has_files, **trace)
             return
-        if is_create and text_blank and not has_files and has_targets:
+        if is_create and text_blank and not has_files and not ctx.get("content_blocks") and has_targets:
             log_debug("message_skip", reason="empty_file_share", has_files=has_files, **trace)
             return
         if is_create:
