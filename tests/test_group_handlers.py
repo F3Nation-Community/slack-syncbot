@@ -4,6 +4,8 @@ import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 import constants
 
 os.environ.setdefault("DATABASE_HOST", "localhost")
@@ -351,6 +353,164 @@ def test_invite_workspace_modal_has_one_invite_code_section():
     text = repr(view)
     assert text.count("*Invite Code*") == 1
     assert "External Workspace" not in text
+    assert "immediately" not in text
+
+
+@pytest.fixture
+def real_db(tmp_path):
+    import db as db_mod
+    from db import initialize_database
+    from helpers._cache import clear_all_caches
+
+    url = f"sqlite:///{tmp_path / 'group_handlers.db'}"
+    old_engine = db_mod.GLOBAL_ENGINE
+    old_session = db_mod.GLOBAL_SESSION
+    old_schema = db_mod.GLOBAL_SCHEMA
+    with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
+        try:
+            db_mod.GLOBAL_ENGINE = None
+            db_mod.GLOBAL_SESSION = None
+            db_mod.GLOBAL_SCHEMA = None
+            initialize_database()
+            from federation import core as federation_core
+
+            federation_core._INSTANCE_ID = None
+            federation_core._cached_private_key = None
+            federation_core._cached_public_pem = None
+            federation_core.get_or_create_instance_keypair()
+            clear_all_caches()
+            yield
+        finally:
+            if db_mod.GLOBAL_ENGINE is not None:
+                db_mod.GLOBAL_ENGINE.dispose()
+            db_mod.GLOBAL_ENGINE = old_engine
+            db_mod.GLOBAL_SESSION = old_session
+            db_mod.GLOBAL_SCHEMA = old_schema
+            clear_all_caches()
+
+
+def test_invite_to_a_workspace_on_another_instance_waits_for_accept(real_db):
+    import json
+    from datetime import UTC, datetime
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from db import DbManager, schemas
+    from federation.core import get_instance_id, public_key_fingerprint
+    from handlers.group import handle_invite_workspace_submit
+    from slack.actions import CONFIG_INVITE_WORKSPACE_SELECT
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    private = Ed25519PrivateKey.generate()
+    public = (
+        private.public_key()
+        .public_bytes(
+            serialization.Encoding.PEM,
+            serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        .decode()
+    )
+    fed = DbManager.create_record(
+        schemas.Instance(
+            instance_id=public_key_fingerprint(public),
+            webhook_url="https://peer.example/api/federation",
+            public_key=public,
+            status="active",
+            trust_status="trusted",
+            name="Partner Org",
+            created_at=now,
+        )
+    )
+    inviter = DbManager.create_record(
+        schemas.Workspace(team_id="TLOCAL", workspace_name="Workspace A", instance_id=get_instance_id())
+    )
+    target = DbManager.create_record(
+        schemas.Workspace(team_id="TSTUB", workspace_name="Workspace B", instance_id=fed.instance_id)
+    )
+    group = DbManager.create_record(
+        schemas.WorkspaceGroup(name="Shared", invite_code="GRP-TEST01", status="active", created_at=now, uid="g-1")
+    )
+    body = {
+        "user": {"id": "U1"},
+        "view": {
+            "private_metadata": json.dumps({"group_id": group.id}),
+            "state": {
+                "values": {"b": {CONFIG_INVITE_WORKSPACE_SELECT: {"selected_option": {"value": str(target.id)}}}}
+            },
+        },
+    }
+    with (
+        patch("handlers.group._get_authorized_workspace", return_value=("U1", inviter)),
+        patch("handlers.group.helpers.format_admin_label", return_value="Ada Lovelace"),
+        patch("handlers.group.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        patch("handlers.group.helpers.send_group_invite_dm") as dm,
+        patch("federation.replicate.replicate_group_invite") as replicate,
+        patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+    ):
+        handle_invite_workspace_submit(body, MagicMock(), MagicMock(), {})
+    rows = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == group.id,
+            schemas.WorkspaceGroupMember.workspace_id == target.id,
+            schemas.WorkspaceGroupMember.deleted_at.is_(None),
+        ],
+    )
+    assert len(rows) == 1
+    assert rows[0].status == "pending"
+    assert replicate.call_count == 2
+    first, second = replicate.call_args_list
+    assert first.args[0].id == group.id
+    assert first.args[1].id == inviter.id
+    assert first.kwargs["peer"].instance_id == fed.instance_id
+    assert second.args[0].id == group.id
+    assert second.args[1].id == target.id
+    assert second.kwargs["peer"].instance_id == fed.instance_id
+    assert second.kwargs["invited_by"].id == inviter.id
+    assert "notice" in second.kwargs
+    dm.assert_not_called()
+
+
+def test_invite_picker_lists_a_peer_workspace_only_when_this_workspace_is_shared():
+    from handlers.group import handle_invite_workspace
+
+    workspace = SimpleNamespace(id=1, team_id="T1", instance_id="self")
+    group = SimpleNamespace(id=5, invite_code="GRP-ABC")
+    shared = SimpleNamespace(id=2, team_id="TSHARE", workspace_name="Workspace B", instance_id="peer-b")
+    hidden = SimpleNamespace(id=3, team_id="THIDE", workspace_name="Workspace C", instance_id="peer-c")
+    peer_b = SimpleNamespace(instance_id="peer-b")
+    peer_c = SimpleNamespace(instance_id="peer-c")
+    body = {
+        "trigger_id": "tr",
+        "actions": [{"value": "5"}],
+        "user": {"id": "U1"},
+        "team": {"id": "T1"},
+    }
+
+    def allowed(_workspace, peer):
+        return getattr(peer, "instance_id", None) == "peer-b"
+
+    def peer_for(ws):
+        return peer_b if ws is shared else peer_c
+
+    client = MagicMock()
+    with (
+        patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+        patch("handlers.group.DbManager.get_record", return_value=group),
+        patch("handlers.group.DbManager.find_records", side_effect=[[], [shared, hidden]]),
+        patch("handlers.group.helpers.federation_enabled", return_value=True),
+        patch("helpers.workspace_kind.is_deliverable_workspace", return_value=True),
+        patch("helpers.workspace_kind.is_stub_workspace", return_value=True),
+        patch("helpers.workspace_kind.workspace_allowed_for_peer", side_effect=allowed),
+        patch("helpers.workspace_kind.peer_for_workspace", side_effect=peer_for),
+        patch("handlers.group.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+    ):
+        handle_invite_workspace(body, client, MagicMock(), {})
+    view = client.views_update.call_args.kwargs["view"]
+    text = repr(view)
+    assert "Workspace B" in text
+    assert "Workspace C" not in text
 
 
 class TestCreateGroupSubmitMintsUid:

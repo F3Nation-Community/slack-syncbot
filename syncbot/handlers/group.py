@@ -354,9 +354,21 @@ def handle_invite_workspace(
         schemas.Workspace,
         [schemas.Workspace.deleted_at.is_(None)],
     )
-    from helpers.workspace_kind import is_deliverable_workspace, is_stub_workspace
+    from helpers.workspace_kind import (
+        is_deliverable_workspace,
+        is_stub_workspace,
+        peer_for_workspace,
+        workspace_allowed_for_peer,
+    )
 
-    eligible = [ws for ws in all_workspaces if ws.id not in member_ws_ids and is_deliverable_workspace(ws)]
+    def _listed(ws) -> bool:
+        if not is_deliverable_workspace(ws):
+            return False
+        if is_stub_workspace(ws):
+            return workspace_allowed_for_peer(workspace_record, peer_for_workspace(ws))
+        return True
+
+    eligible = [ws for ws in all_workspaces if ws.id not in member_ws_ids and _listed(ws)]
 
     # Show Oops only when there are no other deliverable workspaces at all (not when everyone is already in the group)
     other_installed = [ws for ws in all_workspaces if is_deliverable_workspace(ws) and ws.id != current_workspace_id]
@@ -402,12 +414,7 @@ def handle_invite_workspace(
                 optional=True,
             )
         )
-        modal_blocks.append(
-            block_context(
-                "A SyncBot DM will be sent to Admins in a local Workspace. "
-                "External stubs are added to the Group immediately.",
-            )
-        )
+        modal_blocks.append(block_context("Admins of that Workspace get a SyncBot DM to accept or decline the invite."))
 
     modal_blocks.append(block_context("\u200b"))
     modal_blocks.append(divider())
@@ -473,6 +480,7 @@ def handle_invite_workspace_submit(
         [
             schemas.WorkspaceGroupMember.group_id == group_id,
             schemas.WorkspaceGroupMember.workspace_id == target_ws_id,
+            schemas.WorkspaceGroupMember.deleted_at.is_(None),
         ],
     )
     if existing:
@@ -481,33 +489,29 @@ def handle_invite_workspace_submit(
         return
 
     acting_user_id = user_id
+    from helpers.workspace_kind import peer_for_workspace, workspace_allowed_for_peer
 
-    # Stub targets join immediately (no DM on the peer); replicate membership.
+    peer = None
     if is_stub_workspace(target_ws):
-        from federation.replicate import replicate_group_invite
-        from helpers.workspace_kind import peer_for_workspace
-
-        member = schemas.WorkspaceGroupMember(
-            group_id=group_id,
-            workspace_id=target_ws_id,
-            status="active",
-            role="member",
-            joined_at=datetime.now(UTC).replace(tzinfo=None),
-            invited_by_slack_user_id=acting_user_id,
-            invited_by_workspace_id=workspace_record.id,
-        )
-        DbManager.create_record(member)
-        replicate_group_invite(group, target_ws)
         peer = peer_for_workspace(target_ws)
-        if peer:
-            replicate_group_invite(group, workspace_record, peer=peer)
-        builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
-        return
-
-    if not is_local_workspace(target_ws) or not helpers.get_bot_token(target_ws):
+        if peer is None or not workspace_allowed_for_peer(workspace_record, peer):
+            log_warning("invite_workspace_submit", target_ws_id=target_ws_id)
+            return
+    elif not is_local_workspace(target_ws) or not helpers.get_bot_token(target_ws):
         log_warning("invite_workspace_submit", target_ws_id=target_ws_id)
         return
 
+    person = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    from helpers.sync_participation import format_action_notice
+
+    invite_text = format_action_notice(
+        action="Invite",
+        workspace_name=helpers.resolve_workspace_name(target_ws),
+        group_name=group.name,
+        manager=person,
+        for_managers=True,
+        workspace_line=True,
+    )
     member = schemas.WorkspaceGroupMember(
         group_id=group_id,
         workspace_id=target_ws_id,
@@ -519,23 +523,17 @@ def handle_invite_workspace_submit(
     )
     DbManager.create_record(member)
 
-    person = helpers.format_admin_label(client, acting_user_id, workspace_record)
+    if peer:
+        from federation.replicate import replicate_group_invite
 
-    from helpers.sync_participation import format_action_notice
-
-    invite_text = format_action_notice(
-        action="Invite",
-        workspace_name=helpers.resolve_workspace_name(target_ws),
-        group_name=group.name,
-        manager=person,
-        for_managers=True,
-        workspace_line=True,
-    )
-    helpers.send_group_invite_dm(member, target_ws, invite_text)
+        replicate_group_invite(group, workspace_record, peer=peer)
+        replicate_group_invite(group, target_ws, peer=peer, notice=invite_text, invited_by=workspace_record)
+    else:
+        helpers.send_group_invite_dm(member, target_ws, invite_text)
+        builders.refresh_home_tab_for_workspace(target_ws, logger, context=None)
 
     log_info("group_invite_sent", group_id=group_id, target_workspace_id=target_ws_id, member_id=member.id)
 
-    builders.refresh_home_tab_for_workspace(target_ws, logger, context=None)
     builders.refresh_home_tab_for_workspace(workspace_record, logger, context=context, user_id=user_id)
 
 

@@ -702,6 +702,20 @@ def test_replicate_group_invite_pushes_peer(real_db):
     assert payload["role"] == "member"
     assert "set_role" not in payload
     assert "notice" not in payload
+    assert "invited_by_team_id" not in payload
+
+
+def test_a_new_invite_names_the_inviting_workspace(real_db):
+    from federation.replicate import replicate_group_invite
+
+    peer = _seed_peer()
+    with (
+        patch("federation.core.push_group_upsert"),
+        patch("federation.core.push_group_invite") as invite,
+    ):
+        replicate_group_invite(peer["group"], peer["stub"], peer=peer["fed"], invited_by=peer["local"])
+    payload = invite.call_args.args[1]
+    assert payload["invited_by_team_id"] == "TLOCAL"
 
 
 def test_replicate_peer_snapshot_pushes_group_and_channels(real_db):
@@ -742,7 +756,10 @@ def test_replicate_peer_snapshot_pushes_group_and_channels(real_db):
     roles = {call.args[1]["team_id"]: call.args[1]["role"] for call in invite.call_args_list}
     assert roles["TLOCAL"] == "owner"
     assert roles["TSTUB"] == "member"
-    assert all("set_role" not in call.args[1] and "notice" not in call.args[1] for call in invite.call_args_list)
+    assert all(
+        "set_role" not in call.args[1] and "notice" not in call.args[1] and "invited_by_team_id" not in call.args[1]
+        for call in invite.call_args_list
+    )
     sync_upsert.assert_called()
     channel_upsert.assert_called()
     channel_payload = channel_upsert.call_args.args[1]
