@@ -2491,9 +2491,6 @@ def test_a_leave_ends_a_pending_invite_for_a_local_workspace(real_db):
             {"uid": peer["group"].uid, "team_id": "TLOCALB", "notice": notice},
             peer["fed"],
         )
-    assert _memberships(peer["group"].id, workspace_b.id) == [] or all(
-        row.id != pending.id for row in _memberships(peer["group"].id, workspace_b.id)
-    )
     remaining = [row for row in _memberships(peer["group"].id, workspace_b.id) if row.id == pending.id]
     assert remaining == []
     update.assert_called_once()
