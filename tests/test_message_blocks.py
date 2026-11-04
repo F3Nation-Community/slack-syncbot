@@ -110,14 +110,73 @@ class TestContentBlocksForSync:
                 },
                 {
                     "type": "video",
-                    "video_url": "https://www.youtube.com/embed/dQw4w9WgXcQ",
+                    "video_url": "https://peer.example/clip",
                     "title": {"type": "plain_text", "text": "public clip"},
                 },
             ]
         )
-        assert [b["type"] for b in blocks] == ["image", "video"]
+        assert [b["type"] for b in blocks] == ["image", "rich_text"]
         assert blocks[0]["image_url"] == "https://gif.example/a.gif"
-        assert blocks[1]["video_url"] == "https://www.youtube.com/embed/dQw4w9WgXcQ"
+        link = blocks[1]["elements"][0]["elements"][0]
+        assert link["url"] == "https://peer.example/clip"
+        assert link["text"] == "public clip"
+
+    def test_keeps_a_table_block(self):
+        blocks = build_content_blocks_for_sync(
+            [
+                {
+                    "type": "table",
+                    "block_id": "tbl",
+                    "rows": [
+                        [{"type": "raw_text", "text": "Ada"}],
+                        [{"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": []}]}],
+                    ],
+                }
+            ]
+        )
+        assert len(blocks) == 1
+        assert blocks[0]["type"] == "table"
+        assert "block_id" not in blocks[0]
+
+    def test_video_link_prefers_its_title_url(self):
+        blocks = build_content_blocks_for_sync(
+            [
+                {
+                    "type": "video",
+                    "video_url": "https://peer.example/clip",
+                    "title_url": "https://peer.example/watch",
+                    "title": {"type": "plain_text", "text": "Watch"},
+                }
+            ]
+        )
+        link = blocks[0]["elements"][0]["elements"][0]
+        assert link["url"] == "https://peer.example/watch"
+
+    def test_drops_slack_file_images_inside_section_and_context(self):
+        blocks = build_content_blocks_for_sync(
+            [
+                {
+                    "type": "section",
+                    "text": {"type": "mrkdwn", "text": "Photo"},
+                    "accessory": {"type": "image", "slack_file": {"id": "F0EXAMPLE1"}, "alt_text": "photo"},
+                },
+                {
+                    "type": "context",
+                    "elements": [
+                        {"type": "image", "slack_file": {"id": "F0EXAMPLE2"}, "alt_text": "photo"},
+                        {"type": "mrkdwn", "text": "Workspace A"},
+                    ],
+                },
+                {
+                    "type": "context",
+                    "elements": [{"type": "image", "slack_file": {"id": "F0EXAMPLE3"}, "alt_text": "only"}],
+                },
+            ]
+        )
+        assert [b["type"] for b in blocks] == ["section", "context"]
+        assert "accessory" not in blocks[0]
+        assert blocks[0]["text"]["text"] == "Photo"
+        assert blocks[1]["elements"] == [{"type": "mrkdwn", "text": "Workspace A"}]
 
     def test_event_has_slack_hosted_media_blocks(self):
         assert event_has_slack_hosted_media_blocks(

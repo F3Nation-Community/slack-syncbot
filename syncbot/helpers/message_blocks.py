@@ -6,7 +6,8 @@ full body is in ``blocks``. ``Show more`` is a client chrome on those blocks,
 not a second payload.
 
 Interactive blocks (buttons, pickers) are dropped: they belong to the source
-app and would be dead controls in the target.
+app and would be dead controls in the target. Tables are copied. A video from
+another site becomes a link. A Slack-file image inside a block is dropped.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ _CONTENT_BLOCK_TYPES = frozenset(
         "rich_text",
         "markdown",
         "video",
+        "table",
     }
 )
 _SLACK_MAX_BLOCKS = 50
@@ -39,7 +41,6 @@ _SKIP_BLOCK_TYPES = frozenset(
         "file",
         "rich_text_input",
         "call",
-        "table",
     }
 )
 _INTERACTIVE_ACCESSORY = frozenset(
@@ -120,18 +121,57 @@ def build_content_blocks_for_sync(blocks: list[dict] | None) -> list[dict]:
             continue
         if btype == "image" and (not raw.get("image_url") or is_slack_hosted_media_url(raw.get("image_url"))):
             continue
-        if btype == "video" and (not raw.get("video_url") or is_slack_hosted_media_url(raw.get("video_url"))):
+        if btype == "video":
+            if not raw.get("video_url") or is_slack_hosted_media_url(raw.get("video_url")):
+                continue
+            link = _build_video_link_block(raw)
+            if link:
+                out.append(link)
             continue
         block = copy.deepcopy(raw)
         block.pop("block_id", None)
         accessory = block.get("accessory")
-        if isinstance(accessory, dict) and accessory.get("type") in _INTERACTIVE_ACCESSORY:
+        if isinstance(accessory, dict) and (
+            accessory.get("type") in _INTERACTIVE_ACCESSORY or _is_slack_file_image(accessory)
+        ):
             block.pop("accessory", None)
+        if btype == "context":
+            elements = [
+                el for el in block.get("elements") or [] if not (isinstance(el, dict) and _is_slack_file_image(el))
+            ]
+            if not elements:
+                continue
+            block["elements"] = elements
         out.append(block)
     if len(out) > _SLACK_MAX_BLOCKS:
         log_warning("content_blocks_trimmed", original=len(out), kept=_SLACK_MAX_BLOCKS)
         out = out[:_SLACK_MAX_BLOCKS]
     return out
+
+
+def _is_slack_file_image(node: dict) -> bool:
+    """True when an image element shows a Slack file the target cannot open."""
+    if node.get("type") != "image":
+        return False
+    if isinstance(node.get("slack_file"), dict):
+        return True
+    return is_slack_hosted_media_url(node.get("image_url"))
+
+
+def _build_video_link_block(block: dict) -> dict | None:
+    """A video from another site, as a link. Slack posts a video block only for the app that owns the video's domain."""
+    title_url = block.get("title_url")
+    video_url = block.get("video_url")
+    url = title_url if isinstance(title_url, str) and title_url.startswith("https://") else video_url
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+    title = block.get("title")
+    title_text = title.get("text") if isinstance(title, dict) else None
+    text = title_text or block.get("alt_text") or url
+    return {
+        "type": "rich_text",
+        "elements": [{"type": "rich_text_section", "elements": [{"type": "link", "url": url, "text": text}]}],
+    }
 
 
 def trim_target_blocks(blocks: list[dict] | None, *, limit: int = _SLACK_MAX_BLOCKS) -> list[dict]:
