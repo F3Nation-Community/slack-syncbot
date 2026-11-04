@@ -353,7 +353,33 @@ class TestJoinGroupSubmit:
             result = handle_join_group_submit_ack({"user": {"id": "U1"}, "view": {}}, MagicMock(), {})
         assert result is None
 
-    def test_join_group_ack_counts_one_view_once(self):
+    def test_join_group_ack_counts_each_submission_once(self):
+        from handlers.group import handle_join_group_submit_ack
+
+        workspace = SimpleNamespace(id=42)
+        store: dict = {}
+
+        def cache_get(key):
+            return store.get(key)
+
+        def cache_set(key, value, ttl=900):
+            store[key] = value
+
+        body = {"trigger_id": "T1", "user": {"id": "U1"}, "view": {"id": "V1", "state": {"values": {}}}}
+        again = {"trigger_id": "T2", "user": {"id": "U1"}, "view": {"id": "V1", "state": {"values": {}}}}
+        with (
+            patch("handlers.group._get_authorized_workspace", return_value=("U1", workspace)),
+            patch("handlers.group.helpers._cache_get", side_effect=cache_get),
+            patch("handlers.group.helpers._cache_set", side_effect=cache_set),
+            patch("handlers.group.DbManager.find_records", return_value=[]),
+        ):
+            handle_join_group_submit_ack(body, MagicMock(), {})
+            handle_join_group_submit_ack(body, MagicMock(), {})
+            assert store[f"group_join_attempts:{workspace.id}"]["count"] == 1
+            handle_join_group_submit_ack(again, MagicMock(), {})
+        assert store[f"group_join_attempts:{workspace.id}"]["count"] == 2
+
+    def test_join_group_ack_counts_a_submission_with_no_trigger_id(self):
         from handlers.group import handle_join_group_submit_ack
 
         workspace = SimpleNamespace(id=42)
@@ -374,7 +400,7 @@ class TestJoinGroupSubmit:
         ):
             handle_join_group_submit_ack(body, MagicMock(), {})
             handle_join_group_submit_ack(body, MagicMock(), {})
-        assert store[f"group_join_attempts:{workspace.id}"]["count"] == 1
+        assert store[f"group_join_attempts:{workspace.id}"]["count"] == 2
 
     def test_join_by_code_tells_connected_instances(self):
         workspace = SimpleNamespace(id=42, team_id="T1", workspace_name="Workspace A", deleted_at=None)

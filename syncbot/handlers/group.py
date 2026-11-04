@@ -224,10 +224,11 @@ def _read_join_code(body: dict) -> str:
     return raw_code
 
 
-def _join_attempt_state(raw) -> dict:
+def _read_join_attempts(raw) -> dict:
+    """Return the stored attempt count and the submission that last counted."""
     if isinstance(raw, dict):
-        return {"count": int(raw.get("count") or 0), "view_id": raw.get("view_id")}
-    return {"count": int(raw or 0), "view_id": None}
+        return {"count": int(raw.get("count") or 0), "trigger_id": raw.get("trigger_id")}
+    return {"count": int(raw or 0), "trigger_id": None}
 
 
 def handle_join_group_submit_ack(body: dict, client: WebClient, context: dict) -> dict | None:
@@ -237,7 +238,7 @@ def handle_join_group_submit_ack(body: dict, client: WebClient, context: dict) -
         return None
     _user_id, workspace_record = auth_result
     rate_key = f"group_join_attempts:{workspace_record.id}"
-    stored = _join_attempt_state(helpers._cache_get(rate_key))
+    stored = _read_join_attempts(helpers._cache_get(rate_key))
     if stored["count"] >= 5:
         log_warning("group_join_rate_limited", workspace_id=workspace_record.id)
         return {
@@ -256,12 +257,13 @@ def handle_join_group_submit_ack(body: dict, client: WebClient, context: dict) -
     )
     if groups:
         return None
-    view_id = helpers.safe_get(body, "view", "id")
-    if view_id and stored["view_id"] == view_id:
+    # In production the ack runs twice for one submission. Count one attempt for each trigger_id.
+    trigger_id = body.get("trigger_id")
+    if trigger_id and stored["trigger_id"] == trigger_id:
         attempt = stored["count"]
     else:
         attempt = stored["count"] + 1
-        helpers._cache_set(rate_key, {"count": attempt, "view_id": view_id}, ttl=900)
+        helpers._cache_set(rate_key, {"count": attempt, "trigger_id": trigger_id}, ttl=900)
     log_warning(
         "group_code_invalid",
         workspace_id=workspace_record.id,
