@@ -1835,6 +1835,7 @@ def handle_workspace_release(body: dict, fed_ws: schemas.Instance) -> tuple[int,
 
 
 def handle_group_leave(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
+    """Mark a membership left. A pending row is an invite. End it as Decline and Cancel do."""
     err = _validate_fields(body, ["uid", "team_id"])
     if err:
         return 400, {"error": err}
@@ -1850,11 +1851,29 @@ def handle_group_leave(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]
     if not ws:
         return 200, {"ok": True}
     _post_carried_group_notice(groups[0].id, body)
+    pending = DbManager.find_records(
+        schemas.WorkspaceGroupMember,
+        [
+            schemas.WorkspaceGroupMember.group_id == groups[0].id,
+            schemas.WorkspaceGroupMember.workspace_id == ws.id,
+            schemas.WorkspaceGroupMember.status == "pending",
+        ],
+    )
+    notice = body.get("notice")
+    if isinstance(notice, str) and notice.strip():
+        for row in pending:
+            helpers.update_group_invite_dms(row, ws, notice.strip())
+    for row in pending:
+        DbManager.delete_records(
+            schemas.WorkspaceGroupMember,
+            [schemas.WorkspaceGroupMember.id == row.id],
+        )
     DbManager.update_records(
         schemas.WorkspaceGroupMember,
         [
             schemas.WorkspaceGroupMember.group_id == groups[0].id,
             schemas.WorkspaceGroupMember.workspace_id == ws.id,
+            schemas.WorkspaceGroupMember.status != "pending",
         ],
         {
             schemas.WorkspaceGroupMember.status: "left",

@@ -217,6 +217,55 @@ def send_group_invite_dm(member: schemas.WorkspaceGroupMember, workspace: schema
     save_dm_messages_to_group_member(member.id, entries)
 
 
+def update_group_invite_dms(
+    member: schemas.WorkspaceGroupMember,
+    workspace: schemas.Workspace | None,
+    new_text: str,
+) -> None:
+    """Replace the original invite DM content with an updated message so the invite
+    is removed and replaced by the success message (e.g. workspace joined the group).
+    """
+    if not member.dm_messages:
+        log_debug("invite_dm_update_skipped", member_id=member.id)
+        return
+    if not workspace or not get_bot_token(workspace):
+        return
+
+    try:
+        entries = json.loads(member.dm_messages)
+    except (ValueError, TypeError):
+        log_warning("invite_dm_messages_invalid", member_id=member.id)
+        return
+
+    if not entries:
+        return
+
+    ws_client = WebClient(token=get_bot_token(workspace))
+    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": new_text}}]
+    for entry in entries:
+        channel_id = entry.get("channel")
+        message_ts = entry.get("ts")
+        if not channel_id or message_ts is None:
+            continue
+        message_ts_str = str(message_ts).strip()
+        if not message_ts_str:
+            continue
+        try:
+            ws_client.chat_update(
+                channel=channel_id,
+                ts=message_ts_str,
+                text=new_text,
+                blocks=blocks,
+            )
+        except Exception as e:
+            log_warning(
+                "invite_dm_update_failed",
+                channel_id=channel_id,
+                ts=message_ts_str,
+                error=str(e),
+            )
+
+
 def save_dm_messages_to_group_member(member_id: int, dm_entries: list[dict]) -> None:
     """Persist DM channel/ts metadata on a group member record for later updates."""
     import json as _json

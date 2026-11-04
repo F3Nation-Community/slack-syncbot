@@ -66,7 +66,7 @@ class TestAcceptGroupInviteAuthorization:
             patch("handlers.group.helpers.resolve_workspace_name", return_value="WS"),
             patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
             patch("handlers.group._activate_group_membership"),
-            patch("handlers.group._update_invite_dms"),
+            patch("handlers.group.helpers.update_group_invite_dms"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
             handle_accept_group_invite(
@@ -110,7 +110,7 @@ class TestAcceptGroupInviteAuthorization:
             patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
             patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
             patch("handlers.group._activate_group_membership"),
-            patch("handlers.group._update_invite_dms") as updated,
+            patch("handlers.group.helpers.update_group_invite_dms") as updated,
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
             patch("federation.replicate.replicate_group_invite") as replicate,
             patch("helpers.notifications.notify_group_managers") as group_dms,
@@ -145,7 +145,7 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
             patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
             patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
-            patch("handlers.group._update_invite_dms"),
+            patch("handlers.group.helpers.update_group_invite_dms"),
             patch("helpers.notifications.notify_group_managers"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
@@ -190,7 +190,7 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
             patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
             patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
-            patch("handlers.group._update_invite_dms"),
+            patch("handlers.group.helpers.update_group_invite_dms"),
             patch("helpers.notifications.notify_group_managers"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
@@ -225,7 +225,7 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
             patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace A"),
             patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
-            patch("handlers.group._update_invite_dms") as updated,
+            patch("handlers.group.helpers.update_group_invite_dms") as updated,
             patch("helpers.notifications.notify_group_managers") as group_dms,
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
@@ -254,7 +254,7 @@ class TestDeclineGroupInviteAuthorization:
             patch("handlers.group.helpers.get_workspace_by_id", return_value=acting),
             patch("handlers.group.helpers.resolve_workspace_name", return_value="Workspace B"),
             patch("handlers.group.helpers.format_admin_label", return_value="`Ada Lovelace (Workspace A)`"),
-            patch("handlers.group._update_invite_dms") as updated,
+            patch("handlers.group.helpers.update_group_invite_dms") as updated,
             patch("helpers.notifications.notify_group_managers"),
             patch("handlers.group.builders.refresh_home_tab_for_workspace"),
         ):
@@ -324,6 +324,172 @@ class TestJoinGroupSubmit:
         assert extra["workspace_id"] == workspace.id
         assert extra["attempt"] == 1
         assert "code_length" in extra
+
+
+def test_decline_of_an_invite_from_another_instance_tells_that_instance(real_db):
+    from datetime import UTC, datetime
+
+    from db import DbManager, schemas
+    from federation.core import get_instance_id, public_key_fingerprint
+    from handlers.group import handle_decline_group_invite
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    private = Ed25519PrivateKey.generate()
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    fed = DbManager.create_record(
+        schemas.Instance(
+            instance_id=public_key_fingerprint(public),
+            webhook_url="https://peer.example/api/federation",
+            public_key=public,
+            status="active",
+            trust_status="trusted",
+            name="Partner Org",
+            created_at=now,
+        )
+    )
+    invited = DbManager.create_record(
+        schemas.Workspace(team_id="TB", workspace_name="Workspace B", instance_id=get_instance_id())
+    )
+    inviter = DbManager.create_record(
+        schemas.Workspace(team_id="TSTUB", workspace_name="Workspace A", instance_id=fed.instance_id)
+    )
+    group = DbManager.create_record(
+        schemas.WorkspaceGroup(name="Shared", invite_code="GRP-TEST01", status="active", created_at=now, uid="g-dec")
+    )
+    member = DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=group.id,
+            workspace_id=invited.id,
+            status="pending",
+            role="member",
+            invited_by_workspace_id=inviter.id,
+        )
+    )
+    body = {"user": {"id": "U1"}, "actions": [{"value": str(member.id)}]}
+    with (
+        patch("handlers.group._get_authorized_workspace", return_value=("U1", invited)),
+        patch("handlers.group.helpers.format_admin_label", return_value="Ada Lovelace"),
+        patch("handlers.group.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        patch("helpers.notifications.notify_group_managers", return_value=[]),
+        patch("handlers.group.helpers.update_group_invite_dms"),
+        patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+        patch("federation.replicate.replicate_group_leave") as leave,
+    ):
+        handle_decline_group_invite(body, MagicMock(), MagicMock(), {})
+    leave.assert_called_once()
+    assert leave.call_args.args[1].id == invited.id
+    assert "Decline" in leave.call_args.kwargs["notice"]
+
+
+def test_decline_of_a_same_instance_invite_stays_here(real_db):
+    from datetime import UTC, datetime
+
+    from db import DbManager, schemas
+    from federation.core import get_instance_id
+    from handlers.group import handle_decline_group_invite
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    instance_id = get_instance_id()
+    invited = DbManager.create_record(
+        schemas.Workspace(team_id="TB", workspace_name="Workspace B", instance_id=instance_id)
+    )
+    inviter = DbManager.create_record(
+        schemas.Workspace(team_id="TA", workspace_name="Workspace A", instance_id=instance_id)
+    )
+    group = DbManager.create_record(
+        schemas.WorkspaceGroup(name="Shared", invite_code="GRP-TEST01", status="active", created_at=now, uid="g-same")
+    )
+    member = DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=group.id,
+            workspace_id=invited.id,
+            status="pending",
+            role="member",
+            invited_by_workspace_id=inviter.id,
+        )
+    )
+    body = {"user": {"id": "U1"}, "actions": [{"value": str(member.id)}]}
+    with (
+        patch("handlers.group._get_authorized_workspace", return_value=("U1", invited)),
+        patch("handlers.group.helpers.format_admin_label", return_value="Ada Lovelace"),
+        patch("handlers.group.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        patch("helpers.notifications.notify_group_managers", return_value=[]),
+        patch("handlers.group.helpers.update_group_invite_dms"),
+        patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+        patch("federation.replicate.replicate_group_leave") as leave,
+    ):
+        handle_decline_group_invite(body, MagicMock(), MagicMock(), {})
+    leave.assert_not_called()
+
+
+def test_cancel_of_an_invite_to_another_instance_tells_that_instance(real_db):
+    from datetime import UTC, datetime
+
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    from db import DbManager, schemas
+    from federation.core import get_instance_id, public_key_fingerprint
+    from handlers.group import handle_cancel_group_invite_confirm
+
+    now = datetime.now(UTC).replace(tzinfo=None)
+    private = Ed25519PrivateKey.generate()
+    public = (
+        private.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    fed = DbManager.create_record(
+        schemas.Instance(
+            instance_id=public_key_fingerprint(public),
+            webhook_url="https://peer.example/api/federation",
+            public_key=public,
+            status="active",
+            trust_status="trusted",
+            name="Partner Org",
+            created_at=now,
+        )
+    )
+    inviter = DbManager.create_record(
+        schemas.Workspace(team_id="TA", workspace_name="Workspace A", instance_id=get_instance_id())
+    )
+    target = DbManager.create_record(
+        schemas.Workspace(team_id="TSTUB", workspace_name="Workspace B", instance_id=fed.instance_id)
+    )
+    group = DbManager.create_record(
+        schemas.WorkspaceGroup(name="Shared", invite_code="GRP-TEST01", status="active", created_at=now, uid="g-can")
+    )
+    member = DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=group.id,
+            workspace_id=target.id,
+            status="pending",
+            role="member",
+            invited_by_workspace_id=inviter.id,
+        )
+    )
+    body = {"user": {"id": "U1"}, "actions": [{"value": str(member.id)}]}
+    with (
+        patch("handlers.group._get_authorized_workspace", return_value=("U1", inviter)),
+        patch("handlers.group.helpers.format_admin_label", return_value="Ada Lovelace"),
+        patch("handlers.group.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
+        patch("handlers.group.helpers.is_workspace_owner", return_value=False),
+        patch("helpers.notifications.notify_group_managers", return_value=[]),
+        patch("handlers.group.helpers.update_group_invite_dms"),
+        patch("handlers.group.builders.refresh_home_tab_for_workspace"),
+        patch("federation.replicate.replicate_group_leave") as leave,
+    ):
+        handle_cancel_group_invite_confirm(body, MagicMock(), MagicMock(), {})
+    leave.assert_called_once()
+    assert leave.call_args.args[1].id == target.id
+    assert "Cancel Invite" in leave.call_args.kwargs["notice"]
 
 
 def test_invite_workspace_modal_has_one_invite_code_section():

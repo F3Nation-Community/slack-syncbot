@@ -2470,6 +2470,53 @@ def test_handle_group_leave_invalidates_local_homes(real_db):
     assert any(call.args[0] == peer["local"].team_id for call in inv.call_args_list)
 
 
+def test_a_leave_ends_a_pending_invite_for_a_local_workspace(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_leave
+
+    peer = _seed_peer()
+    workspace_b = _add_workspace_b(peer)
+    pending = DbManager.create_record(
+        schemas.WorkspaceGroupMember(
+            group_id=peer["group"].id,
+            workspace_id=workspace_b.id,
+            status="pending",
+            role="member",
+            dm_messages='[{"channel": "D1", "ts": "1.0"}]',
+        )
+    )
+    notice = "Invite cancelled."
+    with patch("helpers.update_group_invite_dms") as update:
+        handle_group_leave(
+            {"uid": peer["group"].uid, "team_id": "TLOCALB", "notice": notice},
+            peer["fed"],
+        )
+    assert _memberships(peer["group"].id, workspace_b.id) == [] or all(
+        row.id != pending.id for row in _memberships(peer["group"].id, workspace_b.id)
+    )
+    remaining = [row for row in _memberships(peer["group"].id, workspace_b.id) if row.id == pending.id]
+    assert remaining == []
+    update.assert_called_once()
+    assert update.call_args.args[0].id == pending.id
+    assert update.call_args.args[1].id == workspace_b.id
+    assert update.call_args.args[2] == notice
+
+
+def test_a_leave_ends_a_pending_invite_for_a_peer_workspace(real_db):
+    from db import DbManager, schemas
+    from federation.api import handle_group_leave
+
+    peer = _seed_peer()
+    rows = _memberships(peer["group"].id, peer["stub"].id)
+    DbManager.update_records(
+        schemas.WorkspaceGroupMember,
+        [schemas.WorkspaceGroupMember.id == rows[0].id],
+        {schemas.WorkspaceGroupMember.status: "pending"},
+    )
+    handle_group_leave({"uid": peer["group"].uid, "team_id": "TSTUB"}, peer["fed"])
+    assert _memberships(peer["group"].id, peer["stub"].id) == []
+
+
 def test_handle_group_upsert_invalidates_on_rename(real_db):
     from federation.api import handle_group_upsert
 

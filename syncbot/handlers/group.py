@@ -17,7 +17,7 @@ from handlers._common import (
     _get_text_input_value,
     _parse_private_metadata,
 )
-from logger import log_debug, log_info, log_warning
+from logger import log_info, log_warning
 from slack import actions, orm
 from slack.blocks import context as block_context
 from slack.blocks import divider, section
@@ -621,7 +621,7 @@ def handle_accept_group_invite(
     except Exception:
         log_warning("federation_replicate_group_invite_failed", group_id=group.id)
 
-    _update_invite_dms(member, workspace_record, notice)
+    helpers.update_group_invite_dms(member, workspace_record, notice)
 
     from helpers.notifications import notify_group_managers
 
@@ -773,7 +773,7 @@ def _end_pending_invite(
         for_managers=True,
         workspace_line=True,
     )
-    _update_invite_dms(member, target_ws, notice)
+    helpers.update_group_invite_dms(member, target_ws, notice)
     from helpers.notifications import notify_group_managers
 
     notify_group_managers(
@@ -783,6 +783,7 @@ def _end_pending_invite(
     )
 
     group_id = member.group_id
+    invited_by_id = member.invited_by_workspace_id
 
     DbManager.delete_records(
         schemas.WorkspaceGroupMember,
@@ -790,6 +791,17 @@ def _end_pending_invite(
     )
 
     log_info("group_invite_declined", member_id=member_id, group_id=group_id)
+
+    from helpers.workspace_kind import is_local_workspace, is_stub_workspace
+
+    inviter_ws = helpers.get_workspace_by_id(invited_by_id) if invited_by_id else None
+    if group and target_ws and (is_stub_workspace(target_ws) or not is_local_workspace(inviter_ws)):
+        try:
+            from federation.replicate import replicate_group_leave
+
+            replicate_group_leave(group, target_ws, notice=notice)
+        except Exception:
+            log_warning("federation_replicate_group_leave_failed", group_id=group_id)
 
     all_members = DbManager.find_records(
         schemas.WorkspaceGroupMember,
@@ -811,54 +823,3 @@ def _end_pending_invite(
     if target_ws and not target_ws.deleted_at and helpers.get_bot_token(target_ws):
         with contextlib.suppress(Exception):
             builders.refresh_home_tab_for_workspace(target_ws, logger, context=None)
-
-
-def _update_invite_dms(
-    member: schemas.WorkspaceGroupMember,
-    workspace: schemas.Workspace | None,
-    new_text: str,
-) -> None:
-    """Replace the original invite DM content with an updated message so the invite
-    is removed and replaced by the success message (e.g. workspace joined the group).
-    """
-    import json as _json
-
-    if not member.dm_messages:
-        log_debug("invite_dm_update_skipped", member_id=member.id)
-        return
-    if not workspace or not helpers.get_bot_token(workspace):
-        return
-
-    try:
-        entries = _json.loads(member.dm_messages)
-    except (ValueError, TypeError):
-        log_warning("invite_dm_messages_invalid", member_id=member.id)
-        return
-
-    if not entries:
-        return
-
-    ws_client = WebClient(token=helpers.get_bot_token(workspace))
-    blocks = [{"type": "section", "text": {"type": "mrkdwn", "text": new_text}}]
-    for entry in entries:
-        channel_id = entry.get("channel")
-        message_ts = entry.get("ts")
-        if not channel_id or message_ts is None:
-            continue
-        message_ts_str = str(message_ts).strip()
-        if not message_ts_str:
-            continue
-        try:
-            ws_client.chat_update(
-                channel=channel_id,
-                ts=message_ts_str,
-                text=new_text,
-                blocks=blocks,
-            )
-        except Exception as e:
-            log_warning(
-                "invite_dm_update_failed",
-                channel_id=channel_id,
-                ts=message_ts_str,
-                error=str(e),
-            )
