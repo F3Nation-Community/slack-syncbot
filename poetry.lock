@@ -22,18 +22,18 @@ tz = ["tzdata"]
 
 [[package]]
 name = "boto3"
-version = "1.43.126"
+version = "1.44.3"
 description = "The AWS SDK for Python (Boto3)"
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "boto3-1.43.126-py3-none-any.whl", hash = "sha256:dd701a973b02a73930e546a6a15d13edbfbedc3180bb3d55b0a88678c284ccd6"},
-    {file = "boto3-1.43.126.tar.gz", hash = "sha256:5fda4a3dd2782c134a01d1678911962c2860dd8de8cd10bef168ba1507b371a9"},
+    {file = "boto3-1.44.3-py3-none-any.whl", hash = "sha256:8c9c4844c7ce184494b102983696d6cdb09f5307ec7f238ca4ad5849fb14e26b"},
+    {file = "boto3-1.44.3.tar.gz", hash = "sha256:bba566b5cba78db05c5f6c44d219c8f6fb2cd2b923106f767289e4cd0b87b093"},
 ]
 
 [package.dependencies]
-botocore = ">=1.43.126,<1.44.0"
+botocore = ">=1.44.3,<1.45.0"
 jmespath = ">=0.7.1,<2.0.0"
 s3transfer = ">=0.19.0,<0.20.0"
 
@@ -42,14 +42,14 @@ crt = ["botocore[crt] (>=1.21.0,<2.0a0)"]
 
 [[package]]
 name = "botocore"
-version = "1.43.127"
+version = "1.44.4"
 description = "Low-level, data-driven core of boto 3."
 optional = false
 python-versions = ">=3.10"
 groups = ["dev"]
 files = [
-    {file = "botocore-1.43.127-py3-none-any.whl", hash = "sha256:aa0e3188679a2164a2098a14ea9b59520520cb573aaee9999d852480691e134a"},
-    {file = "botocore-1.43.127.tar.gz", hash = "sha256:93bae360fb3a6f1b8e36593faa8bbbfa05b19866f7a37e9606a98f13394156f8"},
+    {file = "botocore-1.44.4-py3-none-any.whl", hash = "sha256:5a9303fc65e9a133bbc515fbb8d5c486787fb12108c37b2143c1c111c4a46525"},
+    {file = "botocore-1.44.4.tar.gz", hash = "sha256:9f01ec9c9bdd76dfb263bb4efe798229383dce32c942d26b9d9aeb062a979002"},
 ]
 
 [package.dependencies]
@@ -904,14 +904,14 @@ windows-terminal = ["colorama (>=0.4.6)"]
 
 [[package]]
 name = "pymysql"
-version = "1.2.3"
+version = "1.2.4"
 description = "Pure Python MySQL Driver"
 optional = false
 python-versions = ">=3.9"
 groups = ["main"]
 files = [
-    {file = "pymysql-1.2.3-py3-none-any.whl", hash = "sha256:14f1c68e2ed859243ae5ca41ffbe677027fc46bc136a9f0be8a4e928e5e7415a"},
-    {file = "pymysql-1.2.3.tar.gz", hash = "sha256:d5b288529782e536ae171866df3ca9dc4f6cbfb3cc2f18e6f837fbb90dbc262b"},
+    {file = "pymysql-1.2.4-py3-none-any.whl", hash = "sha256:e169bed906168fffd0088925f45b3df024c2775c6fd128da0df773d47c458840"},
+    {file = "pymysql-1.2.4.tar.gz", hash = "sha256:491558165b8e11f3644c5f9cfb30cc9c9111ffd54e53d3aa91b9a0a20be2294f"},
 ]
 
 [package.extras]
@@ -1039,18 +1039,18 @@ slack_sdk = ">=3.38.0,<4"
 
 [[package]]
 name = "slack-sdk"
-version = "3.46.0"
+version = "3.47.0"
 description = "The Slack API Platform SDK for Python"
 optional = false
 python-versions = ">=3.7"
 groups = ["main"]
 files = [
-    {file = "slack_sdk-3.46.0-py2.py3-none-any.whl", hash = "sha256:6286d89da97ea193c853609131515e6f1b3edf86866d6e5aad0dba9dcf1cb72d"},
-    {file = "slack_sdk-3.46.0.tar.gz", hash = "sha256:25215ca293d2954ed759b87573b4c833cb3f82ebff371355936515c688411dbb"},
+    {file = "slack_sdk-3.47.0-py2.py3-none-any.whl", hash = "sha256:8cfab3224d149962ef4313c1430d9ff65b8c3baf09f25988a920858ffa90aaa9"},
+    {file = "slack_sdk-3.47.0.tar.gz", hash = "sha256:824e91a94a5b72a65531e8db0dd63dc4dc6bbad1a219b19582b48d5661c1c707"},
 ]
 
 [package.extras]
-optional = ["SQLAlchemy (>=2.0.54,<3)", "aiodns (>1.0,<3.3) ; python_version < \"3.9\"", "aiodns (>1.0,<4) ; python_version == \"3.9\"", "aiodns (>=4.0.4) ; python_version >= \"3.10\"", "aiohttp (>=3.13.5,<3.14) ; python_version == \"3.9\"", "aiohttp (>=3.14.3,<4) ; python_version >= \"3.10\"", "aiohttp (>=3.7.3,<3.11) ; python_version == \"3.8\"", "aiohttp (>=3.7.3,<3.9) ; python_version == \"3.7\"", "boto3 (<=2)", "websocket-client (>=1,<1.6.2) ; python_version == \"3.7\"", "websocket-client (>=1,<1.9.0) ; python_version == \"3.8\"", "websocket-client (>=1,<1.9.1) ; python_version == \"3.9\"", "websocket-client (>=1.9.2,<2) ; python_version >= \"3.10\"", "websockets (>=16.1.1,<17) ; python_version >= \"3.10\"", "websockets (>=9.1,<12) ; python_version == \"3.7\"", "websockets (>=9.1,<14) ; python_version == \"3.8\"", "websockets (>=9.1,<16) ; python_version == \"3.9\""]
+optional = ["SQLAlchemy (>=2.0.55,<3)", "aiodns (>1.0,<3.3) ; python_version < \"3.9\"", "aiodns (>1.0,<4) ; python_version == \"3.9\"", "aiodns (>=4.0.4) ; python_version >= \"3.10\"", "aiohttp (>=3.13.5,<3.14) ; python_version == \"3.9\"", "aiohttp (>=3.14.5,<4) ; python_version >= \"3.10\"", "aiohttp (>=3.7.3,<3.11) ; python_version == \"3.8\"", "aiohttp (>=3.7.3,<3.9) ; python_version == \"3.7\"", "boto3 (<=2)", "websocket-client (>=1,<1.6.2) ; python_version == \"3.7\"", "websocket-client (>=1,<1.9.0) ; python_version == \"3.8\"", "websocket-client (>=1,<1.9.1) ; python_version == \"3.9\"", "websocket-client (>=1.9.2,<2) ; python_version >= \"3.10\"", "websockets (>=16.1.1,<17) ; python_version >= \"3.10\"", "websockets (>=9.1,<12) ; python_version == \"3.7\"", "websockets (>=9.1,<14) ; python_version == \"3.8\"", "websockets (>=9.1,<16) ; python_version == \"3.9\""]
 
 [[package]]
 name = "sqlalchemy"
