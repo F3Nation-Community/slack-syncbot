@@ -655,7 +655,7 @@ class TestRespondToMessageEventDedup:
         mock_new.assert_not_called()
         assert build_fc.call_args.args[0]["event"]["files"][0]["id"] == "F1"
 
-    def test_hosted_file_download_shortfall_dms_even_with_image_block(self):
+    def test_hosted_file_download_shortfall_still_posts_with_an_image_block(self):
         body = _message_body(event_id="")
         body["event"]["subtype"] = "file_share"
         body["event"]["text"] = "caption"
@@ -682,10 +682,13 @@ class TestRespondToMessageEventDedup:
 
         mock_new.assert_called_once()
         mock_reply.assert_not_called()
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["source_client"] is client
+        # The DM goes out once, after fan-out, from the post handler (_notify_author).
+        notify.assert_not_called()
+        ctx = mock_new.call_args.args[3]
+        assert ctx["files_failed"] is True
+        assert "download_empty" in ctx["degraded"]
 
-    def test_thread_reply_without_parent_releases_claim(self, event_db):
+    def test_thread_reply_without_parent_hands_off_and_completes(self, event_db):
         body = _message_body()
         body["event"]["ts"] = "1234567890.000002"
         body["event"]["thread_ts"] = "1234567890.000001"
@@ -698,16 +701,19 @@ class TestRespondToMessageEventDedup:
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message.helpers.get_post_records", side_effect=_no_parent),
+            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
             patch("handlers.message._build_file_context", return_value=([], [])),
             patch("handlers.message._handle_new_post") as mock_new,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
-        assert lookups["n"] == 2
+        # The parent's create replays the reply, so the claim completes and Slack's resend is a duplicate.
+        assert lookups["n"] == 1
+        hand_off.assert_called_once()
         mock_new.assert_not_called()
 
-    def test_edit_without_post_meta_releases_claim(self, event_db):
+    def test_edit_without_post_meta_hands_off_and_completes(self, event_db):
         body = _message_body()
         body["event"]["subtype"] = "message_changed"
         body["event"]["message"] = {"ts": "1234567890.000001", "text": "edited"}
@@ -721,6 +727,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message.helpers.get_post_records", side_effect=_no_meta),
+            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
             patch("handlers.message._build_file_context", return_value=([], [])),
             patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
         ):
@@ -739,10 +746,11 @@ class TestRespondToMessageEventDedup:
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
-        assert lookups["n"] == 2
+        assert lookups["n"] == 1
+        hand_off.assert_called_once()
         pipeline.assert_not_called()
 
-    def test_delete_without_post_meta_releases_claim(self, event_db):
+    def test_delete_without_post_meta_hands_off_and_completes(self, event_db):
         body = _message_body()
         body["event"]["subtype"] = "message_deleted"
         body["event"]["previous_message"] = {"ts": "1234567890.000001"}
@@ -757,6 +765,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message._try_handle_reaction_notice_delete", return_value=False),
             patch("handlers.message.helpers.get_post_records", side_effect=_no_meta),
+            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
             patch("handlers.message._build_file_context", return_value=([], [])),
             patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
         ):
@@ -775,7 +784,8 @@ class TestRespondToMessageEventDedup:
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
-        assert lookups["n"] == 2
+        assert lookups["n"] == 1
+        hand_off.assert_called_once()
         pipeline.assert_not_called()
 
     def test_duplicate_event_id_syncs_once(self, event_db):
@@ -944,17 +954,18 @@ class TestHandleReactionClaim:
             handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_run.assert_called_once()
 
-    def test_reaction_without_post_meta_releases_claim_for_retry(self, event_db):
+    def test_reaction_without_post_meta_hands_off_and_completes(self, event_db):
         body = self._reaction_body()
-        records = [(MagicMock(), MagicMock(), MagicMock())]
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
-            patch("handlers.reaction_event.helpers.get_post_records", side_effect=[[], records]),
+            patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.hand_off_follow_up", return_value=[]) as hand_off,
             patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
             handle_reaction(body, MagicMock(), MagicMock(), {})
-        mock_sync.assert_called_once()
+        hand_off.assert_called_once_with("T001", "C001", "123.000001", "reaction|reaction_added|U001|thumbsup")
+        mock_sync.assert_not_called()
 
     def test_unconfigured_channel_skips_post_meta_and_completes_claim(self, event_db):
         body = self._reaction_body()

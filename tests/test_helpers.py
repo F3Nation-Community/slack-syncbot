@@ -490,6 +490,14 @@ class TestResolveChannelReferences:
         result = resolve_channel_references(f"see {url}", client, ws)
         assert result == f"see <{url}|message in #announcements (Workspace A)>"
 
+    def test_dm_permalink_is_labeled_with_the_workspace(self):
+        client = MagicMock()
+        client.conversations_info.return_value = {"channel": {"id": "D0DIRECT", "is_im": True}}
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/D0DIRECT/p1234567890123456"
+        result = resolve_channel_references(f"see {url}", client, ws)
+        assert result == f"see <{url}|message in Workspace A>"
+
     def test_message_permalink_keeps_existing_display_text(self):
         client = self._make_client(channel_name="announcements")
         ws = self._make_workspace(team_id="T123", name="Workspace A")

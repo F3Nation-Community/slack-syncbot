@@ -92,8 +92,13 @@ def handle_reaction(
         reacted_records = helpers.get_post_records(msg_ts)
         if not reacted_records:
             log_debug("reaction_no_post_meta", msg_ts=msg_ts, channel_id=channel_id)
-            # Message PostMeta may still be in flight; do not complete the claim.
-            return False
+            # The message's create may still be running: hand this reaction to it.
+            note = helpers.pack_reaction_note(event_type, user_id, reaction) if user_id else None
+            if not note:
+                return
+            reacted_records = helpers.hand_off_follow_up(team_id, channel_id, msg_ts, note)
+            if not reacted_records:
+                return
         _sync_reaction_records(body, client, reacted_records)
 
     run_claimed(body, _sync_reaction)

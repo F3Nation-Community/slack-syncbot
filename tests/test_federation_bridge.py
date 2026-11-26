@@ -3311,3 +3311,27 @@ def test_teams_payload_carries_this_app_name(real_db, monkeypatch):
     ):
         payload = teams_allowlist_payload(peer["fed"].instance_id)
     assert payload["app_name"] == "SyncBot (Test)"
+
+
+def test_handle_message_answers_ok_false_or_a_reduced_copy(real_db):
+    from federation.api import handle_message
+    from helpers.sync_apply import ApplyOutcome
+
+    peer = _seed_peer()
+    _seed_inbound_channel(peer)
+    body = {"kind": "message", "action": "create", "post_id": "pid-9", "channel_id": "CLOCAL", "text": "hi"}
+    with (
+        patch("federation.api._prepare_inbound_envelope"),
+        patch("federation.api.apply_target", return_value=ApplyOutcome(error="channel_not_found")),
+    ):
+        status, resp = handle_message(dict(body), peer["fed"])
+    assert status == 200
+    assert resp["ok"] is False
+    assert resp["error"] == "channel_not_found"
+
+    with (
+        patch("federation.api._prepare_inbound_envelope"),
+        patch("federation.api.apply_target", return_value=ApplyOutcome(ts="7.000001", error="invalid_blocks")),
+    ):
+        status, resp = handle_message(dict(body, post_id="pid-10"), peer["fed"])
+    assert (status, resp["ok"], resp["ts"], resp["error"]) == (200, True, "7.000001", "invalid_blocks")

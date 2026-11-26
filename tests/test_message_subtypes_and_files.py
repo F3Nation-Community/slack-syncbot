@@ -133,11 +133,12 @@ class TestMessageSubtypeAllowlist:
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         new_post.assert_called_once()
         ctx = new_post.call_args.args[3]
-        assert "test message" in ctx["msg_text"]
-        assert "https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469" in ctx["msg_text"]
-        assert ctx["attachments"][0]["author_name"] == "Ada Lovelace"
-        assert ctx["attachments"][0]["author_link"].endswith("p1733497200423469")
-        assert "is_share" not in ctx["attachments"][0]
+        assert ctx["msg_text"] == "<https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469>"
+        card = ctx["attachments"][0]
+        assert set(card) == {"fallback", "blocks"}
+        header = card["blocks"][0]["elements"][-1]["text"]
+        assert header.startswith("*<https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469|Ada Lovelace>*")
+        assert card["blocks"][-1] == {"type": "section", "text": {"type": "mrkdwn", "text": "test message"}}
 
 
 class TestHostedFiles:
@@ -570,7 +571,7 @@ class TestFederationInboundReplyBroadcast:
 
 
 class TestDeliverRemoteFileContract:
-    def test_stage_fail_dms_and_skips_push(self):
+    def test_stage_fail_reports_and_skips_push(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -583,21 +584,18 @@ class TestDeliverRemoteFileContract:
         sc = MagicMock()
         sc.channel_id = "C1"
         sc.id = 1
-        source_client = MagicMock()
         with (
             patch("federation.deliver._stage_files_to_peer", return_value=False),
             patch("federation.deliver.push_message") as push,
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=source_client)
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
         push.assert_not_called()
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["source_client"] is source_client
-        assert notify.call_args.kwargs["source_user_id"] == "U001"
+        assert errors == [("stage_failed", False)]
 
-    def test_parent_missing_does_not_dm(self):
+    def test_parent_missing_is_a_skip(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -612,12 +610,12 @@ class TestDeliverRemoteFileContract:
         sc.id = 1
         with (
             patch("federation.deliver.push_message", return_value={"_http_status": 409, "error": "parent_missing"}),
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
-        notify.assert_not_called()
+        assert errors == []
 
     def test_incomplete_file_restages_then_succeeds(self):
         from federation.deliver import deliver_remote
@@ -641,17 +639,17 @@ class TestDeliverRemoteFileContract:
                     {"_http_status": 200, "ok": True, "ts": "11.000001"},
                 ],
             ) as push,
-            patch("federation.deliver.notify_source_user_error") as notify,
             patch("federation.deliver.DbManager.create_records"),
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert len(created) == 1
         assert stage.call_count == 2
         assert push.call_count == 2
-        notify.assert_not_called()
+        assert errors == []
 
-    def test_incomplete_file_second_409_dms(self):
+    def test_incomplete_file_second_409_reports(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -670,15 +668,14 @@ class TestDeliverRemoteFileContract:
                 "federation.deliver.push_message",
                 return_value={"_http_status": 409, "error": "incomplete_file"},
             ),
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["details"]["reason"] == "incomplete_file"
+        assert errors == [("incomplete_file", False)]
 
-    def test_assemble_failed_dms_without_another_upload(self):
+    def test_assemble_failed_reports_without_another_upload(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -697,16 +694,14 @@ class TestDeliverRemoteFileContract:
                 "federation.deliver.push_message",
                 return_value={"_http_status": 409, "error": "assemble_failed"},
             ) as push,
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
         assert stage.call_count == 1
         assert push.call_count == 1
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["details"]["reason"] == "assemble_failed"
-        assert notify.call_args.kwargs["details"]["error"] == "assemble_failed"
+        assert errors == [("assemble_failed", False)]
 
 
 def _sync_patches():

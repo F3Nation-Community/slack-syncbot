@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from helpers.envelope import build_envelope, get_post_id_for_post_records
+from helpers.message_blocks import NOTE_COPY_DIFFERS
 from helpers.slack_write import (
     pick_write_token,
     slack_write_create,
@@ -126,7 +127,7 @@ def test_user_owned_delete_skips_when_sticky_token_is_missing():
             target_post_meta=meta,
         )
 
-    assert result is False
+    assert result == (False, "no_user_token")
     write.assert_not_called()
 
 
@@ -147,7 +148,7 @@ def test_user_owned_edit_falls_back_to_bot_when_sticky_token_is_missing():
             target_post_meta=meta,
         )
 
-    assert result is True
+    assert result == (True, None)
     assert write.call_args.kwargs["bot_token"] == "xoxb-bot"
     remember.assert_not_called()
 
@@ -168,12 +169,12 @@ def test_sticky_user_token_is_used_for_edit_and_delete_and_echoed():
             sync_channel=_sync_channel(),
             workspace=_workspace(),
             target_post_meta=meta,
-        )
+        ) == (True, None)
         assert slack_write_delete(
             sync_channel=_sync_channel(),
             workspace=_workspace(),
             target_post_meta=meta,
-        )
+        ) == (True, None)
 
     assert post.call_args.kwargs["bot_token"] == "xoxp-user"
     assert delete.call_args.kwargs["bot_token"] == "xoxp-user"
@@ -478,6 +479,7 @@ def test_run_sync_pipeline_skips_peer_when_origin_not_allowed():
         patch("helpers.workspace.get_workspace_by_id", return_value=SimpleNamespace(id=1)),
         patch("helpers.sync_pipeline.get_post_records_for_post_id", return_value=[]),
         patch("federation.deliver.deliver_remote") as deliver,
+        patch("helpers.sync_pipeline.log_info") as info,
     ):
         result = run_sync_pipeline(
             _envelope(source_workspace_id=1),
@@ -486,6 +488,8 @@ def test_run_sync_pipeline_skips_peer_when_origin_not_allowed():
 
     assert result == []
     deliver.assert_not_called()
+    skips = [c for c in info.call_args_list if c.args and c.args[0] == "pipeline_skip"]
+    assert skips[0].kwargs["reason"] == "origin_not_allowed"
 
 
 def test_run_sync_pipeline_applies_once_per_unique_target():
@@ -606,7 +610,6 @@ def test_empty_create_does_not_post():
             return_value=("Ada", "https://icon", True, None),
         ),
         patch("helpers.slack_write.post_message") as post,
-        patch("helpers.slack_write.notify_source_user_error") as notify,
     ):
         result = slack_write_create(
             envelope=_envelope(text="", mapped_user_id=None),
@@ -614,9 +617,8 @@ def test_empty_create_does_not_post():
             workspace=_workspace(),
         )
 
-    assert result[:2] == (None, None)
+    assert result == (None, None, "empty_message_create")
     post.assert_not_called()
-    notify.assert_not_called()
 
 
 def _block_refusal():
@@ -639,15 +641,15 @@ def test_create_posts_the_text_when_slack_refuses_the_blocks():
         patch("helpers.slack_write.post_message", side_effect=[_block_refusal(), {"ts": "9.0"}]) as post,
         patch("helpers.slack_write.log_warning") as warn,
     ):
-        ts, _posted, _error = slack_write_create(
+        ts, _posted, error = slack_write_create(
             envelope=_envelope(text="hello", blocks=blocks, mapped_user_id=None),
             sync_channel=_sync_channel(),
             workspace=_workspace(),
         )
-    assert ts == "9.0"
+    assert (ts, error) == ("9.0", "invalid_blocks")
     assert post.call_count == 2
     assert post.call_args_list[1].kwargs["blocks"] is None
-    assert post.call_args_list[1].kwargs["msg_text"] == post.call_args_list[0].kwargs["msg_text"]
+    assert post.call_args_list[1].kwargs["msg_text"] == f"hello\n_{NOTE_COPY_DIFFERS}_"
     refused = [call for call in warn.call_args_list if call.args and call.args[0] == "slack_write_blocks_refused"]
     assert len(refused) == 1
     assert refused[0].kwargs["block_types"] == ["video"]
@@ -670,9 +672,10 @@ def test_edit_posts_the_text_when_slack_refuses_the_blocks():
             workspace=_workspace(),
             target_post_meta=meta,
         )
-    assert result is True
+    assert result == (True, "invalid_blocks")
     assert post.call_count == 2
     assert post.call_args_list[1].kwargs["blocks"] is None
+    assert post.call_args_list[1].kwargs["msg_text"] == f"hello\n_{NOTE_COPY_DIFFERS}_"
     refused = [call for call in warn.call_args_list if call.args and call.args[0] == "slack_write_blocks_refused"]
     assert len(refused) == 1
     assert refused[0].kwargs["block_types"] == ["video"]
@@ -707,13 +710,13 @@ def test_file_share_posts_the_text_when_slack_refuses_the_blocks():
             workspace=_workspace(),
             source_client=source_client,
         )
-    assert result[:2] == ("20.0", None)
+    assert result == ("20.0", None, "invalid_blocks")
     post.assert_not_called()
     assert upload.call_count == 2
     assert upload.call_args_list[0].kwargs["blocks"] == blocks
     assert upload.call_args_list[0].kwargs["initial_comment"] is None
     assert upload.call_args_list[1].kwargs["blocks"] is None
-    assert upload.call_args_list[1].kwargs["initial_comment"] == "hello"
+    assert upload.call_args_list[1].kwargs["initial_comment"] == f"hello\n_{NOTE_COPY_DIFFERS}_"
     assert upload.call_args_list[1].kwargs["username"] == "Ada"
     refused = [call for call in warn.call_args_list if call.args and call.args[0] == "slack_write_blocks_refused"]
     assert len(refused) == 1
@@ -741,7 +744,7 @@ def test_a_create_with_no_blocks_is_not_retried():
     assert post.call_count == 1
 
 
-def test_omitted_file_share_ts_does_not_dm():
+def test_omitted_file_share_ts_remembers_the_pending_share():
     def fake_upload(**kwargs):
         after = kwargs.get("after_upload")
         if after:
@@ -757,7 +760,6 @@ def test_omitted_file_share_ts_does_not_dm():
         patch("helpers.slack_write.upload_files_to_slack", side_effect=fake_upload),
         patch("helpers.slack_write.remember_user_action") as remember,
         patch("helpers.slack_write.remember_pending_file_share") as pending,
-        patch("helpers.slack_write.notify_source_user_error") as notify,
     ):
         result = slack_write_create(
             envelope=_envelope(text="", file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}]),
@@ -765,9 +767,8 @@ def test_omitted_file_share_ts_does_not_dm():
             workspace=_workspace(),
         )
 
-    assert result[:2] == (None, "U_TARGET")
+    assert result == (None, "U_TARGET", None)
     post.assert_not_called()
-    notify.assert_not_called()
     pending.assert_called_once_with(
         "T_TARGET",
         "C_TARGET",
@@ -781,8 +782,7 @@ def test_omitted_file_share_ts_does_not_dm():
     assert call("T_TARGET", "U_TARGET", "file", "F99") in remember.call_args_list
 
 
-def test_file_upload_failure_dms_source_user():
-    source_client = MagicMock()
+def test_file_upload_failure_without_a_slack_code_is_raised_for_a_retry():
     with (
         patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
         patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
@@ -793,20 +793,15 @@ def test_file_upload_failure_dms_source_user():
             "helpers.slack_write.upload_files_to_slack",
             side_effect=RuntimeError("file upload POST returned 500"),
         ),
-        patch("helpers.slack_write.notify_source_user_error") as notify,
+        pytest.raises(RuntimeError),
     ):
-        result = slack_write_create(
+        slack_write_create(
             envelope=_envelope(text="", file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}]),
             sync_channel=_sync_channel(),
             workspace=_workspace(),
-            source_client=source_client,
+            source_client=MagicMock(),
         )
-
-    assert result[:2] == (None, None)
     post.assert_not_called()
-    notify.assert_called_once()
-    assert notify.call_args.kwargs["source_client"] is source_client
-    assert notify.call_args.kwargs["source_user_id"] == "U_SOURCE"
 
 
 def test_file_upload_slack_error_uses_error_code():
@@ -823,7 +818,6 @@ def test_file_upload_slack_error_uses_error_code():
             "helpers.slack_write.upload_files_to_slack",
             side_effect=SlackApiError("denied", {"ok": False, "error": "storage_limit_reached"}),
         ),
-        patch("helpers.slack_write.notify_source_user_error") as notify,
     ):
         result = slack_write_create(
             envelope=_envelope(text="", file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}]),
@@ -832,8 +826,5 @@ def test_file_upload_slack_error_uses_error_code():
             source_client=source_client,
         )
 
-    assert result[:2] == (None, None)
+    assert result == (None, None, "storage_limit_reached")
     post.assert_not_called()
-    notify.assert_called_once()
-    assert notify.call_args.kwargs["details"]["error"] == "storage_limit_reached"
-    assert "file storage is full" in notify.call_args.kwargs["summary"]

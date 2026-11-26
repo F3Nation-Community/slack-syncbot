@@ -145,7 +145,7 @@ class TestSkipOrigin:
 
 
 class TestHandleReactionClaim:
-    def test_empty_post_records_releases_claim(self):
+    def test_empty_post_records_hands_off_to_the_create(self):
         from handlers.reaction_event import handle_reaction
 
         body = {
@@ -170,12 +170,15 @@ class TestHandleReactionClaim:
             patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
             patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.hand_off_follow_up", return_value=[]) as hand_off,
             patch("handlers.reaction_event.log_debug") as log_debug,
             patch("handlers.reaction_event.run_claimed", side_effect=_run),
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
 
-        assert captured["result"] is False
+        # Handed to the message's create; the claim completes.
+        assert captured["result"] is None
+        hand_off.assert_called_once_with("T1", "C1", "1.000000", "reaction|reaction_added|U1|eyes")
         log_debug.assert_called_once()
         assert log_debug.call_args.args[0] == "reaction_no_post_meta"
 
