@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.db_fixtures import lock_is_held
+
 os.environ.setdefault("DATABASE_HOST", "localhost")
 os.environ.setdefault("DATABASE_USER", "root")
 os.environ.setdefault("DATABASE_PASSWORD", "test")
@@ -47,37 +49,37 @@ def _age_lock(name, minutes):
 
 
 def test_only_one_run_takes_the_lock(real_db):
-    from db.run_lock import acquire_lock, is_lock_held, release_lock
+    from db.run_lock import acquire_lock, release_lock
 
     token = acquire_lock("job", TTL)
     assert token
     assert acquire_lock("job", TTL) is None
-    assert is_lock_held("job", TTL) is True
+    assert lock_is_held("job", TTL) is True
     release_lock("job", token)
-    assert is_lock_held("job", TTL) is False
+    assert lock_is_held("job", TTL) is False
     assert acquire_lock("job", TTL)
 
 
 def test_another_token_cannot_release_the_lock(real_db):
-    from db.run_lock import acquire_lock, is_lock_held, release_lock
+    from db.run_lock import acquire_lock, release_lock
 
     acquire_lock("job", TTL)
     release_lock("job", "not-the-owner")
-    assert is_lock_held("job", TTL) is True
+    assert lock_is_held("job", TTL) is True
 
 
 def test_an_expired_lock_is_taken_over(real_db):
-    from db.run_lock import acquire_lock, is_lock_held, release_lock
+    from db.run_lock import acquire_lock, release_lock
 
     stale = acquire_lock("job", TTL)
     _age_lock("job", 11)
-    assert is_lock_held("job", TTL) is False
+    assert lock_is_held("job", TTL) is False
     with patch("db.run_lock.log_warning") as log_warning:
         fresh = acquire_lock("job", TTL)
     assert fresh and fresh != stale
     assert log_warning.call_args.args[0] == "run_lock_expired"
     release_lock("job", stale)
-    assert is_lock_held("job", TTL) is True
+    assert lock_is_held("job", TTL) is True
 
 
 def test_a_lock_inside_its_ttl_is_not_taken_over(real_db):
@@ -160,7 +162,7 @@ def test_scheduled_purge_waits_for_the_lock(real_db):
 
 
 def test_scheduled_purge_releases_the_lock(real_db):
-    from db.run_lock import DATA_MAINTENANCE, is_lock_held
+    from db.run_lock import DATA_MAINTENANCE
     from helpers._cache import _cache_delete, _cache_get
 
     _cache_delete("purge_check")
@@ -169,7 +171,7 @@ def test_scheduled_purge_releases_the_lock(real_db):
     def _purge(_days):
         from helpers.notifications import PurgeResult
 
-        seen.append(is_lock_held(DATA_MAINTENANCE, TTL))
+        seen.append(lock_is_held(DATA_MAINTENANCE, TTL))
         return PurgeResult()
 
     try:
@@ -178,7 +180,7 @@ def test_scheduled_purge_releases_the_lock(real_db):
 
             purge_stale_soft_deletes()
         assert seen == [True]
-        assert is_lock_held(DATA_MAINTENANCE, TTL) is False
+        assert lock_is_held(DATA_MAINTENANCE, TTL) is False
         assert _cache_get("purge_check") is True
     finally:
         _cache_delete("purge_check")
@@ -207,7 +209,7 @@ def test_scheduled_purge_retries_soon_when_the_lock_cannot_be_taken(real_db):
 
 
 def test_a_failed_scheduled_purge_waits_the_full_day(real_db):
-    from db.run_lock import DATA_MAINTENANCE, is_lock_held
+    from db.run_lock import DATA_MAINTENANCE
     from helpers._cache import _cache_delete
 
     _cache_delete("purge_check")
@@ -220,7 +222,7 @@ def test_a_failed_scheduled_purge_waits_the_full_day(real_db):
 
             assert purge_stale_soft_deletes() == 0
         assert [call.kwargs["ttl"] for call in cache_set.call_args_list] == [86400]
-        assert is_lock_held(DATA_MAINTENANCE, TTL) is False
+        assert lock_is_held(DATA_MAINTENANCE, TTL) is False
     finally:
         _cache_delete("purge_check")
 
@@ -229,7 +231,7 @@ def test_hold_lock_keeps_the_lock_fresh_and_releases_it(real_db):
     import time
 
     from db import DbManager, schemas
-    from db.run_lock import hold_lock, is_lock_held
+    from db.run_lock import hold_lock
 
     def _taken_at():
         rows = DbManager.find_records(schemas.InstanceSetting, [schemas.InstanceSetting.key == "lock:job"])
@@ -241,17 +243,17 @@ def test_hold_lock_keeps_the_lock_fresh_and_releases_it(real_db):
         first = _taken_at()
         time.sleep(0.4)
         assert _taken_at() > first
-        assert is_lock_held("job", short) is True
-    assert is_lock_held("job", TTL) is False
+        assert lock_is_held("job", short) is True
+    assert lock_is_held("job", TTL) is False
 
 
 def test_hold_lock_yields_none_while_another_run_holds_it(real_db):
-    from db.run_lock import acquire_lock, hold_lock, is_lock_held
+    from db.run_lock import acquire_lock, hold_lock
 
     acquire_lock("job", TTL)
     with hold_lock("job", TTL) as token:
         assert token is None
-    assert is_lock_held("job", TTL) is True
+    assert lock_is_held("job", TTL) is True
 
 
 def test_refresh_reports_a_lock_that_was_taken_over(real_db):

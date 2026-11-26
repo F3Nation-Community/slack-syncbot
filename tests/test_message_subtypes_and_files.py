@@ -461,8 +461,6 @@ class TestFederationInboundReplyBroadcast:
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sc, ws)),
             patch.object(federation_api, "_resolve_mentions_for_federated", side_effect=lambda text, *_a, **_k: text),
             patch.object(federation_api, "_source_stub_id", return_value=None),
-            patch("federation.api.helpers.decrypt_bot_token", return_value="xoxb"),
-            patch("federation.api.helpers.resolve_channel_references", side_effect=lambda text, *_a, **_k: text),
             patch("federation.api.WebClient"),
             patch("helpers.post_meta.get_target_post_meta", return_value=None),
             patch.object(federation_api, "_get_post_records", return_value=[]),

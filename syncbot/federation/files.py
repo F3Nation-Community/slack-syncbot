@@ -65,25 +65,6 @@ def purge_expired_file_parts(session=None) -> int:
             close_session(session)
 
 
-def delete_parts_for_sha(sha256: str, session=None) -> None:
-    own_session = session is None
-    if own_session:
-        session = get_session()
-    try:
-        session.query(schemas.FederationFilePart).filter(schemas.FederationFilePart.sha256 == sha256).delete(
-            synchronize_session=False
-        )
-        if own_session:
-            session.commit()
-    except Exception:
-        if own_session:
-            session.rollback()
-        raise
-    finally:
-        if own_session:
-            close_session(session)
-
-
 def _parts_complete_from_rows(rows: list) -> bool:
     """True when *rows* are ``(part_index, part_total)`` covering ``0..total-1``.
 
@@ -101,31 +82,6 @@ def _parts_complete_from_rows(rows: list) -> bool:
     if total < 1:
         return False
     return set(indexes) == set(range(total))
-
-
-def parts_complete(sha256: str, expected_total: int | None = None) -> bool:
-    """True when every part index from 0..n-1 is present (and not expired)."""
-    session = get_session()
-    try:
-        purge_expired_file_parts(session)
-        rows = (
-            session.query(
-                schemas.FederationFilePart.part_index,
-                schemas.FederationFilePart.part_total,
-            )
-            .filter(schemas.FederationFilePart.sha256 == sha256)
-            .all()
-        )
-        session.commit()
-        if expected_total is not None:
-            indexes = {int(r[0]) for r in rows}
-            return bool(indexes) and indexes == set(range(int(expected_total)))
-        return _parts_complete_from_rows(rows)
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        close_session(session)
 
 
 def offer_have(sha256: str, size: int) -> bool:

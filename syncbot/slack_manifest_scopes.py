@@ -89,13 +89,3 @@ USER_PERMISSION_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("View workspace info", ("team:read",)),
     ("View people", ("users:read", "users:read.email")),
 )
-
-
-def bot_scopes_comma_separated() -> str:
-    """Return the bot scope string for SLACK_BOT_SCOPES / CloudFormation."""
-    return ",".join(BOT_SCOPES)
-
-
-def user_scopes_comma_separated() -> str:
-    """Return the user scope string for SLACK_USER_SCOPES / CloudFormation / Terraform."""
-    return ",".join(USER_SCOPES)

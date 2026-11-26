@@ -213,29 +213,6 @@ def _download_and_hash(url: str, headers: dict | None = None) -> tuple[str, int,
         raise
 
 
-def write_bytes_hashed(data: bytes, *, expected_sha256: str | None = None) -> tuple[str, int, str]:
-    """Write *data* into the hashed cache. Returns ``(sha256, size, path)``."""
-    if len(data) > _MAX_FILE_BYTES:
-        raise ValueError(f"File exceeds {_MAX_FILE_BYTES} byte limit")
-    sha256 = hashlib.sha256(data).hexdigest()
-    if expected_sha256 and sha256 != expected_sha256:
-        raise ValueError("sha256 mismatch")
-    path = hashed_file_path(sha256)
-    if not (os.path.isfile(path) and os.path.getsize(path) == len(data)):
-        fd, temp_path = tempfile.mkstemp(prefix="sb-asm-", dir="/tmp")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-            os.replace(temp_path, path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.remove(temp_path)
-            raise
-    register_hashed_file(sha256, len(data))
-    pin_hashed_file(sha256)
-    return sha256, len(data), path
-
-
 def assemble_parts_to_hashed(
     parts,
     *,

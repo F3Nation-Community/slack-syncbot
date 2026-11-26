@@ -262,33 +262,6 @@ def replicate_group_leave(
     )
 
 
-def replicate_sync_upsert(sync: schemas.Sync, group: schemas.WorkspaceGroup) -> None:
-    peers = peers_for_group(group.id)
-    if not peers:
-        return
-    group_uid = ensure_group_uid(group)
-    sync_uid = ensure_sync_uid(sync)
-    for fed_ws in peers:
-        try:
-            federation.push_group_upsert(fed_ws, {"uid": group_uid, "name": group.name})
-            federation.push_sync_upsert(
-                fed_ws,
-                {
-                    "uid": sync_uid,
-                    "group_uid": group_uid,
-                    "title": sync.title,
-                    "description": sync.description,
-                    "sync_mode": sync.sync_mode,
-                },
-            )
-        except Exception:
-            log_warning(
-                "federation_replicate_failed",
-                label="sync_upsert",
-                peer=getattr(fed_ws, "instance_id", None),
-            )
-
-
 def _notice_reaches_peer(workspace, peer, notice: str | None) -> bool:
     """Whether this Channel upsert may go to *peer*.
 

@@ -12,28 +12,26 @@ from helpers.files import (
     cleanup_temp_files,
     download_slack_files,
     hashed_file_path,
-    hashed_file_ready,
-    is_hashed_cache_path,
     pin_hashed_file,
+    register_hashed_file,
     remember_slack_file_id,
-    write_bytes_hashed,
 )
 
 
-def test_write_bytes_hashed_and_ready(tmp_path, monkeypatch):
-    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "syncbot")
-    data = b"hello-syncbot-file"
-    sha, size, path = write_bytes_hashed(data)
-    assert sha == hashlib.sha256(data).hexdigest()
-    assert size == len(data)
-    assert path == hashed_file_path(sha)
-    assert hashed_file_ready(sha, size)
-    assert is_hashed_cache_path(path)
+def _write_hashed(data: bytes) -> tuple[str, int, str]:
+    """Put *data* in the hashed cache the way an assembled or downloaded file lands there."""
+    sha = hashlib.sha256(data).hexdigest()
+    path = hashed_file_path(sha)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    register_hashed_file(sha, len(data))
+    pin_hashed_file(sha)
+    return sha, len(data), path
 
 
 def test_cleanup_keeps_hashed_files(tmp_path, monkeypatch):
     data = b"keep-me"
-    sha, size, path = write_bytes_hashed(data)
+    sha, size, path = _write_hashed(data)
     pin_hashed_file(sha)
     other = "/tmp/sb-nonhash-test.bin"
     with open(other, "wb") as fh:
@@ -45,7 +43,7 @@ def test_cleanup_keeps_hashed_files(tmp_path, monkeypatch):
 
 def test_download_slack_files_reuses_slack_file_id(monkeypatch):
     data = b"cached-bytes"
-    sha, size, path = write_bytes_hashed(data)
+    sha, size, path = _write_hashed(data)
     remember_slack_file_id("F123", sha, size)
 
     client = MagicMock()

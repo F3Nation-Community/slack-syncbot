@@ -16,6 +16,11 @@ os.environ.setdefault("DATABASE_SCHEMA", "syncbot")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 import helpers
+from helpers._cache import _CACHE
+from helpers.encryption import decrypt_bot_token, encrypt_bot_token
+from helpers.slack_api import slack_retry
+from helpers.user_map import apply_mentioned_users, resolve_channel_references, rewrite_envelope_channel_refs
+from helpers.workspace import is_request_for_team
 
 # -----------------------------------------------------------------------
 # safe_get
@@ -66,49 +71,49 @@ class TestEncryption:
     def test_encrypt_decrypt_roundtrip(self):
         # Use a non-secret placeholder; encryption accepts any string
         token = "xoxb-0-0"
-        encrypted = helpers.encrypt_bot_token(token)
+        encrypted = encrypt_bot_token(token)
         assert encrypted != token
-        decrypted = helpers.decrypt_bot_token(encrypted)
+        decrypted = decrypt_bot_token(encrypted)
         assert decrypted == token
 
     @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key-16chars"})
     def test_encrypt_not_stable_ciphertext(self):
         token = "xoxb-0-0"
-        a = helpers.encrypt_bot_token(token)
-        b = helpers.encrypt_bot_token(token)
+        a = encrypt_bot_token(token)
+        b = encrypt_bot_token(token)
         assert a != b
-        assert helpers.decrypt_bot_token(a) == token
-        assert helpers.decrypt_bot_token(b) == token
+        assert decrypt_bot_token(a) == token
+        assert decrypt_bot_token(b) == token
 
     @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "my-secret-key-16chars"})
     def test_decrypt_invalid_token_raises(self):
         with pytest.raises(ValueError, match="decryption failed"):
-            helpers.decrypt_bot_token("not-a-valid-encrypted-token")
+            decrypt_bot_token("not-a-valid-encrypted-token")
 
     @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "123"})
     def test_encryption_disabled_with_default_key(self):
         token = "xoxb-0-0"
-        assert helpers.encrypt_bot_token(token) == token
-        assert helpers.decrypt_bot_token(token) == token
+        assert encrypt_bot_token(token) == token
+        assert decrypt_bot_token(token) == token
 
     @patch.dict(os.environ, {}, clear=False)
     def test_encryption_disabled_when_key_missing(self):
         os.environ.pop("DATA_ENCRYPTION_KEY", None)
         os.environ.pop("TOKEN_ENCRYPTION_KEY", None)
         token = "xoxb-0-0"
-        assert helpers.encrypt_bot_token(token) == token
-        assert helpers.decrypt_bot_token(token) == token
+        assert encrypt_bot_token(token) == token
+        assert decrypt_bot_token(token) == token
 
     @patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "key-A-16-characters"})
     def test_wrong_key_raises(self):
         token = "xoxb-0-0"
-        encrypted = helpers.encrypt_bot_token(token)
+        encrypted = encrypt_bot_token(token)
 
         with (
             patch.dict(os.environ, {"DATA_ENCRYPTION_KEY": "key-B-16-characters"}),
             pytest.raises(ValueError, match="decryption failed"),
         ):
-            helpers.decrypt_bot_token(encrypted)
+            decrypt_bot_token(encrypted)
 
     def test_token_encryption_key_legacy_encrypts_and_warns_once(self, caplog):
         import logging
@@ -122,10 +127,10 @@ class TestEncryption:
             caplog.at_level(logging.WARNING, logger="syncbot"),
         ):
             os.environ.pop("DATA_ENCRYPTION_KEY", None)
-            encrypted = helpers.encrypt_bot_token(token)
+            encrypted = encrypt_bot_token(token)
             assert encrypted != token
-            assert helpers.decrypt_bot_token(encrypted) == token
-            helpers.encrypt_bot_token(token)
+            assert decrypt_bot_token(encrypted) == token
+            encrypt_bot_token(token)
         warns = [
             r
             for r in caplog.records
@@ -151,8 +156,8 @@ class TestEncryption:
             ),
             caplog.at_level(logging.WARNING, logger="syncbot"),
         ):
-            assert helpers.encrypt_bot_token("xoxb-0-0") != "xoxb-0-0"
-            helpers.encrypt_bot_token("xoxb-0-0")
+            assert encrypt_bot_token("xoxb-0-0") != "xoxb-0-0"
+            encrypt_bot_token("xoxb-0-0")
         warns = [
             r
             for r in caplog.records
@@ -168,7 +173,7 @@ class TestEncryption:
 
 class TestCache:
     def setup_method(self):
-        helpers._CACHE.clear()
+        _CACHE.clear()
 
     def test_cache_set_and_get(self):
         helpers._cache_set("k1", "value1")
@@ -259,19 +264,19 @@ class TestBodyIdExtractors:
 
 class TestIsRequestForTeam:
     def test_matches_the_install_team(self):
-        assert helpers.is_request_for_team({"team_id": "T0000000A"}, "T0000000A") is True
+        assert is_request_for_team({"team_id": "T0000000A"}, "T0000000A") is True
 
     def test_other_team_does_not_match(self):
-        assert helpers.is_request_for_team({"team_id": "T0000000A"}, "T0000000B") is False
+        assert is_request_for_team({"team_id": "T0000000A"}, "T0000000B") is False
 
     def test_missing_context_does_not_match(self):
-        assert helpers.is_request_for_team(None, "T0000000A") is False
+        assert is_request_for_team(None, "T0000000A") is False
 
     def test_context_without_team_does_not_match(self):
-        assert helpers.is_request_for_team({}, "T0000000A") is False
+        assert is_request_for_team({}, "T0000000A") is False
 
     def test_missing_team_does_not_match(self):
-        assert helpers.is_request_for_team({"team_id": "T0000000A"}, None) is False
+        assert is_request_for_team({"team_id": "T0000000A"}, None) is False
 
 
 # -----------------------------------------------------------------------
@@ -328,7 +333,7 @@ class TestGetBotInfoFromEvent:
 
 class TestSlackRetry:
     def test_success_on_first_try(self):
-        @helpers.slack_retry
+        @slack_retry
         def fn():
             return "ok"
 
@@ -343,7 +348,7 @@ class TestSlackRetry:
         mock_response.status_code = 429
         mock_response.headers = {"Retry-After": "0"}
 
-        @helpers.slack_retry
+        @slack_retry
         def fn():
             nonlocal call_count
             call_count += 1
@@ -360,7 +365,7 @@ class TestSlackRetry:
         mock_response = MagicMock()
         mock_response.status_code = 404
 
-        @helpers.slack_retry
+        @slack_retry
         def fn():
             raise SlackApiError("not_found", response=mock_response)
 
@@ -377,10 +382,10 @@ class TestResolveChannelReferences:
     """Source #channel ticks and labeled message permalinks."""
 
     def setup_method(self):
-        from helpers._cache import clear_all_caches, clear_request_scope
+        from helpers._cache import _REQUEST_CACHE, clear_all_caches
 
         clear_all_caches()
-        clear_request_scope()
+        _REQUEST_CACHE.set(None)
 
     def _make_workspace(self, team_id="T123", name="Workspace A"):
         ws = MagicMock()
@@ -394,28 +399,28 @@ class TestResolveChannelReferences:
         return client
 
     def test_no_channel_refs_unchanged(self):
-        result = helpers.resolve_channel_references("hello world", MagicMock())
+        result = resolve_channel_references("hello world", MagicMock())
         assert result == "hello world"
 
     def test_empty_text(self):
-        result = helpers.resolve_channel_references("", MagicMock())
+        result = resolve_channel_references("", MagicMock())
         assert result == ""
 
     def test_none_text(self):
-        result = helpers.resolve_channel_references(None, MagicMock())
+        result = resolve_channel_references(None, MagicMock())
         assert result is None
 
     def test_code_tick_with_workspace(self):
         client = self._make_client(channel_name="general")
         ws = self._make_workspace(team_id="T123")
-        result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
+        result = resolve_channel_references("see <#CABC123>", client, ws)
         assert result == "see `#general (Workspace A)`"
         assert "slack://" not in result
         assert "<#C" not in result
 
     def test_code_tick_without_workspace(self):
         client = self._make_client(channel_name="general")
-        result = helpers.resolve_channel_references("see <#CABC123>", client, None)
+        result = resolve_channel_references("see <#CABC123>", client, None)
         assert result == "see `#general`"
 
     def test_code_tick_does_not_need_team_info(self):
@@ -423,20 +428,20 @@ class TestResolveChannelReferences:
         client.conversations_info.return_value = {"channel": {"name": "general"}}
         client.team_info.side_effect = Exception("api error")
         ws = self._make_workspace(team_id="T123")
-        result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
+        result = resolve_channel_references("see <#CABC123>", client, ws)
         assert result == "see `#general (Workspace A)`"
 
     def test_fallback_when_channel_unresolvable(self):
         client = MagicMock()
         client.conversations_info.side_effect = Exception("channel_not_found")
         ws = self._make_workspace(team_id="T123")
-        result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
+        result = resolve_channel_references("see <#CABC123>", client, ws)
         assert result == "see #CABC123"
 
     def test_channel_ref_with_label(self):
         client = self._make_client(channel_name="general")
         ws = self._make_workspace(team_id="T123")
-        result = helpers.resolve_channel_references("see <#CABC123|general>", client, ws)
+        result = resolve_channel_references("see <#CABC123|general>", client, ws)
         assert result == "see `#general (Workspace A)`"
 
     def test_multiple_channel_refs(self):
@@ -448,7 +453,7 @@ class TestResolveChannelReferences:
 
         client.conversations_info.side_effect = conv_info
         ws = self._make_workspace(team_id="T123")
-        result = helpers.resolve_channel_references("see <#CABC111> and <#CABC222>", client, ws)
+        result = resolve_channel_references("see <#CABC111> and <#CABC222>", client, ws)
         assert result == "see `#alpha (Workspace A)` and `#beta (Workspace A)`"
         assert "#alpha" in result
         assert "#beta" in result
@@ -456,7 +461,7 @@ class TestResolveChannelReferences:
     def test_no_deep_links_in_channel_mentions(self):
         client = self._make_client(channel_name="general")
         ws = self._make_workspace(team_id="T123")
-        result = helpers.resolve_channel_references("see <#CABC123>", client, ws)
+        result = resolve_channel_references("see <#CABC123>", client, ws)
         assert "app_redirect" not in result
         assert "app.slack.com" not in result
         assert "slack://" not in result
@@ -466,7 +471,7 @@ class TestResolveChannelReferences:
         """Synced twins must not become target <#C>; keep a code-ticked source name."""
         client = self._make_client(channel_name="announcements")
         ws = self._make_workspace(team_id="T123", name="Workspace A")
-        result = helpers.resolve_channel_references("see <#CSOURCE123>", client, ws)
+        result = resolve_channel_references("see <#CSOURCE123>", client, ws)
         assert result == "see `#announcements (Workspace A)`"
         assert "<#C" not in result
         assert "C_LOCAL" not in result
@@ -475,21 +480,21 @@ class TestResolveChannelReferences:
         client = self._make_client(channel_name="announcements")
         ws = self._make_workspace(team_id="T123", name="Workspace A")
         text = "see <https://workspace-a.slack.com/archives/CSRC|#general (Workspace B)>"
-        result = helpers.resolve_channel_references(text, client, ws)
+        result = resolve_channel_references(text, client, ws)
         assert result == "see `#announcements (Workspace A)`"
 
     def test_message_permalink_keeps_source_url_with_label(self):
         client = self._make_client(channel_name="announcements")
         ws = self._make_workspace(team_id="T123", name="Workspace A")
         url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456"
-        result = helpers.resolve_channel_references(f"see {url}", client, ws)
+        result = resolve_channel_references(f"see {url}", client, ws)
         assert result == f"see <{url}|message in #announcements (Workspace A)>"
 
     def test_message_permalink_keeps_existing_display_text(self):
         client = self._make_client(channel_name="announcements")
         ws = self._make_workspace(team_id="T123", name="Workspace A")
         url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456"
-        result = helpers.resolve_channel_references(f"see <{url}|my update>", client, ws)
+        result = resolve_channel_references(f"see <{url}|my update>", client, ws)
         assert result == f"see <{url}|my update>"
         client.conversations_info.assert_not_called()
 
@@ -497,7 +502,7 @@ class TestResolveChannelReferences:
         client = self._make_client(channel_name="announcements")
         ws = self._make_workspace(team_id="T123", name="Workspace A")
         url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456"
-        result = helpers.resolve_channel_references(
+        result = resolve_channel_references(
             f"<{url}|This>? Or this: <{url}|{url}>",
             client,
             ws,
@@ -507,7 +512,7 @@ class TestResolveChannelReferences:
     def test_message_permalink_uses_subdomain_when_channel_unknown(self):
         client = MagicMock()
         client.conversations_info.side_effect = Exception("channel_not_found")
-        result = helpers.resolve_channel_references(
+        result = resolve_channel_references(
             "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456",
             client,
             None,
@@ -524,10 +529,10 @@ class TestLookupChannelName:
     """Channel name for Home and publish, without logging tokens."""
 
     def setup_method(self):
-        helpers._CACHE.clear()
-        from helpers._cache import clear_request_scope
+        _CACHE.clear()
+        from helpers._cache import _REQUEST_CACHE
 
-        clear_request_scope()
+        _REQUEST_CACHE.set(None)
 
     def test_request_client_is_tried_first(self):
         client = MagicMock()
@@ -562,7 +567,7 @@ class TestLookupChannelName:
         user_client.conversations_info.assert_called_once_with(channel="CPRIV")
 
     def test_unresolved_name_is_the_channel_id_and_is_not_process_cached(self):
-        from helpers._cache import begin_request_scope, clear_request_scope
+        from helpers._cache import _REQUEST_CACHE, begin_request_scope
 
         client = MagicMock()
         client.conversations_info.side_effect = Exception("channel_not_found")
@@ -581,9 +586,9 @@ class TestLookupChannelName:
             helpers.lookup_channel_name("C_UNRESOLVED2", None, client=client)
             helpers.lookup_channel_name("C_UNRESOLVED2", None, client=client)
             assert client.conversations_info.call_count == 1
-            assert "chan_label:C_UNRESOLVED2" not in helpers._CACHE
+            assert "chan_label:C_UNRESOLVED2" not in _CACHE
         finally:
-            clear_request_scope()
+            _REQUEST_CACHE.set(None)
 
     def test_successful_lookup_is_cached(self):
         client = MagicMock()
@@ -615,7 +620,7 @@ class TestRewriteEnvelopeChannelRefs:
             "text": "see <#CABC123> and <@U1>",
             "blocks": [{"type": "section", "text": {"type": "mrkdwn", "text": "<#CABC123> <@U1>"}}],
         }
-        helpers.rewrite_envelope_channel_refs(envelope, client, ws)
+        rewrite_envelope_channel_refs(envelope, client, ws)
         assert envelope["text"] == "see `#announcements (Workspace A)` and <@U1>"
         assert envelope["blocks"][0]["text"]["text"] == "`#announcements (Workspace A)` <@U1>"
 
@@ -629,7 +634,7 @@ class TestOwnAuthInfoIsPerWorkspace:
     """A process-wide auth.test cache invites the wrong workspace's bot."""
 
     def setup_method(self):
-        helpers._CACHE.clear()
+        _CACHE.clear()
 
     def test_auth_info_is_not_shared_across_bot_tokens(self):
         client_a = MagicMock()
@@ -677,7 +682,7 @@ class TestApplyMentionedUsersCap:
             "helpers.user_map.resolve_mention_for_workspace",
             side_effect=lambda **kw: f"<@{kw['source_user_id']}_D>",
         ):
-            out = helpers.apply_mentioned_users(text, source, target, mentioned, 1, 2)
+            out = apply_mentioned_users(text, source, target, mentioned, 1, 2)
         assert "<@U000_D>" in out
         assert "<@U049_D>" in out
         assert "<@U054_D>" in out

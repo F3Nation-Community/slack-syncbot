@@ -52,11 +52,6 @@ def begin_request_scope() -> None:
     _REQUEST_CACHE.set({})
 
 
-def clear_request_scope() -> None:
-    """Drop the current request-scope dict (tests and end-of-request)."""
-    _REQUEST_CACHE.set(None)
-
-
 def request_scope_get(key: str):
     store = _REQUEST_CACHE.get()
     if not store:

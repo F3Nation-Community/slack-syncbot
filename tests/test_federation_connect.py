@@ -255,8 +255,9 @@ class TestInboundInstanceIdUpgrade:
             patch.object(federation_api.federation, "federation_verify", return_value=True),
             patch.object(federation_api.DbManager, "update_records") as update,
         ):
-            got = federation_api._verify_federated_request("{}", headers)
-        assert got is None
+            got = federation_api._verify_known_peer("{}", headers)
+        assert isinstance(got, tuple)
+        assert got[0] == 401
         update.assert_not_called()
 
     def test_verify_accepts_lowercase_function_url_headers(self):
@@ -274,7 +275,7 @@ class TestInboundInstanceIdUpgrade:
             patch.object(federation_api.DbManager, "find_records", return_value=[existing]),
             patch.object(federation_api.federation, "federation_verify", return_value=True) as verify,
         ):
-            got = federation_api._verify_federated_request("{}", headers)
+            got = federation_api._verify_known_peer("{}", headers)
         assert got is existing
         verify.assert_called_once_with("{}", "sig", "1", public_pem)
 

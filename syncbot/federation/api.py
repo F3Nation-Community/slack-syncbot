@@ -516,14 +516,6 @@ def _trusted_peer_or_401(instance_id: str) -> tuple[int, dict] | schemas.Instanc
     return fed_ws
 
 
-def _verify_federated_request(body_str: str, headers: dict) -> schemas.Instance | None:
-    """Return the trusted peer or *None* (tests and leftover call sites)."""
-    result = _verify_known_peer(body_str, headers)
-    if isinstance(result, tuple):
-        return None
-    return result
-
-
 def _verify_known_peer(body_str: str, headers: dict) -> tuple[int, dict] | schemas.Instance:
     """Validate headers, look up the peer, then verify the raw body."""
     parsed = _require_signed_headers(headers)

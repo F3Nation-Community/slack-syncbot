@@ -15,6 +15,8 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 from unittest.mock import MagicMock, patch  # noqa: E402
 
 from db import DbManager, schemas  # noqa: E402
+from helpers.group_roles import get_owner_team_ids_blocking_stub_pause, get_retained_owners  # noqa: E402
+from helpers.sync_cleanup import purge_workspace  # noqa: E402
 
 
 @pytest.fixture
@@ -118,7 +120,7 @@ class TestOwnerInvariant:
         _member(group, _workspace("T2"), role="member")
 
         assert helpers.get_active_owners(group.id) == []
-        assert [row.id for row in helpers.get_retained_owners(group.id)] == [owner.id]
+        assert [row.id for row in get_retained_owners(group.id)] == [owner.id]
 
     def test_succession_waits_while_an_uninstalled_owner_is_retained(self, real_db):
         import helpers
@@ -199,7 +201,7 @@ class TestDepartureRules:
 
         assert helpers.get_active_members(group.id) == []
         assert DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group.id])
-        assert [row.id for row in helpers.get_retained_owners(group.id)] == [owner.id]
+        assert [row.id for row in get_retained_owners(group.id)] == [owner.id]
 
     def test_sole_owner_with_other_members_is_rejected(self, real_db):
         import helpers
@@ -367,7 +369,7 @@ class TestPurgeRetainsOrTransfersOwnership:
         successor_ws = _workspace("T2")
         successor = _member(group, successor_ws, role="member")
 
-        helpers.purge_workspace(owner_ws.id)
+        purge_workspace(owner_ws.id)
 
         owners = helpers.get_active_owners(group.id)
         assert [o.id for o in owners] == [successor.id]
@@ -380,20 +382,18 @@ class TestPurgeRetainsOrTransfersOwnership:
         member_ws = _workspace("T2")
         _member(group, member_ws, role="member")
 
-        helpers.purge_workspace(member_ws.id)
+        purge_workspace(member_ws.id)
 
         assert [o.id for o in helpers.get_active_owners(group.id)] == [owner.id]
 
     def test_purging_the_last_workspace_disbands_the_group(self, real_db):
-        import helpers
-
         group = _group()
         owner_ws = _workspace("T1")
         _member(group, owner_ws, role="owner")
         outsider = _workspace("T_PRIMARY")
 
         with patch.dict(os.environ, {"PRIMARY_WORKSPACE": "T_PRIMARY"}):
-            helpers.purge_workspace(owner_ws.id)
+            purge_workspace(owner_ws.id)
 
         assert DbManager.find_records(schemas.WorkspaceGroup, [schemas.WorkspaceGroup.id == group.id]) == []
         assert (
@@ -601,7 +601,6 @@ class TestConnectionOwnerGate:
         from cryptography.hazmat.primitives import serialization
         from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-        import helpers
         from db import DbManager, schemas
         from federation.core import public_key_fingerprint
 
@@ -629,5 +628,5 @@ class TestConnectionOwnerGate:
         _member(group, stub, role="owner")
         _member(group, local, role="member")
 
-        blocked = helpers.get_owner_team_ids_blocking_stub_pause(peer.instance_id, [stub.team_id])
+        blocked = get_owner_team_ids_blocking_stub_pause(peer.instance_id, [stub.team_id])
         assert blocked == [stub.team_id]

@@ -683,29 +683,6 @@ def resolve_workspace_name(workspace: schemas.Workspace) -> str:
     return workspace.team_id or f"Workspace {workspace.id}"
 
 
-def resolve_channel_name(channel_id: str, workspace=None) -> str:
-    """Resolve a channel ID to a human-readable name."""
-    if not channel_id:
-        return channel_id
-
-    cache_key = f"chan_name:{channel_id}"
-    cached = _cache_get(cache_key)
-    if cached:
-        return cached
-
-    ch_name = lookup_channel_name(channel_id, workspace)
-    ws_name = getattr(workspace, "workspace_name", None) if workspace else None
-
-    if ws_name:
-        result = f"#{ch_name} ({ws_name})"
-    else:
-        result = f"#{ch_name}"
-
-    if ch_name != channel_id:
-        _cache_set(cache_key, result, ttl=3600)
-    return result
-
-
 def stored_channel_name(channel_id: str, workspace_id: int | None) -> str | None:
     """Display name saved on a SyncChannel for *channel_id* in *workspace_id*."""
     if not channel_id or not workspace_id:

@@ -61,13 +61,11 @@ class TestFederationMessageInbound:
             patch.object(federation_api, "_get_post_records", return_value=[]),
             patch.object(federation_api, "_ensure_federated_author_mapped", return_value="ULOCAL"),
             patch.object(federation_api, "_source_stub_id", return_value=99),
-            patch.object(federation_api.helpers, "decrypt_bot_token", return_value="xoxb-test"),
             patch.object(federation_api, "WebClient", MagicMock()),
             patch.object(
                 federation_api.helpers, "get_user_info", return_value=("Ada Lovelace", "https://local.example/n.png")
             ),
             patch.object(federation_api, "_resolve_mentions_for_federated", side_effect=lambda t, *_: t),
-            patch.object(federation_api.helpers, "resolve_channel_references", side_effect=lambda t, *a, **k: t),
             patch("helpers.slack_write.get_bot_token", return_value="xoxb-test"),
             patch("helpers.slack_write.get_user_token", return_value=None),
             patch("helpers.workspace.get_workspace_by_id", return_value=None),

@@ -16,6 +16,7 @@ from slack_sdk.errors import SlackApiError
 
 from db import schemas
 from handlers.channel_sync import handle_create_sync_submit_work, handle_join_sync_submit
+from helpers._cache import _CACHE
 from helpers.conversations import AUTHORIZE_HINT, ConversationAccessError, authorize_url, ensure_bot_in_conversation
 
 
@@ -511,7 +512,6 @@ class TestJoinSyncWritesRowsBeforeAddingTheBot:
             patch("handlers.channel_sync.DbManager.create_record", side_effect=create_record),
             patch("handlers.channel_sync.helpers.lookup_channel_name", return_value="announcements"),
             patch("handlers.channel_sync.helpers.format_admin_label", return_value="`Admin (Workspace A)`"),
-            patch("handlers.channel_sync.helpers.resolve_channel_name", return_value="#c"),
             patch("handlers.channel_sync.builders.refresh_home_tab_for_workspace"),
             patch("helpers.sync_lifecycle.notify_channel_or_managers", return_value=True),
             patch("handlers.channel_sync.deliver_action_notice"),
@@ -759,9 +759,7 @@ class TestBotReAddedToChannel:
 
 class TestUserHasPrivateChannel:
     def setup_method(self):
-        import helpers
-
-        helpers._CACHE.clear()
+        _CACHE.clear()
 
     def test_cached_answer_skips_slack(self):
         from helpers.conversations import user_in_private_channel
@@ -860,7 +858,6 @@ class TestUserHasPrivateChannel:
         team_wide.assert_not_called()
 
     def test_invalidation_leaves_other_viewers_alone(self):
-        import helpers
         from helpers.conversations import _cache_set, invalidate_private_channel_member
 
         _cache_set("private_channel_member:T1:U1", frozenset({"G1"}))
@@ -871,11 +868,11 @@ class TestUserHasPrivateChannel:
 
         invalidate_private_channel_member("T1", "U1")
 
-        assert "private_channel_member:T1:U1" not in helpers._CACHE
-        assert "home_tab_hash:T1:U1" not in helpers._CACHE
-        assert "home_tab_blocks:T1:U1" not in helpers._CACHE
-        assert "private_channel_member:T1:U2" in helpers._CACHE
-        assert "home_tab_hash:T1:U2" in helpers._CACHE
+        assert "private_channel_member:T1:U1" not in _CACHE
+        assert "home_tab_hash:T1:U1" not in _CACHE
+        assert "home_tab_blocks:T1:U1" not in _CACHE
+        assert "private_channel_member:T1:U2" in _CACHE
+        assert "home_tab_hash:T1:U2" in _CACHE
 
     @pytest.mark.parametrize("slack_private", [False, None])
     def test_public_or_unreadable_join_keeps_the_cache(self, slack_private):

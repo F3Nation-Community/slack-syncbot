@@ -170,18 +170,3 @@ def hold_lock(name: str, ttl: timedelta) -> Iterator[str | None]:
         stop.set()
         keeper.join(timeout=5)
         release_lock(name, token)
-
-
-def is_lock_held(name: str, ttl: timedelta) -> bool:
-    """True when a run holds *name* and its row is younger than *ttl*. Reads only."""
-    from db import close_session, get_session
-
-    session = get_session()
-    try:
-        row = session.query(InstanceSetting).filter(InstanceSetting.key == _key(name)).one_or_none()
-        if row is None or row.updated_at is None:
-            return False
-        return _utcnow() - _naive_utc(row.updated_at) < ttl
-    finally:
-        session.rollback()
-        close_session(session)
