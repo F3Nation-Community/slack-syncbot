@@ -13,7 +13,7 @@ import constants
 from db import DbManager, schemas
 from helpers._cache import _CACHE, _USER_INFO_CACHE_TTL, _cache_get, _cache_set
 from helpers.core import code_ticked_display_name, safe_get
-from helpers.message_blocks import is_url_display_text
+from helpers.message_blocks import is_url_display_text, rewrite_attachments, rewrite_content_blocks
 from helpers.slack_api import _users_info, get_user_info, slack_retry
 from helpers.workspace import (
     get_bot_token,
@@ -840,8 +840,6 @@ def rewrite_envelope_channel_refs(
     """
     if not source_client:
         return
-    from helpers.message_blocks import rewrite_content_blocks
-
     text = envelope.get("text")
     if isinstance(text, str) and text:
         envelope["text"] = resolve_channel_references(text, source_client, source_workspace)
@@ -855,19 +853,15 @@ def rewrite_envelope_channel_refs(
     def keep_unmapped(uid: str) -> str:
         return f"<@{uid}>"
 
-    from helpers.message_blocks import rewrite_attachment_strings
+    def rewrite_blocks(blocks: list[dict]) -> list[dict]:
+        return rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
 
     blocks = envelope.get("blocks")
     if isinstance(blocks, list) and blocks:
-        envelope["blocks"] = rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
+        envelope["blocks"] = rewrite_blocks(blocks)
     attachments = envelope.get("attachments")
     if isinstance(attachments, list) and attachments:
-        rewritten = rewrite_attachment_strings(attachments, rewrite_mrkdwn)
-        for attachment in rewritten:
-            nested = attachment.get("blocks")
-            if isinstance(nested, list) and nested:
-                attachment["blocks"] = rewrite_content_blocks(nested, rewrite_mrkdwn, keep_user, keep_unmapped)
-        envelope["attachments"] = rewritten
+        envelope["attachments"] = rewrite_attachments(attachments, rewrite_mrkdwn, rewrite_blocks)
 
 
 def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group_id: int | None = None) -> int:

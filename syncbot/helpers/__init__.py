@@ -52,7 +52,6 @@ from helpers.envelope import (
 )
 from helpers.files import (
     add_outside_file_links,
-    add_permalink_file_links,
     cleanup_temp_files,
     download_slack_files,
     drop_outside_files,
@@ -60,9 +59,9 @@ from helpers.files import (
     event_is_new_file_share,
     event_keeps_hosted_files,
     file_ids_from_message_event,
+    get_link_only_file_url,
     hosted_file_fetch_url,
     is_outside_file,
-    link_only_file_url,
 )
 from helpers.group_roles import (
     MEMBER,
@@ -79,19 +78,21 @@ from helpers.group_roles import (
     succeed_ownership,
 )
 from helpers.message_blocks import (
-    attachment_is_image_only,
+    add_copy_note,
+    append_link_lines,
     build_attachments_for_sync,
     build_content_blocks_for_sync,
     choose_message_text,
     collect_slack_file_ids_from_blocks,
     collect_user_ids_from_blocks,
-    compose_message_text,
-    event_attachments,
+    drop_previews_of_labeled_links,
     event_has_slack_hosted_media_blocks,
+    get_event_attachments,
     get_event_layout_blocks,
+    get_share_files,
+    get_share_permalinks,
+    is_image_only_attachment,
     is_slack_hosted_media_url,
-    share_files,
-    share_permalinks,
     text_from_attachments,
 )
 from helpers.notifications import (
@@ -113,6 +114,7 @@ from helpers.post_meta import (
     complete_copy_ts_from_pending_share,
     get_post_records,
     get_publishing_post_records,
+    hand_off_follow_up,
     post_meta_exists_for_channel_ts,
 )
 from helpers.refresh import (
@@ -129,6 +131,7 @@ from helpers.settings import (
 )
 from helpers.slack_api import (
     fetch_message_layout_blocks,
+    fetch_source_message,
     get_bot_info_from_event,
     get_own_bot_id,
     get_own_bot_user_id,
@@ -157,9 +160,12 @@ from helpers.sync_participation import (
 from helpers.sync_pipeline import run_sync_pipeline
 from helpers.user_action_echo import (
     has_user_action_echo,
+    pack_reaction_note,
     reaction_echo_fingerprint,
     slack_message_ts,
+    take_follow_ups,
     take_user_action_echo,
+    unpack_reaction_note,
 )
 from helpers.user_map import (
     _upsert_single_user_to_directory,
@@ -219,7 +225,6 @@ __all__ = [
     "cached_home_blocks",
     "cleanup_temp_files",
     "add_outside_file_links",
-    "add_permalink_file_links",
     "drop_outside_files",
     "download_slack_files",
     "event_has_downloadable_hosted_file",
@@ -228,7 +233,7 @@ __all__ = [
     "event_keeps_hosted_files",
     "file_ids_from_message_event",
     "hosted_file_fetch_url",
-    "link_only_file_url",
+    "get_link_only_file_url",
     "is_outside_file",
     "is_slack_hosted_media_url",
     "ACTION_ADD",
@@ -244,13 +249,15 @@ __all__ = [
     "choose_message_text",
     "collect_slack_file_ids_from_blocks",
     "collect_user_ids_from_blocks",
-    "attachment_is_image_only",
+    "add_copy_note",
+    "append_link_lines",
+    "is_image_only_attachment",
+    "drop_previews_of_labeled_links",
+    "get_share_permalinks",
     "build_attachments_for_sync",
     "build_content_blocks_for_sync",
-    "compose_message_text",
-    "event_attachments",
-    "share_files",
-    "share_permalinks",
+    "get_event_attachments",
+    "get_share_files",
     "text_from_attachments",
     "get_event_layout_blocks",
     "fetch_message_layout_blocks",
@@ -273,6 +280,11 @@ __all__ = [
     "get_own_bot_user_id",
     "get_publishing_post_records",
     "get_post_records",
+    "unpack_reaction_note",
+    "take_follow_ups",
+    "pack_reaction_note",
+    "fetch_source_message",
+    "hand_off_follow_up",
     "build_origin_post_meta_rows",
     "get_request_type",
     "get_team_id_from_body",
