@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - A new AWS Lambda instance no longer compiles every module from source on its first request
-
+- A forwarded message syncs its words, card, and any file the app can read
+- A message still syncs when a file on it cannot be copied
+- A canvas shared into a Channel syncs as its link
 
 ## [1.8.0] - 2026-11-10
 

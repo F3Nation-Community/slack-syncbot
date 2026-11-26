@@ -680,7 +680,7 @@ class TestRespondToMessageEventDedup:
         ):
             respond_to_message_event(body, client, MagicMock(), {})
 
-        mock_new.assert_not_called()
+        mock_new.assert_called_once()
         mock_reply.assert_not_called()
         notify.assert_called_once()
         assert notify.call_args.kwargs["source_client"] is client

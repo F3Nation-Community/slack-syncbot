@@ -102,6 +102,43 @@ class TestMessageSubtypeAllowlist:
         thread_reply.assert_not_called()
         claimed.assert_called_once()
 
+    def test_forward_with_no_comment_is_posted(self):
+        body = _message_body(text="")
+        body["event"]["attachments"] = [
+            {
+                "is_share": True,
+                "is_msg_unfurl": True,
+                "text": "test message",
+                "from_url": "https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469",
+                "author_name": "Ada Lovelace",
+                "author_icon": "https://avatars.slack-edge.com/ada.png",
+                "channel_id": "CPRIVATE",
+                "footer": "Slack Conversation",
+                "ts": "1733497200.423469",
+                "fallback": "[December 6th, 2024 9:00 AM] Ada Lovelace: test message",
+            }
+        ]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message._handle_new_post") as new_post,
+            patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()),
+            patch("handlers.message.helpers.has_channel_sync", return_value=True),
+            patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
+            patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
+            patch("handlers.message.helpers.parse_mentioned_users", return_value=[]),
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+        new_post.assert_called_once()
+        ctx = new_post.call_args.args[3]
+        assert "test message" in ctx["msg_text"]
+        assert "https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469" in ctx["msg_text"]
+        assert ctx["attachments"][0]["author_name"] == "Ada Lovelace"
+        assert ctx["attachments"][0]["author_link"].endswith("p1733497200423469")
+        assert "is_share" not in ctx["attachments"][0]
+
 
 class TestHostedFiles:
     def test_download_keeps_pdf_audio_zip_and_skips_stubs(self):
