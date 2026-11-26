@@ -408,7 +408,7 @@ At `LOG_LEVEL=DEBUG`, skip and fan-out steps emit structured `log_debug()` event
 Message bodies are taken from Block Kit when present. Slack `event.text` is a notification fallback: long app posts often arrive with newlines flattened to spaces and a truncated tail. The client **Show more** control is chrome on `blocks`, not a second payload.
 
 - SyncBot copies content blocks (`section`, `header`, `rich_text`, and similar), drops `actions` / `input` (those buttons belong to the source app), and skips `file` blocks that only have a source `slack_file` id.
-- Link unfurls (Maps, and similar) are not copied as attachments. The target client rebuilds them from URLs in the text.
+- A forward in a publishing Channel is recreated for every subscribing target, on this instance and across External Connections. SyncBot copies the attachment card and the words. The source Channel's privacy is not a second gate. Target posts set `unfurl_links=false`, so the copied card is the preview.
 - Slack pastes a message as `message_mention`. SyncBot converts that to a labeled `link` and keeps the source URL. Unlabeled permalinks get a `message in #channel (Workspace)` label; existing link text is left alone. Target posts set `unfurl_links=false`.
 - When a `bot_message` has no usable blocks, SyncBot loads the stored message with `conversations.replies` (parent or in-thread ts).
 - Emoji in the body is copied as-is. Target catalog probes are for reactions only.
