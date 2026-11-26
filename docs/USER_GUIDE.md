@@ -23,6 +23,7 @@ This guide is for **workspace admins and people using SyncBot in Slack**. If you
 - Messages, threads, edits, deletes, reactions, images, videos, GIFs, and other hosted files (PDFs, audio, zips) are all synced between workspaces on this instance and across External Connections the same way. A message forwarded into a synced Channel is recreated in every synced Channel, including its words and any file SyncBot can read.
 - **@mentions and #channel links** in synced messages are rewritten for each target: mapped users are tagged with the local Slack user, and `#channel` mentions become a code-ticked `#name (Workspace)` (for example `` `#announcements (Workspace A)` ``). SyncBot does not turn those into the target twin channel, because the author named a place in the source workspace. Links to a specific source message keep that URL. A pasted Slack message becomes `message in #channel (Workspace)`; if the author already labeled the link, that text stays. Unmapped people fall back to a code-ticked display name such as `` `Name (Workspace)` ``.
 - Messages from other bots are synced; only SyncBot's own messages are filtered to prevent loops.
+- When SyncBot cannot copy your message to a synced Channel, or copies it in a simpler form, it DMs you once with the details to pass to a workspace admin. A simpler copy ends with "This synced message may not look the same as the original." A Channel SyncBot cannot post in (SyncBot removed, the Channel archived, or posting limited) pauses, and that workspace's managers are told once.
 - Existing messages are not back-filled; syncing starts from the moment a channel is linked.
 - Do not add SyncBot manually to channels. SyncBot adds itself when you Create Sync or Join Sync. If it is added to a Channel that is not part of a Sync, it posts a note and leaves.
 - When you pick a channel to create or join a Sync, SyncBot uses Slack's own channel search, so you can reach any channel in your workspace by typing a few letters. There is no limit on how many channels it can show.
@@ -159,6 +160,7 @@ On the **same instance**, Slack-hosted files of any type (photos, video, PDFs, a
 - A file whose copy lives outside Slack, such as a Google Drive or Dropbox file, is posted as its link on every target, on this instance and across External Connections. SyncBot does not download it and does not DM about it.
 - Slack-hosted video and image blocks are not copied as players. The file itself is uploaded so the other workspace can play it. That includes an image that an app shows from a Slack file inside its message.
 - GIFs from the Slack GIF picker or GIPHY stay public image blocks.
+- A forwarded message is copied as a card, and its files are copied when SyncBot can read them. If a file cannot be read, the rest still syncs and SyncBot DMs you.
 - A table is copied. A video from another site is copied as a link to it. If Slack will not accept a message's layout in the other workspace, the copy is posted as text.
 - When the mapped author has authorized SyncBot in the target workspace, the share posts as that person. The file is the message. A caption, Block Kit, or a public GIF stays on that same message.
 - When they have not authorized, the share still posts as one message, with the same from line as other SyncBot posts: the author's name and photo, plus the workspace name when they are not mapped. A file with no text is just the file.
@@ -175,6 +177,12 @@ App posts that use Block Kit (for example a form) sync from the layout blocks, s
 | File only (no text) | One message that is just the file, under the same from line as a text post |
 | Text + file | One message with the caption (and Block Kit or a public GIF, when the source had them) and the file together |
 | Multiple files | Same as the matching row above; all files go in one upload |
+| Forwarded message | The comment, a link to the original, then a card with the original author, date, source channel, and message |
+| Link to another message | The same as a forward: the link, then the card, which appears a moment later when Slack previews the link. A link with your own words stays that link, with no card |
+| Forwarded message with files | The files, with the comment and the forwarded card on the same message |
+| App post with attachments | The text and each attachment, as the app posted it. Buttons are not copied |
+| Link preview | The link and its preview card |
+| Canvas | A link to the canvas |
 
 ## External Connections
 
