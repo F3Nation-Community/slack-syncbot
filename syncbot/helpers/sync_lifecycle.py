@@ -221,6 +221,8 @@ def pause_sync_channel(
         note = "Syncing resumes when the Channel is unarchived."
     elif via == "kick":
         note = "SyncBot is not in the Channel."
+    elif via == "restricted":
+        note = "SyncBot cannot post in the Channel."
     deliver_action_notice(
         workspace,
         sync_channel,

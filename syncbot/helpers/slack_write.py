@@ -11,8 +11,15 @@ from slack_sdk.errors import SlackApiError
 from helpers.conversations import get_user_token
 from helpers.core import format_synced_from_line, safe_get
 from helpers.files import upload_files_to_slack
-from helpers.message_blocks import blocks_include_body, rewrite_content_blocks, trim_target_blocks
-from helpers.notifications import notify_source_user_error
+from helpers.message_blocks import (
+    add_copy_note,
+    blocks_include_body,
+    clamp_section_text_in_blocks,
+    rewrite_attachments,
+    rewrite_content_blocks,
+    text_from_attachments,
+    trim_target_blocks,
+)
 from helpers.slack_api import delete_message, post_message, slack_error_code
 from helpers.user_action_echo import remember_pending_file_share, remember_user_action, slack_message_ts
 from helpers.user_map import (
@@ -27,7 +34,9 @@ from helpers.workspace import get_bot_token
 from logger import log_debug, log_error, log_info, log_warning
 
 _NO_AUTHORIZE_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "missing_scope", "account_inactive"})
-_USER_WRITE_ERRORS = _NO_AUTHORIZE_ERRORS | frozenset({"not_in_channel", "channel_not_found"})
+_USER_WRITE_ERRORS = _NO_AUTHORIZE_ERRORS | frozenset({"not_in_channel", "channel_not_found", "restricted_action"})
+# Reasons SyncBot gives itself. Any other failure without a Slack code is retried by the pipeline.
+_WRITE_REASONS = frozenset({"bot_token_unavailable", "empty_message_create"})
 _BLOCK_ERRORS = frozenset({"invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long", "invalid_attachments"})
 
 
@@ -115,23 +124,6 @@ def build_target_blocks(
 
     rewritten = rewrite_content_blocks(content_blocks, rewrite_mrkdwn, map_user_id, unmapped_label)
     return trim_target_blocks(rewritten + (photo_blocks or []))
-
-
-def _notify_file_write_failed(
-    *,
-    envelope: dict[str, Any],
-    source_client: WebClient | None,
-    channel_id: str,
-    error: str,
-) -> None:
-    log_error(
-        "file_share_failed",
-        reason="upload_failed",
-        channel_id=channel_id,
-        error=error,
-        post_id=envelope.get("post_id"),
-        thread_post_id=envelope.get("thread_post_id"),
-    )
 
 
 def _blocks_for_file_share(adapted_text: str, target_blocks: list[dict] | None) -> list[dict] | None:
@@ -228,7 +220,6 @@ def _post_target_text(
     team_id: str | None,
     as_user: str | None,
     post_id: str | None = None,
-    update_ts: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Post a target message that has no file."""
     post_kwargs: dict[str, Any] = {
@@ -240,8 +231,6 @@ def _post_target_text(
         "reply_broadcast": reply_broadcast,
         "post_id": post_id,
     }
-    if update_ts:
-        post_kwargs["update_ts"] = update_ts
     if attachments:
         post_kwargs["attachments"] = attachments
     if customize:
@@ -276,6 +265,75 @@ def _mentioned_users_from_envelope(envelope: dict[str, Any]) -> list[dict]:
     return out
 
 
+def _build_target_attachments(
+    envelope: dict[str, Any],
+    *,
+    source_client: WebClient | None,
+    target_client: WebClient,
+    source_workspace_id: int,
+    target_workspace_id: int,
+    source_ws,
+    workspace_name: str | None,
+    mentioned_users: list[dict],
+) -> list[dict]:
+    """Envelope attachments with the same rewrites as the message body.
+
+    A peer's envelope was already rewritten on arrival (``_prepare_inbound_envelope``).
+    """
+    raw = [item for item in (envelope.get("attachments") or []) if isinstance(item, dict)]
+    if not raw or not source_client:
+        return [dict(item) for item in raw]
+
+    def rewrite_mrkdwn(value: str) -> str:
+        adapted = apply_mentioned_users(
+            value,
+            source_client,
+            target_client,
+            mentioned_users,
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=target_workspace_id,
+        )
+        return resolve_channel_references(adapted, source_client, source_ws)
+
+    def rewrite_blocks(blocks: list[dict]) -> list[dict]:
+        return build_target_blocks(
+            content_blocks=blocks,
+            photo_blocks=[],
+            source_client=source_client,
+            target_client=target_client,
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=target_workspace_id,
+            source_ws=source_ws,
+            source_workspace_name=workspace_name,
+            mentioned_users=mentioned_users,
+        )
+
+    return rewrite_attachments(raw, rewrite_mrkdwn, rewrite_blocks)
+
+
+def _build_upload_attachment_blocks(attachments: list[dict]) -> list[dict]:
+    """Blocks for attachments on a file share. An upload takes ``blocks``, not ``attachments``.
+
+    A card (blocks only) keeps its blocks. Other attachments become a section of their words.
+    """
+    blocks: list[dict] = []
+    for attachment in attachments:
+        nested = attachment.get("blocks")
+        if isinstance(nested, list) and nested and set(attachment) <= {"blocks", "color", "fallback"}:
+            blocks.extend(nested)
+            continue
+        words = text_from_attachments([attachment]).strip()
+        if words:
+            blocks.append({"type": "section", "text": {"type": "mrkdwn", "text": words}})
+    return clamp_section_text_in_blocks(blocks)
+
+
+def _build_refused_copy_text(text: str | None, attachments: list[dict]) -> str:
+    """Text for a copy whose blocks or attachments Slack refused: their words, then the copy note."""
+    parts = [(text or "").strip(), text_from_attachments(attachments).strip()]
+    return add_copy_note("\n".join(part for part in parts if part), [])[0] or ""
+
+
 def slack_write_create(
     *,
     envelope: dict[str, Any],
@@ -285,7 +343,6 @@ def slack_write_create(
     thread_ts: str | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Create a message on the target. Returns ``(ts, posted_as, error)``."""
-    from helpers.message_blocks import rewrite_attachment_strings, text_beside_attachments, text_from_attachments
     from helpers.workspace import get_workspace_by_id
 
     source_workspace_id = envelope.get("source_workspace_id") or 0
@@ -298,7 +355,6 @@ def slack_write_create(
     file_refs = list(envelope.get("file_refs") or [])
     content_blocks = list(envelope.get("blocks") or [])
     images = list(envelope.get("images") or [])
-    raw_attachments = [item for item in (envelope.get("attachments") or []) if isinstance(item, dict)]
     post_id = envelope.get("post_id")
 
     bot_token = _bot_token_for(workspace)
@@ -359,37 +415,17 @@ def slack_write_create(
     elif images:
         target_blocks = list(images)
 
-    def _rewrite_text(value: str) -> str:
-        if not source_client or not value:
-            return value
-        rewritten = apply_mentioned_users(
-            value,
-            source_client,
-            target_client,
-            mentioned_users,
-            source_workspace_id=source_workspace_id,
-            target_workspace_id=workspace.id,
-        )
-        return resolve_channel_references(rewritten, source_client, source_ws)
-
-    adapted_attachments = rewrite_attachment_strings(raw_attachments, _rewrite_text) if raw_attachments else []
-    if adapted_attachments and source_client:
-        for attachment in adapted_attachments:
-            nested = attachment.get("blocks")
-            if isinstance(nested, list) and nested:
-                attachment["blocks"] = build_target_blocks(
-                    content_blocks=nested,
-                    photo_blocks=[],
-                    source_client=source_client,
-                    target_client=target_client,
-                    source_workspace_id=source_workspace_id,
-                    target_workspace_id=workspace.id,
-                    source_ws=source_ws,
-                    source_workspace_name=workspace_name,
-                    mentioned_users=mentioned_users,
-                )
-    attachment_words = text_from_attachments(adapted_attachments)
-    display_text = text_beside_attachments(adapted_text, attachment_words) if adapted_attachments else adapted_text
+    adapted_attachments = _build_target_attachments(
+        envelope,
+        source_client=source_client,
+        target_client=target_client,
+        source_workspace_id=source_workspace_id,
+        target_workspace_id=workspace.id,
+        source_ws=source_ws,
+        workspace_name=workspace_name,
+        mentioned_users=mentioned_users,
+    )
+    refused_text = _build_refused_copy_text(adapted_text, adapted_attachments)
 
     pending_apply = {
         "sync_channel_id": sync_channel.id,
@@ -407,18 +443,23 @@ def slack_write_create(
         text: str | None = None,
     ) -> tuple[str | None, str | None]:
         use_blocks = target_blocks if blocks is None else blocks
-        post_text = display_text if text is None else text
+        post_text = adapted_text if text is None else text
         post_attachments = adapted_attachments if use_attachments else []
         # The file share is the message. Blocks and a comment together drop the blocks.
         # Bot customize sets the from line on every share, including file-only.
-        # Uploads cannot carry attachments, so the attachment words stay in the text.
         if file_refs:
-            share_blocks = _blocks_for_file_share(adapted_text, use_blocks) if use_blocks else None
+            upload_attachment_blocks = _build_upload_attachment_blocks(post_attachments)
+            if upload_attachment_blocks:
+                share_blocks = trim_target_blocks(
+                    (_blocks_for_file_share(post_text, use_blocks) or []) + upload_attachment_blocks
+                )
+            else:
+                share_blocks = _blocks_for_file_share(post_text, use_blocks) if use_blocks else None
             file_ts = _upload_target_files(
                 token=token,
                 channel_id=sync_channel.channel_id,
                 files=file_refs,
-                initial_comment=None if share_blocks else ((adapted_text or "").strip() or None),
+                initial_comment=None if share_blocks else ((post_text or "").strip() or None),
                 blocks=share_blocks,
                 username=format_synced_from_line(name_for_target, remote_workspace_label) if customize else None,
                 icon_url=(target_icon_url or user_avatar_url) if customize else None,
@@ -454,32 +495,19 @@ def slack_write_create(
         return pair[0], pair[1], None
 
     def _fail_create(exc: Exception) -> tuple[None, None, str]:
-        code = slack_error_code(exc)
-        if not code:
-            text = str(exc)
-            code = text if text in {"bot_token_unavailable", "empty_message_create"} else type(exc).__name__
-        log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=code)
+        code = slack_error_code(exc) or (str(exc) if str(exc) in _WRITE_REASONS else None)
+        log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=code or str(exc))
+        if code is None:
+            # Not an answer from Slack (a timeout or a dropped connection): the pipeline tries again.
+            raise exc
         if file_refs:
-            _notify_file_write_failed(
-                envelope=envelope,
-                source_client=source_client,
+            log_error(
+                "file_share_failed",
+                reason="upload_failed",
                 channel_id=sync_channel.channel_id,
                 error=code,
-            )
-            notify_source_user_error(
-                source_client=source_client,
-                source_user_id=envelope.get("source_user_id"),
-                summary=(
-                    ":warning: SyncBot could not copy your file because that workspace's file storage is full."
-                    if code == "storage_limit_reached"
-                    else ":warning: SyncBot could not copy your file to the other Channels."
-                ),
-                details={
-                    "event": "file_share_failed",
-                    "reason": "upload_failed",
-                    "error": code,
-                    "channel": sync_channel.channel_id,
-                },
+                post_id=envelope.get("post_id"),
+                thread_post_id=envelope.get("thread_post_id"),
             )
         return None, None, code
 
@@ -497,11 +525,13 @@ def slack_write_create(
                 block_types=sorted({b.get("type") for b in target_blocks if isinstance(b, dict) and b.get("type")}),
             )
             try:
-                return _with_error(
-                    _write(write_token, use_customize, posted_as, blocks=[], use_attachments=False, text=adapted_text)
+                ts, as_user = _write(
+                    write_token, use_customize, posted_as, blocks=[], use_attachments=False, text=refused_text
                 )
             except Exception as retry_exc:
                 return _fail_create(retry_exc)
+            # Posted, in a reduced form: the code tells the pipeline so the author hears about it.
+            return ts, as_user, (code if ts else None)
         if posted_as and code in _USER_WRITE_ERRORS:
             log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
             try:
@@ -520,8 +550,11 @@ def slack_write_edit(
     workspace,
     target_post_meta,
     source_client: WebClient | None = None,
-) -> bool:
-    """Edit an existing target message. Sticky token from posted_as_user_id."""
+) -> tuple[bool, str | None]:
+    """Edit an existing target message. Sticky token from posted_as_user_id.
+
+    Returns ``(ok, error)``. A refused card retried as text is ``(True, code)``.
+    """
     from helpers.workspace import get_workspace_by_id
 
     posted_as = getattr(target_post_meta, "posted_as_user_id", None)
@@ -577,25 +610,39 @@ def slack_write_edit(
         target_blocks = trim_target_blocks(list(content_blocks) + list(images or []))
     elif images:
         target_blocks = list(images)
+    adapted_attachments = _build_target_attachments(
+        envelope,
+        source_client=source_client,
+        target_client=target_client,
+        source_workspace_id=source_workspace_id,
+        target_workspace_id=workspace.id,
+        source_ws=source_ws,
+        workspace_name=workspace_name,
+        mentioned_users=mentioned_users,
+    )
 
-    def _update(write_token: str, as_user: str | None, *, blocks: list[dict] | None = None) -> bool:
-        use_blocks = target_blocks if blocks is None else blocks
+    refused_text = _build_refused_copy_text(adapted_text, adapted_attachments)
+
+    def _update(write_token: str, as_user: str | None, *, text_only: bool = False) -> bool:
+        # Text only is the retry after Slack refused the blocks or attachments.
+        use_blocks = [] if text_only else target_blocks
         post_message(
             bot_token=write_token,
             channel_id=sync_channel.channel_id,
-            msg_text=adapted_text,
+            msg_text=refused_text if text_only else adapted_text,
             update_ts=update_ts,
             blocks=use_blocks or None,
+            attachments=[] if text_only else adapted_attachments,
         )
         if as_user:
             remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, update_ts)
         return True
 
     try:
-        return _update(token, posted_as if used_user_token else None)
+        return _update(token, posted_as if used_user_token else None), None
     except SlackApiError as exc:
         code = slack_error_code(exc)
-        if code in _BLOCK_ERRORS and target_blocks:
+        if code in _BLOCK_ERRORS and (target_blocks or adapted_attachments):
             log_warning(
                 "slack_write_blocks_refused",
                 channel_id=sync_channel.channel_id,
@@ -603,36 +650,40 @@ def slack_write_edit(
                 block_types=sorted({b.get("type") for b in target_blocks if isinstance(b, dict) and b.get("type")}),
             )
             try:
-                return _update(token, posted_as if used_user_token else None, blocks=[])
+                return _update(token, posted_as if used_user_token else None, text_only=True), code
             except Exception as retry_exc:
+                retry_code = slack_error_code(retry_exc)
                 log_warning(
                     "slack_write_edit_failed",
                     channel_id=sync_channel.channel_id,
-                    error=slack_error_code(retry_exc) or str(retry_exc),
+                    error=retry_code or str(retry_exc),
                 )
-                return False
+                return False, retry_code or type(retry_exc).__name__
         if used_user_token and code in _USER_WRITE_ERRORS | {"cant_update_message"}:
             log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
             try:
-                return _update(bot_token, None)
+                return _update(bot_token, None), None
             except SlackApiError as retry_exc:
                 retry_code = slack_error_code(retry_exc)
                 log_warning(
                     "slack_write_edit_failed", channel_id=sync_channel.channel_id, error=retry_code or str(retry_exc)
                 )
-                return False
+                return False, retry_code or "slack_error"
             except Exception as retry_exc:
                 log_warning("slack_write_edit_failed", channel_id=sync_channel.channel_id, error=str(retry_exc))
-                return False
+                return False, type(retry_exc).__name__
         log_warning("slack_write_edit_failed", channel_id=sync_channel.channel_id, error=code or str(exc))
-        return False
+        return False, code or "slack_error"
     except Exception as exc:
         log_warning("slack_write_edit_failed", channel_id=sync_channel.channel_id, error=str(exc))
-        return False
+        return False, type(exc).__name__
 
 
-def slack_write_delete(*, sync_channel, workspace, target_post_meta) -> bool:
-    """Delete a target message. Sticky token from posted_as_user_id."""
+def slack_write_delete(*, sync_channel, workspace, target_post_meta) -> tuple[bool, str | None]:
+    """Delete a target message. Sticky token from posted_as_user_id.
+
+    Returns ``(ok, error)``. A copy that is already gone is ``(True, None)``.
+    """
     posted_as = getattr(target_post_meta, "posted_as_user_id", None)
     ts = slack_message_ts(target_post_meta.ts)
     bot_token = _bot_token_for(workspace)
@@ -645,12 +696,15 @@ def slack_write_delete(*, sync_channel, workspace, target_post_meta) -> bool:
             log_warning(
                 "slack_write_delete_skip_no_user_token", channel_id=sync_channel.channel_id, posted_as=posted_as
             )
-            return False
+            return False, "no_user_token"
     try:
         delete_message(bot_token=token, channel_id=sync_channel.channel_id, ts=ts)
         if posted_as:
             remember_message_echo(workspace.team_id, posted_as, sync_channel.channel_id, ts)
-        return True
+        return True, None
     except Exception as exc:
-        log_warning("slack_write_delete_failed", channel_id=sync_channel.channel_id, error=str(exc))
-        return False
+        code = slack_error_code(exc)
+        if code == "message_not_found":
+            return True, None
+        log_warning("slack_write_delete_failed", channel_id=sync_channel.channel_id, error=code or str(exc))
+        return False, code or type(exc).__name__
