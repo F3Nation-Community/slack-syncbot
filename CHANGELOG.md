@@ -17,9 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- NOTICE: Database migration in this release; Channels from a Workspace outside their Group are removed, and SQLite stops reusing deleted ids. Back up before upgrading.
+- NOTICE: Database migration in this release; Channels outside their Group are removed, and SQLite stops reusing deleted ids. Back up before upgrading.
 - NOTICE: Environment change in this release; a deploy without `ENABLE_DB_RESET` turns Reset Database off. Set it in the env file to keep the button.
-- NOTICE: Environment change in this release; `ENABLE_UNSIGNED_IMPORT` stays off until set to `true`, for a file whose signature cannot be checked. Set it back to `false` after that import.
+- NOTICE: Environment change in this release; `ENABLE_UNSIGNED_IMPORT` stays off until set to `true` for an unchecked file, then set it `false`.
 - Data Migration import accepts a signed file from an instance that is not connected, for this Workspace only
 - Settings shows this instance's Fingerprint on every Workspace
 
