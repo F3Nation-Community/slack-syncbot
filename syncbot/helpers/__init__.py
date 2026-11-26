@@ -65,6 +65,7 @@ from helpers.envelope import (
 )
 from helpers.files import (
     add_outside_file_links,
+    add_permalink_file_links,
     cleanup_temp_files,
     download_slack_files,
     drop_outside_files,
@@ -75,6 +76,7 @@ from helpers.files import (
     hosted_file_fetch_url,
     is_outside_file,
     is_slack_file_url,
+    link_only_file_url,
     upload_files_to_slack,
 )
 from helpers.group_roles import (
@@ -94,15 +96,22 @@ from helpers.group_roles import (
     succeed_ownership,
 )
 from helpers.message_blocks import (
+    attachment_is_image_only,
     blocks_include_body,
+    build_attachments_for_sync,
     build_content_blocks_for_sync,
     choose_message_text,
     collect_slack_file_ids_from_blocks,
     collect_user_ids_from_blocks,
+    compose_message_text,
+    event_attachments,
     event_has_slack_hosted_media_blocks,
     get_event_layout_blocks,
     is_slack_hosted_media_url,
     rewrite_content_blocks,
+    share_files,
+    share_permalinks,
+    text_from_attachments,
     text_from_blocks,
 )
 from helpers.notifications import (
@@ -291,6 +300,7 @@ __all__ = [
     "decrypt_bot_token",
     "delete_message",
     "add_outside_file_links",
+    "add_permalink_file_links",
     "drop_outside_files",
     "download_slack_files",
     "event_has_downloadable_hosted_file",
@@ -299,6 +309,7 @@ __all__ = [
     "event_keeps_hosted_files",
     "file_ids_from_message_event",
     "hosted_file_fetch_url",
+    "link_only_file_url",
     "is_outside_file",
     "is_slack_file_url",
     "is_slack_hosted_media_url",
@@ -318,7 +329,14 @@ __all__ = [
     "choose_message_text",
     "collect_slack_file_ids_from_blocks",
     "collect_user_ids_from_blocks",
+    "attachment_is_image_only",
+    "build_attachments_for_sync",
     "build_content_blocks_for_sync",
+    "compose_message_text",
+    "event_attachments",
+    "share_files",
+    "share_permalinks",
+    "text_from_attachments",
     "get_event_layout_blocks",
     "fetch_message_layout_blocks",
     "rewrite_content_blocks",

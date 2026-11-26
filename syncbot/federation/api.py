@@ -296,6 +296,18 @@ def _prepare_inbound_envelope(envelope: dict, workspace: schemas.Workspace) -> N
             envelope["blocks"] = trim_target_blocks(
                 rewrite_content_blocks(blocks, rewrite_mrkdwn, map_user_id, unmapped_label)
             )
+        from helpers.message_blocks import rewrite_attachment_strings
+
+        attachments = envelope.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            rewritten = rewrite_attachment_strings(attachments, rewrite_mrkdwn)
+            for attachment in rewritten:
+                nested = attachment.get("blocks")
+                if isinstance(nested, list) and nested:
+                    attachment["blocks"] = trim_target_blocks(
+                        rewrite_content_blocks(nested, rewrite_mrkdwn, map_user_id, unmapped_label)
+                    )
+            envelope["attachments"] = rewritten
     except Exception:
         log_debug(
             "federation_inbound_prepare_failed",

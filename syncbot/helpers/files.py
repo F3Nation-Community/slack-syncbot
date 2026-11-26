@@ -312,6 +312,53 @@ def _outside_file_link(file: dict) -> str | None:
     return url
 
 
+def link_only_file_url(file: dict | None) -> str | None:
+    """Https permalink for a Slack file that has no download URL.
+
+    ``hidden_by_limit``, ``tombstone``, and ``file_access`` stay unreadable.
+    A canvas (``quip``) is the usual case.
+    """
+    if not isinstance(file, dict) or file.get("mode") in _SKIP_FILE_MODES or is_outside_file(file):
+        return None
+    if hosted_file_fetch_url(file):
+        return None
+    url = file.get("permalink")
+    if not isinstance(url, str) or not url.startswith("https://"):
+        return None
+    if any(char in url for char in (" ", "\t", "\n", "<", ">", "|")):
+        return None
+    return url
+
+
+def add_permalink_file_links(
+    text: str | None,
+    blocks: list | None,
+    files: list | None,
+) -> tuple[str | None, list | None]:
+    """Append permalinks for files that cannot be downloaded, such as a canvas."""
+    from helpers.message_blocks import blocks_include_body
+
+    source = text or ""
+    links: list[str] = []
+    for item in files or []:
+        link = link_only_file_url(item if isinstance(item, dict) else None)
+        if link and link not in source and link not in links:
+            links.append(link)
+    if not links:
+        return text, blocks
+    extra = "\n".join(f"<{url}>" for url in links)
+    new_text = extra if not source.strip() else f"{source.rstrip()}\n{extra}"
+    new_blocks = list(blocks or [])
+    if blocks_include_body(new_blocks):
+        elements: list[dict] = []
+        for index, url in enumerate(links):
+            if index:
+                elements.append({"type": "text", "text": "\n"})
+            elements.append({"type": "link", "url": url})
+        new_blocks.append({"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": elements}]})
+    return new_text, new_blocks
+
+
 def add_outside_file_links(
     text: str | None,
     blocks: list | None,

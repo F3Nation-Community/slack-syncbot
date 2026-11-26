@@ -505,3 +505,325 @@ def _rewrite_node(
         else:
             out[key] = _rewrite_node(val, rewrite_mrkdwn, map_user_id, unmapped_user_label)
     return out
+
+
+_SHARE_FLAGS = ("is_share", "is_msg_unfurl", "is_reply_unfurl", "is_thread_root_unfurl")
+_ATTACHMENT_KEYS = (
+    "fallback",
+    "color",
+    "pretext",
+    "author_name",
+    "author_link",
+    "author_icon",
+    "title",
+    "title_link",
+    "text",
+    "fields",
+    "image_url",
+    "thumb_url",
+    "footer",
+    "footer_icon",
+    "ts",
+    "mrkdwn_in",
+    "blocks",
+)
+_ATTACHMENT_TEXT_KEYS = ("pretext", "author_name", "title", "text", "footer")
+_BROADCAST = re.compile(r"<!((?:here|channel|everyone))(?:\|[^>]*)?>", re.IGNORECASE)
+
+
+def event_attachments(event: dict | None) -> list[dict]:
+    """Attachments on a message event, including ``message_changed``."""
+    if not isinstance(event, dict):
+        return []
+    nested = event.get("message") if isinstance(event.get("message"), dict) else {}
+    raw = event.get("attachments") or nested.get("attachments") or []
+    return [item for item in raw if isinstance(item, dict)] if isinstance(raw, list) else []
+
+
+def attachment_is_share(attachment: dict | None) -> bool:
+    """True for a forward or a Slack message preview Slack already delivered."""
+    if not isinstance(attachment, dict):
+        return False
+    return any(attachment.get(flag) for flag in _SHARE_FLAGS)
+
+
+def attachment_is_image_only(attachment: dict | None) -> bool:
+    """GIF picker and Giphy: a public image and no other attachment body."""
+    if not isinstance(attachment, dict):
+        return False
+    if any(
+        attachment.get(key) for key in ("text", "pretext", "title", "author_name", "fields", "from_url", "original_url")
+    ):
+        return False
+    if attachment.get("image_url"):
+        return True
+    blocks = attachment.get("blocks") or []
+    return bool(blocks) and all(isinstance(block, dict) and block.get("type") == "image" for block in blocks)
+
+
+def _https_url(url: object) -> str | None:
+    if not isinstance(url, str):
+        return None
+    stripped = url.strip()
+    if not stripped.startswith("https://"):
+        return None
+    if stripped.startswith("https://app.slack.com/client") or "slack://" in stripped:
+        return None
+    if any(char in stripped for char in (" ", "\t", "\n", "<", ">", "|")):
+        return None
+    return stripped
+
+
+def _neutralize_broadcasts(value: str) -> str:
+    return _BROADCAST.sub(lambda match: f"@{match.group(1).lower()}", value)
+
+
+def _neutralize_block_broadcasts(node: object) -> object:
+    if isinstance(node, list):
+        return [_neutralize_block_broadcasts(item) for item in node]
+    if not isinstance(node, dict):
+        return node
+    if node.get("type") == "broadcast":
+        name = str(node.get("range") or "channel")
+        return {"type": "text", "text": f"@{name}"}
+    return {key: _neutralize_block_broadcasts(val) for key, val in node.items()}
+
+
+def _share_body_blocks(attachment: dict) -> list[dict]:
+    blocks: list[dict] = []
+    for item in attachment.get("message_blocks") or []:
+        message = item.get("message") if isinstance(item, dict) else None
+        nested = message.get("blocks") if isinstance(message, dict) else None
+        if isinstance(nested, list):
+            blocks.extend(block for block in nested if isinstance(block, dict))
+    return build_content_blocks_for_sync(blocks)
+
+
+def _copy_fields(raw_fields: object, *, neutralize: bool) -> list[dict]:
+    if not isinstance(raw_fields, list):
+        return []
+    fields: list[dict] = []
+    for field in raw_fields:
+        if not isinstance(field, dict):
+            continue
+        copied: dict = {}
+        title = field.get("title")
+        value = field.get("value")
+        if isinstance(title, str) and title:
+            copied["title"] = _neutralize_broadcasts(title) if neutralize else title
+        if isinstance(value, str) and value:
+            copied["value"] = _neutralize_broadcasts(value) if neutralize else value
+        if "short" in field:
+            copied["short"] = bool(field.get("short"))
+        if copied:
+            fields.append(copied)
+    return fields
+
+
+def build_attachments_for_sync(attachments: list[dict] | None) -> list[dict]:
+    """Attachments safe to post. Image-only attachments stay on the images path.
+
+    A forward's ``author_link`` is its source permalink. ``<!here>`` inside a
+    forward or message preview becomes plain ``@here`` so the target Channel
+    is not pinged. A bot attachment keeps Slack broadcasts.
+    """
+    out: list[dict] = []
+    for raw in attachments or []:
+        if not isinstance(raw, dict) or attachment_is_image_only(raw):
+            continue
+        share = attachment_is_share(raw)
+        link_preview = not share and bool(
+            (raw.get("original_url") or raw.get("from_url")) and (raw.get("service_name") or raw.get("is_app_unfurl"))
+        )
+        copied: dict = {}
+        for key in _ATTACHMENT_KEYS:
+            if key in raw and key not in {
+                "fields",
+                "blocks",
+                "author_link",
+                "title_link",
+                "image_url",
+                "thumb_url",
+                "text",
+            }:
+                copied[key] = raw.get(key)
+        if share:
+            words = choose_message_text(
+                raw.get("text") if isinstance(raw.get("text"), str) else "",
+                _share_body_blocks(raw),
+            ).strip()
+            if words:
+                copied["text"] = _neutralize_broadcasts(words)
+                copied["mrkdwn_in"] = ["text"]
+            author_link = _https_url(raw.get("from_url"))
+            if author_link:
+                copied["author_link"] = author_link
+        else:
+            text = raw.get("text")
+            if isinstance(text, str) and text:
+                copied["text"] = text
+            author_link = _https_url(raw.get("author_link"))
+            if author_link:
+                copied["author_link"] = author_link
+        title_link = _https_url(raw.get("title_link"))
+        if title_link:
+            copied["title_link"] = title_link
+        for image_key in ("image_url", "thumb_url"):
+            url = _https_url(raw.get(image_key))
+            if url and not is_slack_hosted_media_url(url):
+                copied[image_key] = url
+        fields = _copy_fields(raw.get("fields"), neutralize=share)
+        if fields:
+            copied["fields"] = fields
+        blocks = build_content_blocks_for_sync(raw.get("blocks") if isinstance(raw.get("blocks"), list) else [])
+        if share and blocks:
+            blocks = _neutralize_block_broadcasts(blocks)
+        if blocks:
+            copied["blocks"] = blocks
+        if link_preview:
+            service = raw.get("service_name")
+            icon = raw.get("service_icon")
+            if isinstance(service, str) and service:
+                copied["author_name"] = service
+            if isinstance(icon, str) and _https_url(icon):
+                copied["author_icon"] = icon
+        if share:
+            for key in _ATTACHMENT_TEXT_KEYS:
+                value = copied.get(key)
+                if isinstance(value, str):
+                    copied[key] = _neutralize_broadcasts(value)
+        cleaned = {key: value for key, value in copied.items() if value not in (None, "", [])}
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
+def text_from_attachments(attachments: list[dict] | None) -> str:
+    """Mrkdwn fallback for attachments. Shares and previews do not ping.
+
+    Built attachments are already neutralized. A raw share still is, so the
+    words can be read before ``build_attachments_for_sync``.
+    """
+    parts: list[str] = []
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict):
+            continue
+        neutralize = attachment_is_share(attachment)
+
+        def shown(value: object, plain: bool = neutralize) -> str:
+            text = value if isinstance(value, str) else ""
+            if plain and text:
+                return _neutralize_broadcasts(text)
+            return text
+
+        lines: list[str] = []
+        author = shown(attachment.get("author_name"))
+        author_link = _https_url(attachment.get("author_link")) or (
+            _https_url(attachment.get("from_url")) if attachment.get("is_share") else None
+        )
+        if author:
+            lines.append(f"<{author_link}|{author}>" if author_link else author)
+        pretext = shown(attachment.get("pretext")).strip()
+        if pretext:
+            lines.append(pretext)
+        title = shown(attachment.get("title"))
+        title_link = _https_url(attachment.get("title_link"))
+        if title:
+            lines.append(f"<{title_link}|{title}>" if title_link else title)
+        body = shown(attachment.get("text")).strip()
+        if body:
+            lines.append(body)
+        for field in attachment.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            label = shown(field.get("title"))
+            value = shown(field.get("value"))
+            joined = f"{label}: {value}".strip(": ").strip()
+            if joined:
+                lines.append(joined)
+        footer = shown(attachment.get("footer")).strip()
+        if footer:
+            lines.append(footer)
+        if lines:
+            parts.append("\n".join(lines))
+    return "\n".join(parts)
+
+
+def share_permalinks(attachments: list[dict] | None) -> list[str]:
+    """Source permalinks for forwards. A message preview's link is already in the text."""
+    urls: list[str] = []
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict) or not attachment.get("is_share"):
+            continue
+        url = _https_url(attachment.get("from_url"))
+        if url and url not in urls:
+            urls.append(url)
+    return urls
+
+
+def share_files(attachments: list[dict] | None) -> list[dict]:
+    """Files Slack attached to a forward. The peer never downloads these itself."""
+    files: list[dict] = []
+    seen: set[str] = set()
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict) or not attachment.get("is_share"):
+            continue
+        for item in attachment.get("files") or []:
+            if not isinstance(item, dict):
+                continue
+            file_id = str(item.get("id") or "")
+            if file_id and file_id in seen:
+                continue
+            if file_id:
+                seen.add(file_id)
+            files.append(item)
+    return files
+
+
+def compose_message_text(comment: str | None, permalinks: list[str] | None, attachment_words: str | None) -> str:
+    """Comment, source permalinks, then attachment words for peers that drop the card."""
+    base = (comment or "").strip()
+    lines = [base] if base else []
+    for url in permalinks or []:
+        if url and url not in base:
+            lines.append(url)
+    words = (attachment_words or "").strip()
+    if words and words not in base:
+        lines.append(words)
+    return "\n".join(lines)
+
+
+def text_beside_attachments(full_text: str | None, attachment_words: str | None) -> str:
+    """Text to show above a card. The card already carries *attachment_words*."""
+    full = full_text or ""
+    words = (attachment_words or "").strip()
+    if words and full.rstrip().endswith(words):
+        return full.rstrip()[: -len(words)].rstrip()
+    return full
+
+
+def rewrite_attachment_strings(attachments: list[dict] | None, rewrite_mrkdwn: Callable[[str], str]) -> list[dict]:
+    """Run the message-body rewriter over attachment text. Drops nothing else."""
+    rewritten: list[dict] = []
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict):
+            continue
+        copied = dict(attachment)
+        for key in _ATTACHMENT_TEXT_KEYS:
+            value = copied.get(key)
+            if isinstance(value, str) and value:
+                copied[key] = rewrite_mrkdwn(value)
+        fields = []
+        for field in copied.get("fields") or []:
+            if not isinstance(field, dict):
+                continue
+            updated = dict(field)
+            for key in ("title", "value"):
+                value = updated.get(key)
+                if isinstance(value, str) and value:
+                    updated[key] = rewrite_mrkdwn(value)
+            fields.append(updated)
+        if fields:
+            copied["fields"] = fields
+        rewritten.append(copied)
+    return rewritten

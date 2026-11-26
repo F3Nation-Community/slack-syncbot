@@ -711,8 +711,8 @@ def apply_mentioned_users(
 _CHANNEL_MENTION = re.compile(r"<#(C[A-Z0-9]+)(?:\|([^>]*))?>")
 # Keep pasted app.slack.com/client message URLs too; never *emit* that scheme for #channel.
 _MESSAGE_PERMALINK = re.compile(
-    r"<?(https://(?:app\.slack\.com/client/T[A-Z0-9]+/(C[A-Z0-9]+)/[\d.]+|"
-    r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/(C[A-Z0-9]+)/p\d+(?:\?[^\s>]*)?))"
+    r"<?(https://(?:app\.slack\.com/client/T[A-Z0-9]+/([CDG][A-Z0-9]+)/[\d.]+|"
+    r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/([CDG][A-Z0-9]+)/p\d+(?:\?[^\s>]*)?))"
     r"(?:\|([^>]+))?>?"
 )
 # Lookahead so greedy C[A-Z0-9]+ does not backtrack into /p permalinks.
@@ -846,10 +846,6 @@ def rewrite_envelope_channel_refs(
     if isinstance(text, str) and text:
         envelope["text"] = resolve_channel_references(text, source_client, source_workspace)
 
-    blocks = envelope.get("blocks")
-    if not isinstance(blocks, list) or not blocks:
-        return
-
     def rewrite_mrkdwn(value: str) -> str:
         return resolve_channel_references(value, source_client, source_workspace)
 
@@ -859,7 +855,19 @@ def rewrite_envelope_channel_refs(
     def keep_unmapped(uid: str) -> str:
         return f"<@{uid}>"
 
-    envelope["blocks"] = rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
+    from helpers.message_blocks import rewrite_attachment_strings
+
+    blocks = envelope.get("blocks")
+    if isinstance(blocks, list) and blocks:
+        envelope["blocks"] = rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
+    attachments = envelope.get("attachments")
+    if isinstance(attachments, list) and attachments:
+        rewritten = rewrite_attachment_strings(attachments, rewrite_mrkdwn)
+        for attachment in rewritten:
+            nested = attachment.get("blocks")
+            if isinstance(nested, list) and nested:
+                attachment["blocks"] = rewrite_content_blocks(nested, rewrite_mrkdwn, keep_user, keep_unmapped)
+        envelope["attachments"] = rewritten
 
 
 def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group_id: int | None = None) -> int:
