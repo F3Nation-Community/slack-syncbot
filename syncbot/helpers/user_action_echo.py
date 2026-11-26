@@ -369,20 +369,99 @@ def take_pending_file_share(team_id: str, channel_id: str, file_id: str) -> Pend
         close_session(session)
 
 
+_FOLLOW_UP_KIND = "follow_up"
+_REACTION_NOTE = "reaction"
+_NOTE_MAX = 100  # user_action_echoes.user_id
+
+
+def _build_follow_up_key(channel_id: str, message_ts: str) -> str:
+    return f"{channel_id}:{slack_message_ts(message_ts)}"
+
+
+def remember_follow_up(team_id: str, channel_id: str, message_ts: str, note: str) -> None:
+    """Leave *note* for the create of *message_ts*: a follow-up came before that message's copy.
+
+    *note* is the follow-up's own ts (an edit, a delete, or a thread reply) or a
+    reaction from :func:`pack_reaction_note`. Notes expire with the table's TTL.
+    """
+    if not channel_id or not message_ts or not note or len(note) > _NOTE_MAX:
+        return
+    remember_user_action(team_id, note, _FOLLOW_UP_KIND, _build_follow_up_key(channel_id, message_ts))
+
+
+def take_follow_up(team_id: str, channel_id: str, message_ts: str, note: str) -> bool:
+    """Take back one note. Atomic, so only one caller applies it."""
+    if not channel_id or not message_ts:
+        return False
+    return take_user_action_echo(team_id, note, _FOLLOW_UP_KIND, _build_follow_up_key(channel_id, message_ts))
+
+
+def take_follow_ups(team_id: str, channel_id: str, message_ts: str) -> list[str]:
+    """Every note left for *message_ts*, oldest first. Each note goes to one caller only."""
+    if not team_id or not channel_id or not message_ts:
+        return []
+    fingerprint = _build_follow_up_key(channel_id, message_ts)
+    session = get_session()
+    try:
+        _purge_expired(session)
+        rows = (
+            session.query(schemas.UserActionEcho.user_id)
+            .filter(
+                schemas.UserActionEcho.team_id == team_id,
+                schemas.UserActionEcho.kind == _FOLLOW_UP_KIND,
+                schemas.UserActionEcho.fingerprint == fingerprint,
+            )
+            .order_by(schemas.UserActionEcho.created_at, schemas.UserActionEcho.id)
+            .all()
+        )
+        session.commit()
+        notes = [row[0] for row in rows]
+    except Exception as exc:
+        session.rollback()
+        log_warning("take_follow_ups_failed", error=str(exc))
+        return []
+    finally:
+        close_session(session)
+    return [note for note in notes if take_user_action_echo(team_id, note, _FOLLOW_UP_KIND, fingerprint)]
+
+
+def pack_reaction_note(event_type: str, user_id: str, reaction: str) -> str | None:
+    """A reaction as a follow-up note, or ``None`` when it does not fit the column."""
+    note = f"{_REACTION_NOTE}|{event_type}|{user_id}|{reaction}"
+    return note if len(note) <= _NOTE_MAX else None
+
+
+def unpack_reaction_note(note: str) -> tuple[str, str, str] | None:
+    """``(event_type, user_id, reaction)`` from :func:`pack_reaction_note`, else ``None``."""
+    parts = note.split("|", 3) if isinstance(note, str) else []
+    if len(parts) != 4 or parts[0] != _REACTION_NOTE or not all(parts[1:]):
+        return None
+    return parts[1], parts[2], parts[3]
+
+
 def take_user_action_echo(team_id: str, user_id: str, kind: str, fingerprint: str) -> bool:
-    """If a remembered row exists, delete it and return True (consume-once)."""
+    """If a remembered row exists, delete it and return True (consume-once).
+
+    One ``DELETE … WHERE`` and its rowcount, so two callers racing for the same
+    row cannot both take it.
+    """
     if not team_id or not user_id or not kind or not fingerprint:
         return False
     session = get_session()
     try:
         _purge_expired(session)
-        row = _find_echo(session, team_id, user_id, kind, fingerprint)
-        if row is None:
-            session.commit()
-            return False
-        session.delete(row)
+        taken = (
+            session.query(schemas.UserActionEcho)
+            .filter(
+                schemas.UserActionEcho.team_id == team_id,
+                schemas.UserActionEcho.user_id == user_id,
+                schemas.UserActionEcho.kind == kind,
+                schemas.UserActionEcho.fingerprint == fingerprint,
+            )
+            .delete(synchronize_session=False)
+        )
         session.commit()
-        return True
+        return bool(taken)
     except Exception as exc:
         session.rollback()
         log_warning("take_user_action_echo_failed", kind=kind, error=str(exc))

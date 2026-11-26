@@ -70,6 +70,34 @@ def get_post_records(thread_ts: str) -> list[tuple[schemas.PostMeta, schemas.Syn
     return _dedupe_post_records(post_records)
 
 
+def hand_off_follow_up(
+    team_id: str | None,
+    channel_id: str | None,
+    message_ts: str | None,
+    note: str | None,
+) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]]:
+    """A follow-up whose message has no PostMeta yet: leave a note for that message's create.
+
+    Slack can deliver a follow-up (a preview edit, a delete, a thread reply, a
+    reaction) before, or while, its message's create runs. Write the note, then
+    look for PostMeta once more. When the create finished meanwhile and this
+    caller takes its note back, return the PostMeta so the caller applies the
+    follow-up now. Otherwise return ``[]``: the create takes the note after it
+    writes PostMeta and replays it. Each side writes before it checks, and a
+    take is atomic, so exactly one side applies a note.
+    """
+    from helpers.user_action_echo import remember_follow_up, take_follow_up
+
+    if not team_id or not channel_id or not message_ts or not note:
+        return []
+    remember_follow_up(team_id, channel_id, message_ts, note)
+    records = get_post_records(message_ts)
+    if records and take_follow_up(team_id, channel_id, message_ts, note):
+        return records
+    log_debug("follow_up_handed_off", channel=channel_id, ts=message_ts)
+    return []
+
+
 def post_meta_exists_for_channel_ts(channel_id: str, ts: str | float) -> bool:
     """True when any PostMeta row already records this channel+ts (copy guard)."""
     try:
