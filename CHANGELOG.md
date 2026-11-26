@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- version list -->
 
+## [Unreleased]
+
+### Changed
+
+- AWS Lambda uses 512 MB and loads the app before the first request
+
+### Fixed
+
+- A new AWS Lambda instance no longer compiles every module from source on its first request
+
 
 ## [1.8.0] - 2026-11-10
 

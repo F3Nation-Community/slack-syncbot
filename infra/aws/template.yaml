@@ -282,7 +282,7 @@ Resources:
       Architectures:
         - x86_64
       Timeout: 120
-      MemorySize: 256
+      MemorySize: 512
       EphemeralStorage:
         Size: 2048
       ReservedConcurrentExecutions: !If [IsSqlite, 1, !Ref AWS::NoValue]

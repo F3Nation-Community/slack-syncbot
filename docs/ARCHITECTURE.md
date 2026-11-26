@@ -456,9 +456,10 @@ The Function URL is Slack and federation only (`/slack/*`, `/api/federation/*`).
 
 **Lambda cold start vs Slack acks**
 
-- The main function uses **256 MB** memory and a **120 second** timeout so post-deploy `{"action":"migrate"}` can finish a cold start plus Alembic. Slack's 3s ack is unchanged.
+- The main function uses **512 MB** memory and a **120 second** timeout so post-deploy `{"action":"migrate"}` can finish a cold start plus Alembic. Slack's 3s ack is unchanged.
+- The wrapper (`infra/aws/lambda/handler.py`) imports the app when Lambda loads it, in the init phase, so a new execution environment is ready before its first request. The package ships Python 3.12 bytecode, because Lambda cannot write the bytecode it would otherwise compile from source on every cold start.
 - For **mysql** / **postgresql**, Alembic runs only on that migrate invoke, not on every Slack cold start.
-- For **sqlite**, the wrapper restores from S3 and runs Alembic once per execution environment (then `litestream replicate`). A true cold start can miss Slack’s 3s window. Keep-warm (`ENABLE_KEEP_WARM`) makes that rare; events still retry.
+- For **sqlite**, the wrapper restores from S3 and runs Alembic once per execution environment, in the same init phase (then `litestream replicate`). A true cold start can miss Slack’s 3s window. Keep-warm (`ENABLE_KEEP_WARM`) makes that rare; events still retry.
 - EventBridge keep-warm ScheduleV2 **invokes the Lambda** (`source` `aws.scheduler` / `aws.events`). `app.handler` pulses federation allowlists and a group/sync snapshot, and does **not** republish Home.
 - After migrate, the deploy script invokes `{"action":"ready"}`, which pulses again and republishes remembered Home tabs.
 - Inbound federation returns 503 if identity or the database is not ready.
