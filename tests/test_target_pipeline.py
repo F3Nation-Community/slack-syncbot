@@ -71,7 +71,7 @@ def test_user_token_create_posts_natively_and_remembers_echo():
         patch("helpers.slack_write.post_message", return_value={"ts": "10.000001"}) as post,
         patch("helpers.slack_write.remember_user_action") as remember,
     ):
-        ts, posted_as = slack_write_create(
+        ts, posted_as, _error = slack_write_create(
             envelope=_envelope(),
             sync_channel=_sync_channel(),
             workspace=_workspace(),
@@ -99,7 +99,7 @@ def test_no_user_token_create_uses_bot_customization_without_echo():
         patch("helpers.slack_write.post_message", return_value={"ts": "10.0"}) as post,
         patch("helpers.slack_write.remember_user_action") as remember,
     ):
-        _ts, posted_as = slack_write_create(
+        _ts, posted_as, _error = slack_write_create(
             envelope=_envelope(),
             sync_channel=_sync_channel(),
             workspace=_workspace(),
@@ -199,7 +199,7 @@ def test_ordinary_file_share_is_one_upload_without_message_post():
             workspace=_workspace(),
         )
 
-    assert result == ("20.0", "U_TARGET")
+    assert result[:2] == ("20.0", "U_TARGET")
     post.assert_not_called()
     upload.assert_called_once()
     assert upload.call_args.kwargs["bot_token"] == "xoxp-user"
@@ -224,7 +224,7 @@ def test_user_token_text_plus_file_embeds_caption_on_the_same_message():
             workspace=_workspace(),
         )
 
-    assert result == ("20.0", "U_TARGET")
+    assert result[:2] == ("20.0", "U_TARGET")
     post.assert_not_called()
     upload.assert_called_once()
     assert upload.call_args.kwargs["bot_token"] == "xoxp-user"
@@ -250,7 +250,7 @@ def test_user_token_thread_reply_file_embeds_on_the_parent_thread():
             thread_ts="20.000000",
         )
 
-    assert result == ("35.0", "U_TARGET")
+    assert result[:2] == ("35.0", "U_TARGET")
     post.assert_not_called()
     assert upload.call_args.kwargs["thread_ts"] == "20.000000"
     assert upload.call_args.kwargs["initial_comment"] == "see attached"
@@ -282,7 +282,7 @@ def test_bot_block_body_with_file_is_one_share():
             source_client=source_client,
         )
 
-    assert result == ("20.0", None)
+    assert result[:2] == ("20.0", None)
     post.assert_not_called()
     assert upload.call_args.kwargs["thread_ts"] is None
     assert upload.call_args.kwargs["reply_broadcast"] is False
@@ -317,7 +317,7 @@ def test_user_token_file_with_blocks_is_one_share():
             source_client=source_client,
         )
 
-    assert result == ("20.0", "U_TARGET")
+    assert result[:2] == ("20.0", "U_TARGET")
     upload.assert_called_once()
     assert upload.call_args.kwargs["initial_comment"] is None
     assert upload.call_args.kwargs["blocks"] == blocks
@@ -353,7 +353,7 @@ def test_user_token_thread_broadcast_file_with_blocks_keeps_broadcast():
             thread_ts="20.000000",
         )
 
-    assert result == ("35.0", "U_TARGET")
+    assert result[:2] == ("35.0", "U_TARGET")
     assert upload.call_args.kwargs["thread_ts"] == "20.000000"
     assert upload.call_args.kwargs["reply_broadcast"] is True
     assert upload.call_args.kwargs["blocks"] == blocks
@@ -448,7 +448,7 @@ def test_apply_target_records_sticky_posted_as_user():
         patch("helpers.sync_apply.get_active_sync_channel", side_effect=lambda sc: sc),
         patch(
             "helpers.sync_apply.slack_write_create",
-            return_value=("10.0", "U_TARGET"),
+            return_value=("10.0", "U_TARGET", None),
         ),
         patch("helpers.sync_apply.DbManager.create_records") as persist,
     ):
@@ -579,7 +579,7 @@ def test_caption_only_file_falls_back_to_bot_upload_when_user_token_fails():
         ) as upload,
         patch("helpers.slack_write.remember_user_action") as remember,
     ):
-        ts, posted_as = slack_write_create(
+        ts, posted_as, _error = slack_write_create(
             envelope=_envelope(text="", file_refs=[{"path": "/tmp/a.pdf", "name": "a.pdf"}]),
             sync_channel=_sync_channel(),
             workspace=_workspace(),
@@ -614,7 +614,7 @@ def test_empty_create_does_not_post():
             workspace=_workspace(),
         )
 
-    assert result == (None, None)
+    assert result[:2] == (None, None)
     post.assert_not_called()
     notify.assert_not_called()
 
@@ -639,7 +639,7 @@ def test_create_posts_the_text_when_slack_refuses_the_blocks():
         patch("helpers.slack_write.post_message", side_effect=[_block_refusal(), {"ts": "9.0"}]) as post,
         patch("helpers.slack_write.log_warning") as warn,
     ):
-        ts, _posted = slack_write_create(
+        ts, _posted, _error = slack_write_create(
             envelope=_envelope(text="hello", blocks=blocks, mapped_user_id=None),
             sync_channel=_sync_channel(),
             workspace=_workspace(),
@@ -707,7 +707,7 @@ def test_file_share_posts_the_text_when_slack_refuses_the_blocks():
             workspace=_workspace(),
             source_client=source_client,
         )
-    assert result == ("20.0", None)
+    assert result[:2] == ("20.0", None)
     post.assert_not_called()
     assert upload.call_count == 2
     assert upload.call_args_list[0].kwargs["blocks"] == blocks
@@ -737,7 +737,7 @@ def test_a_create_with_no_blocks_is_not_retried():
             sync_channel=_sync_channel(),
             workspace=_workspace(),
         )
-    assert result == (None, None)
+    assert result[:2] == (None, None)
     assert post.call_count == 1
 
 
@@ -765,7 +765,7 @@ def test_omitted_file_share_ts_does_not_dm():
             workspace=_workspace(),
         )
 
-    assert result == (None, "U_TARGET")
+    assert result[:2] == (None, "U_TARGET")
     post.assert_not_called()
     notify.assert_not_called()
     pending.assert_called_once_with(
@@ -802,7 +802,7 @@ def test_file_upload_failure_dms_source_user():
             source_client=source_client,
         )
 
-    assert result == (None, None)
+    assert result[:2] == (None, None)
     post.assert_not_called()
     notify.assert_called_once()
     assert notify.call_args.kwargs["source_client"] is source_client
@@ -832,7 +832,7 @@ def test_file_upload_slack_error_uses_error_code():
             source_client=source_client,
         )
 
-    assert result == (None, None)
+    assert result[:2] == (None, None)
     post.assert_not_called()
     notify.assert_called_once()
     assert notify.call_args.kwargs["details"]["error"] == "storage_limit_reached"

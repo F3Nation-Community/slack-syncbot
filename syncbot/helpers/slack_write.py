@@ -28,7 +28,7 @@ from logger import log_debug, log_error, log_info, log_warning
 
 _NO_AUTHORIZE_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked", "missing_scope", "account_inactive"})
 _USER_WRITE_ERRORS = _NO_AUTHORIZE_ERRORS | frozenset({"not_in_channel", "channel_not_found"})
-_BLOCK_ERRORS = frozenset({"invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long"})
+_BLOCK_ERRORS = frozenset({"invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long", "invalid_attachments"})
 
 
 def _bot_token_for(workspace) -> str:
@@ -132,22 +132,6 @@ def _notify_file_write_failed(
         post_id=envelope.get("post_id"),
         thread_post_id=envelope.get("thread_post_id"),
     )
-    summary = (
-        ":warning: SyncBot could not copy your file because that workspace's file storage is full."
-        if error == "storage_limit_reached"
-        else ":warning: SyncBot could not copy your file to the other Channels."
-    )
-    notify_source_user_error(
-        source_client=source_client,
-        source_user_id=envelope.get("source_user_id"),
-        summary=summary,
-        details={
-            "event": "file_share_failed",
-            "reason": "upload_failed",
-            "error": error,
-            "channel": channel_id,
-        },
-    )
 
 
 def _blocks_for_file_share(adapted_text: str, target_blocks: list[dict] | None) -> list[dict] | None:
@@ -233,6 +217,7 @@ def _post_target_text(
     channel_id: str,
     adapted_text: str,
     target_blocks: list[dict] | None,
+    attachments: list[dict] | None,
     thread_ts: str | None,
     reply_broadcast: bool,
     customize: bool,
@@ -243,6 +228,7 @@ def _post_target_text(
     team_id: str | None,
     as_user: str | None,
     post_id: str | None = None,
+    update_ts: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Post a target message that has no file."""
     post_kwargs: dict[str, Any] = {
@@ -254,6 +240,10 @@ def _post_target_text(
         "reply_broadcast": reply_broadcast,
         "post_id": post_id,
     }
+    if update_ts:
+        post_kwargs["update_ts"] = update_ts
+    if attachments:
+        post_kwargs["attachments"] = attachments
     if customize:
         post_kwargs["user_name"] = name_for_target
         post_kwargs["user_profile_url"] = target_icon_url or user_avatar_url
@@ -293,8 +283,9 @@ def slack_write_create(
     workspace,
     source_client: WebClient | None = None,
     thread_ts: str | None = None,
-) -> tuple[str | None, str | None]:
-    """Create a message (and optional files) on the target. Returns (ts, posted_as)."""
+) -> tuple[str | None, str | None, str | None]:
+    """Create a message on the target. Returns ``(ts, posted_as, error)``."""
+    from helpers.message_blocks import rewrite_attachment_strings, text_beside_attachments, text_from_attachments
     from helpers.workspace import get_workspace_by_id
 
     source_workspace_id = envelope.get("source_workspace_id") or 0
@@ -307,6 +298,7 @@ def slack_write_create(
     file_refs = list(envelope.get("file_refs") or [])
     content_blocks = list(envelope.get("blocks") or [])
     images = list(envelope.get("images") or [])
+    raw_attachments = [item for item in (envelope.get("attachments") or []) if isinstance(item, dict)]
     post_id = envelope.get("post_id")
 
     bot_token = _bot_token_for(workspace)
@@ -367,6 +359,38 @@ def slack_write_create(
     elif images:
         target_blocks = list(images)
 
+    def _rewrite_text(value: str) -> str:
+        if not source_client or not value:
+            return value
+        rewritten = apply_mentioned_users(
+            value,
+            source_client,
+            target_client,
+            mentioned_users,
+            source_workspace_id=source_workspace_id,
+            target_workspace_id=workspace.id,
+        )
+        return resolve_channel_references(rewritten, source_client, source_ws)
+
+    adapted_attachments = rewrite_attachment_strings(raw_attachments, _rewrite_text) if raw_attachments else []
+    if adapted_attachments and source_client:
+        for attachment in adapted_attachments:
+            nested = attachment.get("blocks")
+            if isinstance(nested, list) and nested:
+                attachment["blocks"] = build_target_blocks(
+                    content_blocks=nested,
+                    photo_blocks=[],
+                    source_client=source_client,
+                    target_client=target_client,
+                    source_workspace_id=source_workspace_id,
+                    target_workspace_id=workspace.id,
+                    source_ws=source_ws,
+                    source_workspace_name=workspace_name,
+                    mentioned_users=mentioned_users,
+                )
+    attachment_words = text_from_attachments(adapted_attachments)
+    display_text = text_beside_attachments(adapted_text, attachment_words) if adapted_attachments else adapted_text
+
     pending_apply = {
         "sync_channel_id": sync_channel.id,
         "source_user_id": source_user_id or None,
@@ -379,10 +403,15 @@ def slack_write_create(
         as_user: str | None,
         *,
         blocks: list[dict] | None = None,
+        use_attachments: bool = True,
+        text: str | None = None,
     ) -> tuple[str | None, str | None]:
         use_blocks = target_blocks if blocks is None else blocks
+        post_text = display_text if text is None else text
+        post_attachments = adapted_attachments if use_attachments else []
         # The file share is the message. Blocks and a comment together drop the blocks.
         # Bot customize sets the from line on every share, including file-only.
+        # Uploads cannot carry attachments, so the attachment words stay in the text.
         if file_refs:
             share_blocks = _blocks_for_file_share(adapted_text, use_blocks) if use_blocks else None
             file_ts = _upload_target_files(
@@ -401,13 +430,14 @@ def slack_write_create(
                 **pending_apply,
             )
             return file_ts, as_user
-        if not (adapted_text or "").strip() and not use_blocks:
+        if not (post_text or "").strip() and not use_blocks and not post_attachments:
             raise RuntimeError("empty_message_create")
         return _post_target_text(
             token=token,
             channel_id=sync_channel.channel_id,
-            adapted_text=adapted_text,
+            adapted_text=post_text,
             target_blocks=use_blocks,
+            attachments=post_attachments,
             thread_ts=thread_ts,
             reply_broadcast=reply_broadcast,
             customize=customize,
@@ -420,24 +450,46 @@ def slack_write_create(
             post_id=post_id,
         )
 
-    def _fail_create(exc: Exception) -> tuple[None, None]:
-        log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=str(exc))
+    def _with_error(pair: tuple[str | None, str | None]) -> tuple[str | None, str | None, str | None]:
+        return pair[0], pair[1], None
+
+    def _fail_create(exc: Exception) -> tuple[None, None, str]:
+        code = slack_error_code(exc)
+        if not code:
+            text = str(exc)
+            code = text if text in {"bot_token_unavailable", "empty_message_create"} else type(exc).__name__
+        log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=code)
         if file_refs:
             _notify_file_write_failed(
                 envelope=envelope,
                 source_client=source_client,
                 channel_id=sync_channel.channel_id,
-                error=slack_error_code(exc) or str(exc),
+                error=code,
             )
-        return None, None
+            notify_source_user_error(
+                source_client=source_client,
+                source_user_id=envelope.get("source_user_id"),
+                summary=(
+                    ":warning: SyncBot could not copy your file because that workspace's file storage is full."
+                    if code == "storage_limit_reached"
+                    else ":warning: SyncBot could not copy your file to the other Channels."
+                ),
+                details={
+                    "event": "file_share_failed",
+                    "reason": "upload_failed",
+                    "error": code,
+                    "channel": sync_channel.channel_id,
+                },
+            )
+        return None, None, code
 
     try:
-        return _write(write_token, use_customize, posted_as)
+        return _with_error(_write(write_token, use_customize, posted_as))
     except SlackApiError as exc:
         code = slack_error_code(exc)
-        # Slack refuses the whole message for one block it will not take.
-        # Post the text, which already carries the blocks' words.
-        if code in _BLOCK_ERRORS and target_blocks:
+        # Slack refuses the whole message for one block or attachment it will not take.
+        # Post the text, which already carries those words.
+        if code in _BLOCK_ERRORS and (target_blocks or adapted_attachments):
             log_warning(
                 "slack_write_blocks_refused",
                 channel_id=sync_channel.channel_id,
@@ -445,13 +497,15 @@ def slack_write_create(
                 block_types=sorted({b.get("type") for b in target_blocks if isinstance(b, dict) and b.get("type")}),
             )
             try:
-                return _write(write_token, use_customize, posted_as, blocks=[])
+                return _with_error(
+                    _write(write_token, use_customize, posted_as, blocks=[], use_attachments=False, text=adapted_text)
+                )
             except Exception as retry_exc:
                 return _fail_create(retry_exc)
         if posted_as and code in _USER_WRITE_ERRORS:
             log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
             try:
-                return _write(bot_token, True, None)
+                return _with_error(_write(bot_token, True, None))
             except Exception as retry_exc:
                 return _fail_create(retry_exc)
         return _fail_create(exc)

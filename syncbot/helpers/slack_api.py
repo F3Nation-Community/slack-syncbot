@@ -309,6 +309,7 @@ def post_message(
     update_ts: str | None = None,
     workspace_name: str | None = None,
     blocks: list[dict] | None = None,
+    attachments: list[dict] | None = None,
     reply_broadcast: bool = False,
     post_id: str | None = None,
 ) -> dict:
@@ -322,16 +323,21 @@ def post_message(
             all_blocks = blocks
     else:
         all_blocks = []
-    fallback_text = msg_text.strip() or (" " if all_blocks else "")
+    posted_attachments = list(attachments or [])
+    show_text = msg_text.strip()
+    if not show_text and not posted_attachments:
+        show_text = " " if all_blocks else ""
     if update_ts:
         update_kwargs: dict = {
             "channel": channel_id,
-            "text": fallback_text,
             "ts": update_ts,
             "blocks": all_blocks,
+            "attachments": posted_attachments,
             "unfurl_links": False,
             "unfurl_media": False,
         }
+        if show_text or not posted_attachments:
+            update_kwargs["text"] = show_text
         if reply_broadcast:
             update_kwargs["reply_broadcast"] = True
         res = slack_client.chat_update(**update_kwargs)
@@ -339,7 +345,6 @@ def post_message(
         username_str = format_synced_from_line(user_name, workspace_name) if user_name else None
         kwargs: dict = {
             "channel": channel_id,
-            "text": fallback_text,
             "username": username_str,
             "icon_url": user_profile_url,
             "thread_ts": thread_ts,
@@ -347,6 +352,10 @@ def post_message(
             "unfurl_links": False,
             "unfurl_media": False,
         }
+        if show_text or not posted_attachments:
+            kwargs["text"] = show_text
+        if posted_attachments:
+            kwargs["attachments"] = posted_attachments
         if reply_broadcast:
             kwargs["reply_broadcast"] = True
         if post_id:

@@ -74,7 +74,7 @@ def apply_target(
             )
         if envelope.get("thread_post_id") and not thread_ts:
             return ApplyOutcome()
-        ts, posted_as = slack_write_create(
+        ts, posted_as, _write_error = slack_write_create(
             envelope=envelope,
             sync_channel=sync_channel,
             workspace=workspace,
