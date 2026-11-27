@@ -657,7 +657,9 @@ def _build_share_header_blocks(attachment: dict) -> list[dict]:
         blocks.append({"type": "context", "elements": elements})
     channel_id = attachment.get("channel_id")
     if isinstance(channel_id, str) and _PUBLIC_CHANNEL_ID.match(channel_id):
-        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"Posted in <#{channel_id}>"}]})
+        # The client's words: a reply (``is_reply_unfurl``) is "From a thread in", anything else "Posted in".
+        where = "From a thread in" if attachment.get("is_reply_unfurl") else "Posted in"
+        blocks.append({"type": "context", "elements": [{"type": "mrkdwn", "text": f"{where} <#{channel_id}>"}]})
     return blocks
 
 

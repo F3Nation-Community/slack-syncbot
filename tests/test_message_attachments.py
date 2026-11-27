@@ -613,7 +613,7 @@ class TestFederationRewrite:
         ]
         assert append_link_lines(text, blocks, [FORWARD_PERMALINK]) == (text, blocks)
 
-    def test_a_reply_preview_header_keeps_the_authors_name_linked(self):
+    def test_a_reply_preview_keeps_the_authors_name_linked_and_says_from_a_thread(self):
         """A reply's permalink has ``?thread_ts=…&cid=…``; the rewrite must not split the header link."""
         reply_url = (
             "https://workspace-a.slack.com/archives/C0GENERAL/p1733497250123456"
@@ -633,10 +633,12 @@ class TestFederationRewrite:
             "footer": "Thread in Slack Conversation",
         }
 
-        header = build_attachments_for_sync([preview])[0]["blocks"][0]["elements"][-1]["text"]
+        card = build_attachments_for_sync([preview])[0]
+        header = card["blocks"][0]["elements"][-1]["text"]
 
         assert header.startswith(f"*<{reply_url}|Ada Lovelace>*")
         assert resolve_channel_references(header, None, None) == header
+        assert card["blocks"][1]["elements"][0]["text"] == "From a thread in <#C0GENERAL>"
 
     def test_rewrite_attachments_reaches_text_fields_and_blocks(self):
         raw = [{"text": "hi <@U1>", "fields": [{"title": "Who", "value": "<@U1>"}], "blocks": [{"type": "divider"}]}]
