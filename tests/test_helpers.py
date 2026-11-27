@@ -600,6 +600,20 @@ class TestResolveChannelReferences:
         )
         client.conversations_replies.assert_not_called()
 
+    def test_a_failed_name_lookup_stays_message(self):
+        """A timeout reading the person's name falls back; it never stops the rewrite."""
+        client = self._linked(
+            self._make_client(channel_name="announcements"),
+            {"ts": "1234567890.123456", "user": "U0ADA"},
+        )
+        client.users_info.side_effect = TimeoutError("slow")
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456"
+
+        assert resolve_channel_references(f"<{url}>", client, ws) == (
+            f"<{url}|message in #announcements (Workspace A)>"
+        )
+
     def test_an_unreadable_message_or_a_dm_link_stays_message(self):
         client = self._make_client(channel_name="announcements")
         client.conversations_replies.side_effect = SlackApiError("no", {"ok": False, "error": "not_in_channel"})

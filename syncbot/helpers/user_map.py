@@ -792,7 +792,10 @@ def note_message_link_names(attachments: list[dict] | None) -> None:
 
 
 def _read_message_link_name(source_client: WebClient, key: tuple[str, str], url: str) -> str | None:
-    """The linked message's author, read from Slack: a bot post's name, else the person's name."""
+    """The linked message's author, read from Slack: a bot post's name, else the person's name.
+
+    Never raises: the name is optional, and the rewrite runs before any target is tried.
+    """
     channel_id, digits = key
     thread = _THREAD_TS_IN_LINK.search(url)
     try:
@@ -802,14 +805,14 @@ def _read_message_link_name(source_client: WebClient, key: tuple[str, str], url:
             f"{digits[:-6]}.{digits[-6:]}",
             thread_ts=thread.group(1) if thread else None,
         )
+        if not isinstance(message, dict):
+            return None
+        name = message.get("username") or safe_get(message, "bot_profile", "name")
+        if not name and message.get("user"):
+            name, _icon = get_user_info(source_client, message["user"])
     except Exception as exc:
         log_debug("message_link_name_failed", channel_id=channel_id, error=slack_error_code(exc) or type(exc).__name__)
         return None
-    if not isinstance(message, dict):
-        return None
-    name = message.get("username") or safe_get(message, "bot_profile", "name")
-    if not name and message.get("user"):
-        name, _icon = get_user_info(source_client, message["user"])
     return _link_text(name)
 
 
