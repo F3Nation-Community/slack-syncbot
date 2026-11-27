@@ -253,11 +253,44 @@ class TestRespondToMessageEventDedup:
         with (
             patch("handlers.message._is_own_bot_message", return_value=True),
             patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=True) as complete,
+            patch("handlers.message._replay_pending_events") as replay,
             patch("handlers.message._handle_new_post") as mock_new,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         complete.assert_called_once()
         mock_new.assert_not_called()
+        # The copy's PostMeta is written now: what waited on its ts is replayed.
+        assert replay.call_args.args[2]["ts"] == "1234567890.000001"
+        assert replay.call_args.args[2]["channel_id"] == "C001"
+
+    def test_a_persons_file_echo_that_records_the_copy_replays_what_waited(self, event_db):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["files"] = [{"id": "F99"}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message.helpers.check_pending_event", side_effect=_echo_of("file")),
+            patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=True),
+            patch("handlers.message._replay_pending_events") as replay,
+            patch("handlers.message._handle_new_post") as mock_new,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        mock_new.assert_not_called()
+        assert replay.call_args.args[2]["ts"] == "1234567890.000001"
+
+    def test_an_echo_that_records_nothing_replays_nothing(self, event_db):
+        body = _message_body(event_id="")
+        body["event"]["subtype"] = "file_share"
+        body["event"]["files"] = [{"id": "F1"}]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=True),
+            patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=None),
+            patch("handlers.message._replay_pending_events") as replay,
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+
+        replay.assert_not_called()
 
     def test_own_bot_pending_copy_not_ready_releases_claim(self, event_db):
         body = _message_body()

@@ -943,6 +943,8 @@ def respond_to_message_event(
                     channel_id=ctx.get("channel_id"),
                     ts=ctx.get("ts"),
                 )
+                # The copy had no ts until now, so anything done on it was left pending.
+                _replay_pending_events(client, logger, ctx)
                 return
             log_debug(
                 "message_skip",
@@ -1036,6 +1038,7 @@ def respond_to_message_event(
                         channel_id=channel_id,
                         ts=ts,
                     )
+                    _replay_pending_events(client, logger, ctx)
                     return
                 log_debug("message_skip", reason="file_echo", **trace)
                 return
