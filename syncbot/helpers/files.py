@@ -22,7 +22,7 @@ from logging import Logger
 import requests
 from slack_sdk import WebClient
 
-from helpers.user_action_echo import slack_message_ts
+from helpers.slack_ts import slack_message_ts
 from logger import log_debug, log_error, log_info, log_warning
 
 # Slack documents 1 GB per file on every plan, including Free.

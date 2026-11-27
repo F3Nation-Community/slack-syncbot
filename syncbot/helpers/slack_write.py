@@ -20,8 +20,9 @@ from helpers.message_blocks import (
     text_from_attachments,
     trim_target_blocks,
 )
+from helpers.pending_events import FILE_ECHO, MESSAGE_ECHO, PENDING_SHARE, remember_pending_event
 from helpers.slack_api import delete_message, post_message, slack_error_code
-from helpers.user_action_echo import remember_pending_file_share, remember_user_action, slack_message_ts
+from helpers.slack_ts import slack_message_ts
 from helpers.user_map import (
     apply_mentioned_users,
     format_unmapped_author_label,
@@ -56,18 +57,11 @@ def pick_write_token(workspace, mapped_user_id: str | None) -> tuple[str, str | 
     return _bot_token_for(workspace), None
 
 
-def remember_message_echo(team_id: str | None, user_id: str | None, channel_id: str, ts: str) -> None:
-    if team_id and user_id and channel_id and ts:
-        remember_user_action(team_id, user_id, "message", f"{channel_id}:{slack_message_ts(ts)}")
-
-
-def remember_file_echoes(team_id: str | None, user_id: str | None, file_ids) -> None:
-    """Remember Slack file ids so inbound ``file_share`` events can be skipped."""
-    if not team_id or not user_id:
-        return
-    for file_id in file_ids:
-        if file_id:
-            remember_user_action(team_id, user_id, "file", str(file_id))
+def _remember_message_echo(team_id: str | None, user_id: str | None, channel_id: str, ts: str | None) -> None:
+    """SyncBot wrote *ts* as *user_id*: remember it, so the events that brings are skipped."""
+    remember_pending_event(
+        MESSAGE_ECHO, target_team_id=team_id, target_user_id=user_id, target_channel_id=channel_id, target_ts=ts
+    )
 
 
 def build_target_blocks(
@@ -148,7 +142,7 @@ def _upload_target_files(
     post_id: str | None = None,
     sync_channel_id: int | None = None,
     source_user_id: str | None = None,
-    source_workspace_id: int | None = None,
+    source_team_id: str | None = None,
     blocks: list[dict] | None = None,
     username: str | None = None,
     icon_url: str | None = None,
@@ -160,11 +154,15 @@ def _upload_target_files(
     def _remember_files(file_ids) -> None:
         uploaded_ids.extend(str(file_id) for file_id in file_ids if file_id)
         if as_user:
-            remember_file_echoes(team_id, as_user, file_ids)
+            for file_id in file_ids:
+                if file_id:
+                    remember_pending_event(
+                        FILE_ECHO, target_team_id=team_id, target_user_id=as_user, file_id=str(file_id)
+                    )
 
     def _remember_ts(ts: str) -> None:
         if as_user:
-            remember_message_echo(team_id, as_user, channel_id, ts)
+            _remember_message_echo(team_id, as_user, channel_id, ts)
 
     _, file_ts = upload_files_to_slack(
         bot_token=token,
@@ -181,15 +179,16 @@ def _upload_target_files(
     )
     if not file_ts and post_id and team_id and sync_channel_id:
         for file_id in uploaded_ids:
-            remember_pending_file_share(
-                team_id,
-                channel_id,
-                file_id,
-                post_id,
-                sync_channel_id=sync_channel_id,
+            remember_pending_event(
+                PENDING_SHARE,
+                target_team_id=team_id,
+                target_channel_id=channel_id,
+                file_id=file_id,
+                post_id=post_id,
+                target_sync_channel_id=sync_channel_id,
+                source_team_id=source_team_id,
                 source_user_id=source_user_id,
-                source_workspace_id=source_workspace_id,
-                posted_as_user_id=as_user,
+                target_user_id=as_user,
             )
         if uploaded_ids:
             log_debug(
@@ -241,7 +240,7 @@ def _post_target_text(
     res = post_message(**post_kwargs)
     ts = safe_get(res, "ts")
     if as_user and ts:
-        remember_message_echo(team_id, as_user, channel_id, ts)
+        _remember_message_echo(team_id, as_user, channel_id, ts)
     return ts, as_user
 
 
@@ -430,7 +429,7 @@ def slack_write_create(
     pending_apply = {
         "sync_channel_id": sync_channel.id,
         "source_user_id": source_user_id or None,
-        "source_workspace_id": envelope.get("source_workspace_id") or None,
+        "source_team_id": envelope.get("source_team_id") or None,
     }
 
     def _write(
@@ -635,7 +634,7 @@ def slack_write_edit(
             attachments=[] if text_only else adapted_attachments,
         )
         if as_user:
-            remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, update_ts)
+            _remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, update_ts)
         return True
 
     try:
@@ -700,7 +699,7 @@ def slack_write_delete(*, sync_channel, workspace, target_post_meta) -> tuple[bo
     try:
         delete_message(bot_token=token, channel_id=sync_channel.channel_id, ts=ts)
         if posted_as:
-            remember_message_echo(workspace.team_id, posted_as, sync_channel.channel_id, ts)
+            _remember_message_echo(workspace.team_id, posted_as, sync_channel.channel_id, ts)
         return True, None
     except Exception as exc:
         code = slack_error_code(exc)

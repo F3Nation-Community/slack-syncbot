@@ -246,7 +246,8 @@ class TestBackendParity:
             assert insp.has_table("alembic_version")
             assert insp.has_table("slack_bots")
             assert insp.has_table("processed_events")
-            assert insp.has_table("user_action_echoes")
+            assert insp.has_table("pending_events")
+            assert not insp.has_table("user_action_echoes")
         finally:
             if db_mod.GLOBAL_ENGINE:
                 db_mod.GLOBAL_ENGINE.dispose()

@@ -1,4 +1,4 @@
-"""Follow-ups that come before their message's copy: the note, the take, and the replay."""
+"""Replies, edits, deletes, and reactions that come before their message's copy: left pending, then replayed."""
 
 from __future__ import annotations
 
@@ -9,29 +9,26 @@ from unittest.mock import MagicMock, patch
 import pytest
 from slack_sdk.errors import SlackApiError
 
-from handlers.message import _replay_follow_ups, respond_to_message_event
-from helpers.post_meta import hand_off_follow_up
+from db import schemas
+from handlers.message import _replay_pending_events, respond_to_message_event
+from helpers.pending_events import REPLAY, remember_pending_event, take_pending_event, take_pending_events_to_replay
+from helpers.post_meta import leave_pending_event
 from helpers.slack_api import fetch_source_message
-from helpers.user_action_echo import (
-    pack_reaction_note,
-    remember_follow_up,
-    remember_user_action,
-    take_follow_ups,
-    take_user_action_echo,
-    unpack_reaction_note,
-)
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from tests.event_fixtures import make_event_context
 
 MESSAGE_TS = "1795710083.439439"
+REPLY_TS = "1795710090.000100"
 RECORDS = [("meta", "row", "workspace")]
+EDIT = {"action": "edit", "source_ts": MESSAGE_TS}
 
 
 @pytest.fixture
-def echo_db(tmp_path):
+def pending_db(tmp_path):
     import db as db_mod
     from db import get_engine, initialize_database
 
-    url = f"sqlite:///{tmp_path / 'echo.db'}"
+    url = f"sqlite:///{tmp_path / 'replay.db'}"
     old_engine = db_mod.GLOBAL_ENGINE
     old_schema = db_mod.GLOBAL_SCHEMA
     with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
@@ -45,63 +42,95 @@ def echo_db(tmp_path):
         db_mod.GLOBAL_SCHEMA = old_schema
 
 
+def _take(message_ts=MESSAGE_TS):
+    return [
+        (row.action, slack_message_ts(row.source_ts))
+        for row in take_pending_events_to_replay(team_id="T1", channel_id="C1", message_ts=message_ts)
+    ]
+
+
+def _remember(**columns):
+    return remember_pending_event(
+        REPLAY, source_team_id="T1", source_channel_id="C1", **{"source_thread_ts": None, **EDIT, **columns}
+    )
+
+
 class TestAtomicTake:
-    def test_take_is_one_delete_with_no_read_first(self, echo_db):
+    def test_take_back_is_one_delete_by_id_with_no_read_first(self, pending_db):
         from sqlalchemy import event
 
-        remember_user_action("T1", "U1", "reaction_added", "C1:1.000000:wave")
+        pending_id = _remember()
         statements: list[str] = []
 
         def record(_conn, _cursor, statement, *_args):
             statements.append(" ".join(statement.split()).upper())
 
-        event.listen(echo_db, "before_cursor_execute", record)
+        event.listen(pending_db, "before_cursor_execute", record)
         try:
-            assert take_user_action_echo("T1", "U1", "reaction_added", "C1:1.000000:wave") is True
+            assert take_pending_event(REPLAY, id=pending_id) is True
         finally:
-            event.remove(echo_db, "before_cursor_execute", record)
+            event.remove(pending_db, "before_cursor_execute", record)
 
-        echo_sql = [sql for sql in statements if "USER_ACTION_ECHOES" in sql]
-        assert not [sql for sql in echo_sql if sql.startswith("SELECT")]
-        assert len([sql for sql in echo_sql if sql.startswith("DELETE") and "FINGERPRINT" in sql]) == 1
-        assert take_user_action_echo("T1", "U1", "reaction_added", "C1:1.000000:wave") is False
+        sql = [statement for statement in statements if "PENDING_EVENTS" in statement]
+        assert len(sql) == 1
+        assert sql[0].startswith("DELETE")
+        assert "PENDING_EVENTS.ID" in sql[0]
+        assert take_pending_event(REPLAY, id=pending_id) is False
 
 
-class TestHandOff:
-    def test_follow_up_first_leaves_a_note_the_create_takes_once(self, echo_db):
+class TestLeavePendingEvent:
+    def test_event_first_leaves_a_row_the_create_takes_once(self, pending_db):
         with patch("helpers.post_meta.get_post_records", return_value=[]):
-            assert hand_off_follow_up("T1", "C1", MESSAGE_TS, MESSAGE_TS) == []
+            assert leave_pending_event("T1", "C1", **EDIT) == []
 
-        assert take_follow_ups("T1", "C1", MESSAGE_TS) == [MESSAGE_TS]
-        assert take_follow_ups("T1", "C1", MESSAGE_TS) == []
+        assert _take() == [("edit", MESSAGE_TS)]
+        assert _take() == []
 
-    def test_create_first_the_follow_up_takes_its_own_note_and_applies(self, echo_db):
+    def test_create_first_the_event_takes_its_own_row_back_and_applies(self, pending_db):
         with patch("helpers.post_meta.get_post_records", return_value=RECORDS):
-            assert hand_off_follow_up("T1", "C1", MESSAGE_TS, MESSAGE_TS) == RECORDS
+            assert leave_pending_event("T1", "C1", **EDIT) == RECORDS
 
-        assert take_follow_ups("T1", "C1", MESSAGE_TS) == []
+        assert _take() == []
 
-    def test_when_the_create_took_the_note_the_follow_up_does_not_apply(self, echo_db):
+    def test_when_the_create_took_the_row_the_event_does_not_apply(self, pending_db):
         def create_finishes_and_takes(_ts):
-            assert take_follow_ups("T1", "C1", MESSAGE_TS) == [MESSAGE_TS]
+            assert _take() == [("edit", MESSAGE_TS)]
             return RECORDS
 
         with patch("helpers.post_meta.get_post_records", side_effect=create_finishes_and_takes):
-            assert hand_off_follow_up("T1", "C1", MESSAGE_TS, MESSAGE_TS) == []
+            assert leave_pending_event("T1", "C1", **EDIT) == []
 
-    def test_notes_come_back_oldest_first_and_are_keyed_by_message(self, echo_db):
-        remember_follow_up("T1", "C1", MESSAGE_TS, MESSAGE_TS)
-        remember_follow_up("T1", "C1", MESSAGE_TS, "1795710090.000100")
-        remember_follow_up("T1", "C1", "1795710099.000000", "1795710099.000000")
+    def test_a_reply_looks_for_its_parent(self, pending_db):
+        with patch("helpers.post_meta.get_post_records", return_value=[]) as records:
+            assert (
+                leave_pending_event("T1", "C1", action="create", source_ts=REPLY_TS, source_thread_ts=MESSAGE_TS) == []
+            )
 
-        assert take_follow_ups("T1", "C1", MESSAGE_TS) == [MESSAGE_TS, "1795710090.000100"]
+        records.assert_called_once_with(MESSAGE_TS)
+        assert _take() == [("create", REPLY_TS)]
 
-    def test_reaction_notes_pack_and_a_long_one_is_not_written(self, echo_db):
-        note = pack_reaction_note("reaction_added", "U0ADA", "thumbsup::skin-tone-2")
+    def test_a_thread_ts_counts_only_on_a_new_reply(self, pending_db):
+        with patch("helpers.post_meta.get_post_records", return_value=[]) as records:
+            leave_pending_event("T1", "C1", action="edit", source_ts=REPLY_TS, source_thread_ts=MESSAGE_TS)
 
-        assert unpack_reaction_note(note) == ("reaction_added", "U0ADA", "thumbsup::skin-tone-2")
-        assert unpack_reaction_note(MESSAGE_TS) is None
-        assert pack_reaction_note("reaction_added", "U0ADA", "x" * 100) is None
+        records.assert_called_once_with(REPLY_TS)
+        assert _take() == []
+        assert _take(REPLY_TS) == [("edit", REPLY_TS)]
+
+    def test_a_row_that_was_not_written_applies_when_the_copy_is_there(self, pending_db):
+        with (
+            patch("helpers.post_meta.remember_pending_event", return_value=None),
+            patch("helpers.post_meta.get_post_records", return_value=RECORDS),
+        ):
+            assert leave_pending_event("T1", "C1", **EDIT) == RECORDS
+
+    def test_two_of_the_same_edit_each_take_back_their_own_row(self, pending_db):
+        """No unique key: a second edit in flight is not folded into the first one's row."""
+        with patch("helpers.post_meta.get_post_records", return_value=RECORDS):
+            first = _remember()
+            assert leave_pending_event("T1", "C1", **EDIT) == RECORDS
+
+        assert take_pending_event(REPLAY, id=first) is True
 
 
 def _ctx(**overrides):
@@ -116,9 +145,23 @@ def _slack_error(code):
     return SlackApiError(code, response)
 
 
-def _replay(notes, *, fetched=None, fetch_error=None):
+def _pending(action, ts=MESSAGE_TS, *, thread_ts=None, event_ts=None, **columns):
+    """A REPLAY row as ``take_pending_events_to_replay`` returns it."""
+    return schemas.PendingEvent(
+        kind=REPLAY,
+        source_team_id="T1",
+        source_channel_id="C1",
+        action=action,
+        source_ts=post_meta_ts(ts),
+        source_thread_ts=post_meta_ts(thread_ts) if thread_ts else None,
+        event_ts=post_meta_ts(event_ts) if event_ts else None,
+        **columns,
+    )
+
+
+def _replay(rows, *, fetched=None, fetch_error=None):
     with (
-        patch("handlers.message.helpers.take_follow_ups", return_value=notes),
+        patch("handlers.message.helpers.take_pending_events_to_replay", return_value=rows),
         patch(
             "handlers.message.helpers.fetch_source_message",
             side_effect=fetch_error,
@@ -128,7 +171,7 @@ def _replay(notes, *, fetched=None, fetch_error=None):
         patch("handlers.message.helpers.get_post_records", return_value=RECORDS),
         patch("handlers.reaction_event._sync_reaction_records") as reaction,
     ):
-        _replay_follow_ups(MagicMock(), MagicMock(), _ctx())
+        _replay_pending_events(MagicMock(), MagicMock(), _ctx())
     return respond, fetch, reaction
 
 
@@ -136,7 +179,7 @@ class TestReplay:
     def test_a_message_still_there_replays_as_an_edit(self):
         message = {"ts": MESSAGE_TS, "user": "U0ADA", "text": "see", "attachments": [{"is_msg_unfurl": True}]}
 
-        respond, fetch, _reaction = _replay([MESSAGE_TS], fetched=message)
+        respond, fetch, _reaction = _replay([_pending("edit")], fetched=message)
 
         fetch.assert_called_once()
         assert fetch.call_args.kwargs["thread_ts"] is None
@@ -146,38 +189,49 @@ class TestReplay:
         assert respond.call_args.args[0]["team_id"] == "T1"
 
     def test_a_gone_message_replays_as_a_delete(self):
-        respond, _fetch, _reaction = _replay([MESSAGE_TS], fetched=None)
+        respond, _fetch, _reaction = _replay([_pending("delete")], fetched=None)
 
         event = respond.call_args.args[0]["event"]
         assert event["subtype"] == "message_deleted"
         assert event["previous_message"] == {"ts": MESSAGE_TS, "user": "U0ADA"}
 
+    def test_an_edit_and_a_delete_of_the_message_read_it_once(self):
+        respond, fetch, _reaction = _replay([_pending("edit"), _pending("delete"), _pending("edit")], fetched=None)
+
+        fetch.assert_called_once()
+        respond.assert_called_once()
+
     def test_a_reply_replays_as_a_new_message_in_this_thread(self):
-        reply = {"ts": "1795710090.000100", "thread_ts": MESSAGE_TS, "user": "U0ADA", "text": "first!"}
+        reply = {"ts": REPLY_TS, "thread_ts": MESSAGE_TS, "user": "U0ADA", "text": "first!"}
 
-        respond, fetch, _reaction = _replay(["1795710090.000100"], fetched=reply)
+        respond, fetch, _reaction = _replay([_pending("create", REPLY_TS, thread_ts=MESSAGE_TS)], fetched=reply)
 
+        assert fetch.call_args.args[2] == REPLY_TS
         assert fetch.call_args.kwargs["thread_ts"] == MESSAGE_TS
         event = respond.call_args.args[0]["event"]
-        assert event["ts"] == "1795710090.000100"
+        assert event["ts"] == REPLY_TS
         assert "subtype" not in event
 
-    def test_a_reaction_replays_through_the_reaction_sync(self):
-        note = pack_reaction_note("reaction_added", "U0BEN", "wave")
+    def test_a_reaction_replays_through_the_reaction_sync_with_its_event_ts(self):
+        added = _pending("add", source_user_id="U0BEN", reaction="wave", event_ts="1795710085.0002")
+        removed = _pending("remove", source_user_id="U0BEN", reaction="wave")
 
-        respond, fetch, reaction = _replay([note])
+        respond, fetch, reaction = _replay([added, removed])
 
         fetch.assert_not_called()
         respond.assert_not_called()
-        body = reaction.call_args.args[0]
-        assert body["event"]["type"] == "reaction_added"
-        assert body["event"]["item"] == {"type": "message", "channel": "C1", "ts": MESSAGE_TS}
+        first, second = (call.args[0]["event"] for call in reaction.call_args_list)
+        assert first["type"] == "reaction_added"
+        assert (first["user"], first["reaction"], first["event_ts"]) == ("U0BEN", "wave", "1795710085.000200")
+        assert first["item"] == {"type": "message", "channel": "C1", "ts": MESSAGE_TS}
+        assert second["type"] == "reaction_removed"
+        assert "event_ts" not in second
         assert reaction.call_args.args[2] == RECORDS
 
     def test_a_slack_error_while_reading_does_not_replay_a_delete(self):
         error = SlackApiError("slow", {"ok": False, "error": "ratelimited"})
 
-        respond, _fetch, _reaction = _replay([MESSAGE_TS], fetch_error=error)
+        respond, _fetch, _reaction = _replay([_pending("edit")], fetch_error=error)
 
         respond.assert_not_called()
 
@@ -196,7 +250,7 @@ class TestReplayStillRunsTheGuards:
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message.helpers.has_channel_sync", return_value=True),
-            patch("handlers.message.helpers.has_user_action_echo", return_value=True),
+            patch("handlers.message.helpers.check_pending_event", side_effect=lambda kind, **_: kind == "message"),
             patch("handlers.message._handle_message_edit") as edit,
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
@@ -204,37 +258,37 @@ class TestReplayStillRunsTheGuards:
         edit.assert_not_called()
 
 
-class TestHandlersHandOff:
-    def test_an_edit_with_no_copy_yet_hands_off_and_completes(self):
+class TestHandlersLeavePending:
+    def test_an_edit_with_no_copy_yet_is_left_pending_and_completes(self):
         from handlers.message import _handle_message_edit
 
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
             patch("handlers.message._is_before_sync", return_value=False),
-            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
         ):
             assert _handle_message_edit(MagicMock(), MagicMock(), _ctx(), []) is None
 
-        hand_off.assert_called_once_with("T1", "C1", MESSAGE_TS, MESSAGE_TS)
+        leave.assert_called_once_with("T1", "C1", action="edit", source_ts=MESSAGE_TS, source_thread_ts=None)
         pipeline.assert_not_called()
 
-    def test_a_reply_whose_parent_is_still_posting_hands_off(self):
+    def test_a_reply_whose_parent_is_still_posting_is_left_pending(self):
         from handlers.message import _handle_thread_reply
 
-        ctx = _ctx(ts="1795710090.000100", thread_ts=MESSAGE_TS)
+        ctx = _ctx(ts=REPLY_TS, thread_ts=MESSAGE_TS)
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
             patch("handlers.message._is_before_sync", return_value=False),
-            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message.helpers.cleanup_temp_files") as cleanup,
         ):
             assert _handle_thread_reply({}, MagicMock(), MagicMock(), ctx, [], [{"path": "/tmp/a"}]) is None
 
-        hand_off.assert_called_once_with("T1", "C1", MESSAGE_TS, "1795710090.000100")
+        leave.assert_called_once_with("T1", "C1", action="create", source_ts=REPLY_TS, source_thread_ts=MESSAGE_TS)
         cleanup.assert_called_once()
 
-    def test_a_reaction_with_no_copy_yet_hands_off(self):
+    def test_a_reaction_with_no_copy_yet_is_left_pending(self):
         from handlers.reaction_event import handle_reaction
 
         body = {
@@ -245,20 +299,29 @@ class TestHandlersHandOff:
                 "user": "U0BEN",
                 "reaction": "wave",
                 "item": {"type": "message", "channel": "C1", "ts": MESSAGE_TS},
+                "event_ts": "1795710085.000200",
             },
         }
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="U0BOT"),
-            patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=False),
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=False),
             patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
             patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
-            patch("handlers.reaction_event.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.reaction_event.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.reaction_event._sync_reaction_records") as sync,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
 
-        hand_off.assert_called_once_with("T1", "C1", MESSAGE_TS, "reaction|reaction_added|U0BEN|wave")
+        leave.assert_called_once_with(
+            "T1",
+            "C1",
+            action="add",
+            source_ts=MESSAGE_TS,
+            source_user_id="U0BEN",
+            reaction="wave",
+            event_ts="1795710085.000200",
+        )
         sync.assert_not_called()
 
 

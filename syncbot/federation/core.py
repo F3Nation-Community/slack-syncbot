@@ -1114,12 +1114,20 @@ def push_allowed_workspaces(fed_ws: schemas.Instance) -> dict | None:
 def refresh_instance() -> None:
     """Keep-warm / Health / Refresh pulse: purge stale rows and push peers.
 
+    Purges soft deletes past retention and expired pending events (the only
+    place pending events are swept; handlers delete only the rows they take).
     Never raises. Does not ``views.publish`` Home (post-deploy ready does that).
     """
     try:
         from helpers.notifications import purge_stale_soft_deletes
 
         purge_stale_soft_deletes()
+    except Exception:
+        pass
+    try:
+        from helpers.pending_events import purge_expired_pending_events
+
+        purge_expired_pending_events()
     except Exception:
         pass
     refresh_federation_allowlists()

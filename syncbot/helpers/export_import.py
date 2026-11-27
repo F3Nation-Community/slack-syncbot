@@ -1,7 +1,7 @@
 """Backup/restore and data migration export/import helpers.
 
 Full-instance backup: dump durable tables as JSON with HMAC for tampering detection.
-Ephemeral tables (processed_events, user_action_echoes, federation_file_parts) are omitted.
+Ephemeral tables (processed_events, pending_events, federation_file_parts) are omitted.
 Data migration: workspace-scoped export with Ed25519 signature; import with replace mode.
 """
 
@@ -18,7 +18,7 @@ from sqlalchemy import MetaData, Table, delete, select
 
 import constants
 from db import DbManager, get_engine, schemas
-from helpers.user_action_echo import post_meta_ts, slack_message_ts
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from helpers.workspace import get_workspace_by_id
 from logger import log_info
 
@@ -31,7 +31,7 @@ _RAW_BACKUP_TABLES = ("slack_bots", "slack_installations", "slack_oauth_states")
 _EPHEMERAL_BACKUP_TABLES = frozenset(
     {
         "processed_events",
-        "user_action_echoes",
+        "pending_events",
         "federation_file_parts",
     }
 )

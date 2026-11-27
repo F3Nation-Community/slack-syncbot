@@ -18,9 +18,9 @@ from helpers.envelope import (
     KIND_REACTION,
 )
 from helpers.post_meta import get_target_post_meta
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit
 from helpers.sync_participation import channel_subscribes, get_active_sync_channel
-from helpers.user_action_echo import post_meta_ts, slack_message_ts
 from logger import log_debug, log_warning
 
 

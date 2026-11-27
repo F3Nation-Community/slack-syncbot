@@ -227,7 +227,7 @@ def test_inbound_rejects_unknown_source_team(real_db):
     assert resp.get("error") == "workspace_not_found"
 
 
-def test_inbound_follow_ups_wait_for_parent_post_meta(real_db):
+def test_inbound_replies_edits_and_reactions_wait_for_parent_post_meta(real_db):
     from federation.api import handle_message, handle_message_edit, handle_message_react
 
     peer = _seed_peer()
@@ -273,11 +273,11 @@ def test_inbound_follow_ups_wait_for_parent_post_meta(real_db):
     assert react[1]["error"] == "parent_missing"
 
 
-def test_inbound_follow_ups_apply_when_parent_post_meta_exists(real_db):
+def test_inbound_replies_edits_and_reactions_apply_when_parent_post_meta_exists(real_db):
     from db import DbManager, schemas
     from federation.api import handle_message, handle_message_edit, handle_message_react
+    from helpers.slack_ts import post_meta_ts
     from helpers.sync_apply import ApplyOutcome
-    from helpers.user_action_echo import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
@@ -329,8 +329,8 @@ def test_inbound_follow_ups_apply_when_parent_post_meta_exists(real_db):
 
 def test_inbound_reply_uses_envelope_target_ts_without_parent_post_meta(real_db):
     from federation.api import handle_message
+    from helpers.slack_ts import post_meta_ts
     from helpers.sync_apply import ApplyOutcome
-    from helpers.user_action_echo import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
@@ -1685,7 +1685,7 @@ def test_inbound_edit_and_delete_call_apply_target():
 def test_handle_message_idempotent_create_returns_existing_ts(real_db):
     from db import DbManager, schemas
     from federation.api import handle_message
-    from helpers.user_action_echo import post_meta_ts
+    from helpers.slack_ts import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
@@ -2198,7 +2198,7 @@ def test_post_parts_413_after_unlimited_retries_advertised_cap(tmp_path):
 
 def _seed_shared_sync(peer):
     from db import DbManager, schemas
-    from helpers.user_action_echo import post_meta_ts
+    from helpers.slack_ts import post_meta_ts
 
     now = datetime.now(UTC).replace(tzinfo=None)
     sync = DbManager.create_record(

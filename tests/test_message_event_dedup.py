@@ -51,6 +51,11 @@ def event_db(tmp_path, monkeypatch):
     db_mod.GLOBAL_SCHEMA = old_schema
 
 
+def _echo_of(kind):
+    """A ``check_pending_event`` stand-in: only *kind* has a matching echo."""
+    return lambda checked_kind, **_address: checked_kind == kind
+
+
 @pytest.fixture(autouse=True)
 def pipeline_guards():
     with (
@@ -58,8 +63,8 @@ def pipeline_guards():
         patch("helpers.origin_publishes_anywhere", return_value=True),
         patch("helpers.iter_publish_targets", return_value=[object()]),
         patch("helpers.post_meta_exists_for_channel_ts", return_value=False),
-        patch("helpers.has_user_action_echo", return_value=False),
-        patch("helpers.take_user_action_echo", return_value=False),
+        patch("helpers.check_pending_event", return_value=False),
+        patch("helpers.take_pending_event", return_value=False),
         patch("handlers.message.helpers.complete_copy_ts_from_pending_share", return_value=None),
     ):
         yield
@@ -296,7 +301,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", return_value=True),
+            patch("handlers.message.helpers.check_pending_event", side_effect=_echo_of("file")),
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_thread_reply") as mock_reply,
             patch("handlers.message._build_file_context") as build_fc,
@@ -311,16 +316,10 @@ class TestRespondToMessageEventDedup:
         body = _message_body(event_id="")
         body["event"]["subtype"] = "file_share"
         body["event"]["files"] = [{"id": "F99"}]
-        taken = []
-
-        def take(_team, _user, kind, fingerprint):
-            taken.append((kind, fingerprint))
-            return False
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", return_value=True) as has_echo,
-            patch("handlers.message.helpers.take_user_action_echo", side_effect=take),
+            patch("handlers.message.helpers.check_pending_event", side_effect=_echo_of("file")) as has_echo,
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_thread_reply") as mock_reply,
         ):
@@ -330,22 +329,18 @@ class TestRespondToMessageEventDedup:
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
         assert has_echo.call_count == 2
-        assert taken == []
+        assert [(call.args[0], call.kwargs["file_id"]) for call in has_echo.call_args_list] == [
+            ("file", "F99"),
+            ("file", "F99"),
+        ]
         mock_new.assert_not_called()
         mock_reply.assert_not_called()
 
     def test_user_token_message_echo_skips_without_consuming(self):
         body = _message_body(event_id="")
-        peeked = []
-
-        def has_echo(_team, _user, kind, fingerprint):
-            peeked.append((kind, fingerprint))
-            return kind == "message"
-
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", side_effect=has_echo),
-            patch("handlers.message.helpers.take_user_action_echo") as take,
+            patch("handlers.message.helpers.check_pending_event", side_effect=_echo_of("message")) as has_echo,
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_message_edit") as mock_edit,
         ):
@@ -354,8 +349,11 @@ class TestRespondToMessageEventDedup:
             body["event"]["message"] = {"text": "Hello", "ts": body["event"]["ts"]}
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
-        assert ("message", "C001:1234567890.000001") in peeked
-        take.assert_not_called()
+        assert has_echo.call_count == 2
+        assert {
+            (call.args[0], call.kwargs["target_channel_id"], call.kwargs["target_ts"])
+            for call in has_echo.call_args_list
+        } == {("message", "C001", "1234567890.000001")}
         mock_new.assert_not_called()
         mock_edit.assert_not_called()
 
@@ -405,7 +403,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", side_effect=lambda *_a, **_k: _a[2] == "file"),
+            patch("handlers.message.helpers.check_pending_event", side_effect=_echo_of("file")),
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_thread_reply") as mock_reply,
             patch("handlers.message._build_file_context", return_value=([], [])),
@@ -520,7 +518,7 @@ class TestRespondToMessageEventDedup:
 
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", side_effect=lambda *_a, **_k: _a[2] == "file"),
+            patch("handlers.message.helpers.check_pending_event", side_effect=_echo_of("file")),
             patch("handlers.message._handle_new_post") as mock_new,
             patch("handlers.message._handle_thread_reply") as mock_reply,
             patch("handlers.message._build_file_context") as build_fc,
@@ -688,7 +686,7 @@ class TestRespondToMessageEventDedup:
         assert ctx["files_failed"] is True
         assert "download_empty" in ctx["degraded"]
 
-    def test_thread_reply_without_parent_hands_off_and_completes(self, event_db):
+    def test_thread_reply_without_parent_is_left_pending_and_completes(self, event_db):
         body = _message_body()
         body["event"]["ts"] = "1234567890.000002"
         body["event"]["thread_ts"] = "1234567890.000001"
@@ -701,7 +699,7 @@ class TestRespondToMessageEventDedup:
         with (
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message.helpers.get_post_records", side_effect=_no_parent),
-            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message._build_file_context", return_value=([], [])),
             patch("handlers.message._handle_new_post") as mock_new,
         ):
@@ -710,10 +708,10 @@ class TestRespondToMessageEventDedup:
 
         # The parent's create replays the reply, so the claim completes and Slack's resend is a duplicate.
         assert lookups["n"] == 1
-        hand_off.assert_called_once()
+        leave.assert_called_once()
         mock_new.assert_not_called()
 
-    def test_edit_without_post_meta_hands_off_and_completes(self, event_db):
+    def test_edit_without_post_meta_is_left_pending_and_completes(self, event_db):
         body = _message_body()
         body["event"]["subtype"] = "message_changed"
         body["event"]["message"] = {"ts": "1234567890.000001", "text": "edited"}
@@ -727,7 +725,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.message._is_own_bot_message", return_value=False),
             patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message.helpers.get_post_records", side_effect=_no_meta),
-            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message._build_file_context", return_value=([], [])),
             patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
         ):
@@ -747,10 +745,10 @@ class TestRespondToMessageEventDedup:
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
         assert lookups["n"] == 1
-        hand_off.assert_called_once()
+        leave.assert_called_once()
         pipeline.assert_not_called()
 
-    def test_delete_without_post_meta_hands_off_and_completes(self, event_db):
+    def test_delete_without_post_meta_is_left_pending_and_completes(self, event_db):
         body = _message_body()
         body["event"]["subtype"] = "message_deleted"
         body["event"]["previous_message"] = {"ts": "1234567890.000001"}
@@ -765,7 +763,7 @@ class TestRespondToMessageEventDedup:
             patch("handlers.message._parse_event_fields_light") as parse,
             patch("handlers.message._try_handle_reaction_notice_delete", return_value=False),
             patch("handlers.message.helpers.get_post_records", side_effect=_no_meta),
-            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message._build_file_context", return_value=([], [])),
             patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
         ):
@@ -785,7 +783,7 @@ class TestRespondToMessageEventDedup:
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
 
         assert lookups["n"] == 1
-        hand_off.assert_called_once()
+        leave.assert_called_once()
         pipeline.assert_not_called()
 
     def test_duplicate_event_id_syncs_once(self, event_db):
@@ -954,17 +952,25 @@ class TestHandleReactionClaim:
             handle_reaction(body, MagicMock(), MagicMock(), {})
         mock_run.assert_called_once()
 
-    def test_reaction_without_post_meta_hands_off_and_completes(self, event_db):
+    def test_reaction_without_post_meta_is_left_pending_and_completes(self, event_db):
         body = self._reaction_body()
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
-            patch("handlers.reaction_event.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.reaction_event.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.reaction_event._sync_reaction_records") as mock_sync,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
             handle_reaction(body, MagicMock(), MagicMock(), {})
-        hand_off.assert_called_once_with("T001", "C001", "123.000001", "reaction|reaction_added|U001|thumbsup")
+        leave.assert_called_once_with(
+            "T001",
+            "C001",
+            action="add",
+            source_ts="123.000001",
+            source_user_id="U001",
+            reaction="thumbsup",
+            event_ts=None,
+        )
         mock_sync.assert_not_called()
 
     def test_unconfigured_channel_skips_post_meta_and_completes_claim(self, event_db):
@@ -1020,7 +1026,7 @@ class TestHandleReactionEchoSkip:
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=records),
-            patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=True) as take_mock,
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=True) as take_mock,
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
@@ -1043,7 +1049,7 @@ class TestHandleReactionEchoSkip:
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=records),
-            patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=False),
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=False),
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
@@ -1065,7 +1071,7 @@ class TestHandleReactionEchoSkip:
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=records),
-            patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=True),
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=True),
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})

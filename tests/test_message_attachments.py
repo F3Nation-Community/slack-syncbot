@@ -189,7 +189,7 @@ def _handler_patches(stack: ExitStack, **extra):
         "handlers.message.helpers.origin_publishes_anywhere": True,
         "handlers.message.helpers.iter_publish_targets": [object()],
         "handlers.message.helpers.post_meta_exists_for_channel_ts": False,
-        "handlers.message.helpers.has_user_action_echo": False,
+        "handlers.message.helpers.check_pending_event": False,
         "handlers.message.helpers.parse_mentioned_users": [],
     }
     patches.update(extra)

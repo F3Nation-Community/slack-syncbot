@@ -80,10 +80,16 @@ def handle_reaction(
     team_id = helpers.get_team_id_from_body(body)
 
     def _sync_reaction() -> None:
-        if team_id and user_id and reaction and channel_id and msg_ts:
-            fingerprint = helpers.reaction_echo_fingerprint(channel_id, msg_ts, reaction)
-            if helpers.take_user_action_echo(str(team_id), user_id, event_type, fingerprint):
-                return
+        # SyncBot's own reaction as a mapped person: the echo's kind is Slack's event type.
+        if helpers.take_pending_event(
+            event_type,
+            target_team_id=str(team_id) if team_id else None,
+            target_user_id=user_id,
+            target_channel_id=channel_id,
+            target_ts=msg_ts,
+            reaction=reaction,
+        ):
+            return
         if not helpers.has_channel_sync(channel_id):
             return
         if not helpers.origin_publishes_anywhere(channel_id):
@@ -92,11 +98,18 @@ def handle_reaction(
         reacted_records = helpers.get_post_records(msg_ts)
         if not reacted_records:
             log_debug("reaction_no_post_meta", msg_ts=msg_ts, channel_id=channel_id)
-            # The message's create may still be running: hand this reaction to it.
-            note = helpers.pack_reaction_note(event_type, user_id, reaction) if user_id else None
-            if not note:
+            # The message's create may still be running: leave this reaction pending for it.
+            if not user_id:
                 return
-            reacted_records = helpers.hand_off_follow_up(team_id, channel_id, msg_ts, note)
+            reacted_records = helpers.leave_pending_event(
+                team_id,
+                channel_id,
+                action=helpers.ACTION_ADD if event_type == "reaction_added" else helpers.ACTION_REMOVE,
+                source_ts=msg_ts,
+                source_user_id=user_id,
+                reaction=reaction,
+                event_ts=event.get("event_ts") or event.get("event_time"),
+            )
             if not reacted_records:
                 return
         _sync_reaction_records(body, client, reacted_records)

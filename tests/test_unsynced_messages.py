@@ -169,7 +169,7 @@ class TestBrokenTargetPauses:
             patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
             patch("helpers.slack_write.WebClient"),
             patch("helpers.workspace.get_workspace_by_id", return_value=None),
-            patch("helpers.slack_write.remember_user_action"),
+            patch("helpers.slack_write.remember_pending_event"),
             patch("helpers.slack_write.post_message", side_effect=[refused, {"ts": "2.0"}]) as post,
         ):
             result = slack_write_create(
@@ -316,7 +316,7 @@ class TestOldMessages:
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
             patch("handlers.message._is_before_sync", return_value=False),
-            patch("handlers.message.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
         ):
             assert _handle_thread_reply({}, MagicMock(), MagicMock(), ctx, [], []) is None
-        hand_off.assert_called_once()
+        leave.assert_called_once()

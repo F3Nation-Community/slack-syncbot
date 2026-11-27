@@ -281,7 +281,7 @@ def fetch_source_message(client: WebClient, channel_id: str, ts: str, *, thread_
     ``conversations.replies`` on the thread (or on the message itself), because
     channel history omits replies. Any other Slack error is raised.
     """
-    from helpers.user_action_echo import slack_message_ts
+    from helpers.slack_ts import slack_message_ts
 
     parent = str(thread_ts or ts)
     try:

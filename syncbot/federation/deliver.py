@@ -26,7 +26,7 @@ from helpers.envelope import (
     KIND_REACTION,
 )
 from helpers.files import hashed_file_path, hashed_file_ready, pin_hashed_file, unpin_hashed_file
-from helpers.user_action_echo import post_meta_ts, slack_message_ts
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from logger import log_warning
 
 
@@ -328,15 +328,15 @@ def deliver_remote(
             return []
         return _postmeta_from_peer_response(envelope, sync_channel, result)
 
-    follow_up_push = {
+    push = {
         (KIND_MESSAGE, ACTION_EDIT): push_edit,
         (KIND_MESSAGE, ACTION_DELETE): push_delete,
         (KIND_REACTION, ACTION_ADD): push_reaction,
         (KIND_REACTION, ACTION_REMOVE): push_reaction,
     }.get((kind, action))
-    if follow_up_push:
+    if push:
         remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
-        result = follow_up_push(fed_ws, remote)
+        result = push(fed_ws, remote)
         status = (result or {}).get("_http_status")
         if result is None or status not in (None, 200):
             log_warning(

@@ -30,9 +30,9 @@ from helpers.export_import import invalidate_home_tab_caches_for_team
 from helpers.files import clear_request_file_pins
 from helpers.group_roles import get_owner_team_ids_blocking_stub_pause
 from helpers.message_blocks import rewrite_attachments, rewrite_content_blocks, trim_target_blocks
+from helpers.slack_ts import slack_message_ts
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import channel_subscribes
-from helpers.user_action_echo import slack_message_ts
 from helpers.workspace import (
     get_allowed_local_workspace_ids,
     invalidate_fed_ws_for_sync_cache,

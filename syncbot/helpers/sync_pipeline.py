@@ -12,9 +12,9 @@ from slack_sdk import WebClient
 from db import schemas
 from helpers.envelope import ACTION_CREATE, KIND_MESSAGE, get_post_id_for_post_records
 from helpers.post_meta import get_post_records_for_post_id
+from helpers.slack_ts import slack_message_ts
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import channel_subscribes, get_active_sync_channel, iter_publish_targets
-from helpers.user_action_echo import slack_message_ts
 from helpers.workspace_kind import (
     is_local_workspace,
     is_stub_workspace,

@@ -252,69 +252,81 @@ def _notify_author(
     )
 
 
-def _replay_follow_ups(client: WebClient, logger: Logger, ctx: EventContext) -> None:
-    """Apply follow-ups that came before this message's copy (``hand_off_follow_up``).
+def _replay_pending_events(client: WebClient, logger: Logger, ctx: EventContext) -> None:
+    """Replay the replies, edits, deletes, and reactions that came before this message's copy.
 
-    Runs right after the create writes its PostMeta. Each note is taken once.
-    An edit, delete, or thread reply is read again from the synced Channel and
-    sent through ``respond_to_message_event``, so every gate and echo guard runs
+    Runs right after the create writes its PostMeta, on the ``REPLAY`` pending
+    events left for it (``leave_pending_event``). Each is taken once. An edit,
+    delete, or thread reply is read again from the synced Channel and sent
+    through ``respond_to_message_event``, so every gate and echo guard runs
     again: a message still there is an edit, a gone one a delete, and a reply a
-    new message. A reaction runs through ``_sync_reaction_records``.
+    new message. One read covers every edit and delete of this message. A
+    reaction runs through ``_sync_reaction_records`` with its own ``event_ts``.
     """
     team_id = ctx.get("team_id")
     channel_id = ctx.get("channel_id")
     ts = ctx.get("ts")
     if not team_id or not channel_id or not ts:
         return
-    for note in helpers.take_follow_ups(team_id, channel_id, ts):
+    read: set = set()
+    for pending in helpers.take_pending_events_to_replay(team_id=team_id, channel_id=channel_id, message_ts=ts):
+        if pending.action not in (helpers.ACTION_ADD, helpers.ACTION_REMOVE):
+            if (pending.source_ts, pending.source_thread_ts) in read:
+                continue
+            read.add((pending.source_ts, pending.source_thread_ts))
         try:
-            _replay_follow_up(client, logger, ctx, note)
+            _replay_pending_event(client, logger, ctx, pending)
         except Exception as exc:
-            log_warning("follow_up_replay_failed", channel=channel_id, ts=ts, error=str(exc))
+            log_warning("pending_event_replay_failed", channel=channel_id, ts=ts, error=str(exc))
 
 
-def _replay_follow_up(client: WebClient, logger: Logger, ctx: EventContext, note: str) -> None:
+def _replay_pending_event(client: WebClient, logger: Logger, ctx: EventContext, pending: schemas.PendingEvent) -> None:
     team_id = ctx.get("team_id")
     channel_id = ctx.get("channel_id")
     ts = ctx.get("ts")
-    reaction = helpers.unpack_reaction_note(note)
-    if reaction:
+    if pending.action in (helpers.ACTION_ADD, helpers.ACTION_REMOVE):
         from handlers.reaction_event import _sync_reaction_records
 
-        event_type, user_id, name = reaction
-        body = {
-            "team_id": team_id,
-            "event": {
-                "type": event_type,
-                "user": user_id,
-                "reaction": name,
-                "item": {"type": "message", "channel": channel_id, "ts": ts},
-            },
+        event: dict = {
+            "type": "reaction_added" if pending.action == helpers.ACTION_ADD else "reaction_removed",
+            "user": pending.source_user_id,
+            "reaction": pending.reaction,
+            "item": {"type": "message", "channel": channel_id, "ts": ts},
         }
+        if pending.event_ts is not None:
+            event["event_ts"] = helpers.slack_message_ts(pending.event_ts)
         records = helpers.get_post_records(ts)
         if records:
-            log_debug("follow_up_replayed", kind="reaction", channel=channel_id, ts=ts)
-            _sync_reaction_records(body, client, records)
+            log_debug("pending_event_replayed", action=pending.action, channel=channel_id, ts=ts)
+            _sync_reaction_records({"team_id": team_id, "event": event}, client, records)
         return
-    same_message = helpers.slack_message_ts(note) == helpers.slack_message_ts(ts)
-    # A reply's thread is this message; this message's own thread is its parent, if it is a reply.
-    thread_ts = ts if not same_message else ctx.get("thread_ts")
-    message = helpers.fetch_source_message(client, channel_id, note, thread_ts=thread_ts)
-    if same_message and message is None:
-        event: dict = {
-            "type": "message",
-            "subtype": "message_deleted",
-            "channel": channel_id,
-            "deleted_ts": ts,
-            "previous_message": {"ts": ts, "user": ctx.get("user_id")},
-        }
-    elif same_message:
-        event = {"type": "message", "subtype": "message_changed", "channel": channel_id, "message": message}
-    elif message is not None:
+    if pending.action == helpers.ACTION_CREATE:
+        # A new reply in this message's thread.
+        reply_ts = helpers.slack_message_ts(pending.source_ts)
+        message = helpers.fetch_source_message(client, channel_id, reply_ts, thread_ts=ts)
+        if message is None:
+            return
         event = {**message, "type": "message", "channel": channel_id}
     else:
-        return
-    log_debug("follow_up_replayed", kind=event.get("subtype") or "reply", channel=channel_id, ts=note)
+        # An edit or a delete of this message: whatever it is now. Its own thread is its parent, if it is a reply.
+        message = helpers.fetch_source_message(client, channel_id, ts, thread_ts=ctx.get("thread_ts"))
+        if message is None:
+            event = {
+                "type": "message",
+                "subtype": "message_deleted",
+                "channel": channel_id,
+                "deleted_ts": ts,
+                "previous_message": {"ts": ts, "user": ctx.get("user_id")},
+            }
+        else:
+            event = {"type": "message", "subtype": "message_changed", "channel": channel_id, "message": message}
+    log_debug(
+        "pending_event_replayed",
+        action=pending.action,
+        subtype=event.get("subtype"),
+        channel=channel_id,
+        ts=helpers.slack_message_ts(pending.source_ts),
+    )
     respond_to_message_event({"team_id": team_id, "event": event}, client, logger, {})
 
 
@@ -338,12 +350,17 @@ def _is_before_sync(channel_id: str | None, ts: str | None) -> bool:
     return when < Decimal(int(first.timestamp()))
 
 
-def _get_post_records_or_hand_off(ctx: EventContext, message_ts: str | None, note: str | None, action: str) -> list:
-    """PostMeta of *message_ts* for a reply, edit, or delete. ``[]`` means nothing to do now.
+def _get_post_records_or_leave_pending(
+    ctx: EventContext, *, action: str, source_ts: str | None, source_thread_ts: str | None = None
+) -> list:
+    """PostMeta of the message this reply, edit, or delete acts on. ``[]`` means nothing to do now.
 
-    A message from before the Sync never gets PostMeta. Otherwise its create may
-    still be running, so the follow-up is handed to it (``hand_off_follow_up``).
+    A new reply acts on its parent (*source_thread_ts*); an edit or a delete on
+    its own message (*source_ts*). A message from before the Sync never gets
+    PostMeta. Otherwise its create may still be running, so the event is left
+    pending for it (``leave_pending_event``).
     """
+    message_ts = source_thread_ts or source_ts
     records = helpers.get_post_records(message_ts)
     if records:
         return records
@@ -351,7 +368,9 @@ def _get_post_records_or_hand_off(ctx: EventContext, message_ts: str | None, not
     if _is_before_sync(channel_id, message_ts):
         log_info("message_skip", reason="before_sync", channel=channel_id, ts=message_ts, action=action)
         return []
-    return helpers.hand_off_follow_up(ctx.get("team_id"), channel_id, message_ts, note)
+    return helpers.leave_pending_event(
+        ctx.get("team_id"), channel_id, action=action, source_ts=source_ts, source_thread_ts=source_thread_ts
+    )
 
 
 def _download_forward_files(
@@ -542,7 +561,7 @@ def _handle_new_post(
     finally:
         helpers.cleanup_temp_files(None, direct_files)
     DbManager.create_records(post_list)
-    _replay_follow_ups(client, logger, ctx)
+    _replay_pending_events(client, logger, ctx)
     emit_metric("messages_synced", value=len(synced), sync_type="new_post")
     _notify_author(client, user_id, ctx, "create", report)
 
@@ -557,12 +576,14 @@ def _handle_thread_reply(
 ) -> None:
     """Publish a threaded reply through the target pipeline.
 
-    When the parent has no PostMeta yet, the reply is handed to the parent's create.
+    When the parent has no PostMeta yet, the reply is left pending for the parent's create.
     """
     channel_id = ctx["channel_id"]
     user_id = ctx["user_id"]
     thread_ts = ctx["thread_ts"]
-    post_records = _get_post_records_or_hand_off(ctx, thread_ts, ctx.get("ts"), "reply")
+    post_records = _get_post_records_or_leave_pending(
+        ctx, action=helpers.ACTION_CREATE, source_ts=ctx.get("ts"), source_thread_ts=thread_ts
+    )
     if not post_records:
         helpers.cleanup_temp_files(None, direct_files)
         return
@@ -628,7 +649,7 @@ def _handle_thread_reply(
     finally:
         helpers.cleanup_temp_files(None, direct_files)
     DbManager.create_records(post_list)
-    _replay_follow_ups(client, logger, ctx)
+    _replay_pending_events(client, logger, ctx)
     emit_metric("messages_synced", value=len(synced), sync_type="thread_reply")
     _notify_author(client, user_id, ctx, "create", report)
     log_debug(
@@ -649,11 +670,11 @@ def _handle_message_edit(
 ) -> None:
     """Publish an edited message through the target pipeline.
 
-    When the message has no PostMeta yet, the edit is handed to its create.
+    When the message has no PostMeta yet, the edit is left pending for its create.
     """
     channel_id = ctx["channel_id"]
     ts = ctx["ts"]
-    post_records = _get_post_records_or_hand_off(ctx, ts, ts, "edit")
+    post_records = _get_post_records_or_leave_pending(ctx, action=helpers.ACTION_EDIT, source_ts=ts)
     if not post_records:
         return
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
@@ -697,11 +718,11 @@ def _handle_message_delete(
 ) -> None:
     """Publish a deleted message through the target pipeline.
 
-    When the message has no PostMeta yet, the delete is handed to its create.
+    When the message has no PostMeta yet, the delete is left pending for its create.
     """
     channel_id = ctx["channel_id"]
     ts = ctx["ts"]
-    post_records = _get_post_records_or_hand_off(ctx, ts, ts, "delete")
+    post_records = _get_post_records_or_leave_pending(ctx, action=helpers.ACTION_DELETE, source_ts=ts)
     if not post_records:
         return
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
@@ -1001,7 +1022,9 @@ def respond_to_message_event(
 
         if team_id and user_id:
             if this_message_files and any(
-                helpers.has_user_action_echo(team_id, user_id, "file", file_id)
+                helpers.check_pending_event(
+                    helpers.FILE_ECHO, target_team_id=team_id, target_user_id=user_id, file_id=file_id
+                )
                 for file_id in helpers.file_ids_from_message_event(body)
             ):
                 echo_file_ids = helpers.file_ids_from_message_event(body)
@@ -1023,11 +1046,15 @@ def respond_to_message_event(
                     return
                 log_debug("message_skip", reason="file_echo", **trace)
                 return
-            if ts:
-                fingerprint = f"{channel_id}:{helpers.slack_message_ts(ts)}"
-                if helpers.has_user_action_echo(team_id, user_id, "message", fingerprint):
-                    log_debug("message_skip", reason="message_echo", **trace)
-                    return
+            if helpers.check_pending_event(
+                helpers.MESSAGE_ECHO,
+                target_team_id=team_id,
+                target_user_id=user_id,
+                target_channel_id=channel_id,
+                target_ts=ts,
+            ):
+                log_debug("message_skip", reason="message_echo", **trace)
+                return
         is_create = event_subtype not in ("message_changed", "message_deleted")
         if is_create and helpers.post_meta_exists_for_channel_ts(channel_id, ts):
             log_debug("message_skip", reason="copy_exists", **trace)

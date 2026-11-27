@@ -112,6 +112,8 @@ erDiagram
     workspaces ||--o{ user_directory : caches
     workspaces ||--o{ user_mappings : maps
     workspace_groups ||--o{ user_mappings : scoped
+    sync_channels |o..o{ pending_events : "target_sync_channel_id"
+    post_meta |o..o{ pending_events : "post_id, or channel and ts"
 
     sync_channels {
         int id PK
@@ -160,12 +162,25 @@ erDiagram
         string event_id
         string status
     }
-    user_action_echoes {
+    pending_events {
         int id PK
-        string team_id
-        string user_id
         string kind
-        string fingerprint
+        string target_team_id "where SyncBot writes"
+        string target_channel_id
+        decimal target_ts
+        string target_user_id "whose user token"
+        int target_sync_channel_id "pending share only"
+        string source_team_id "where the person acted"
+        string source_channel_id
+        decimal source_ts
+        decimal source_thread_ts "a new reply's parent"
+        string source_user_id "who acted"
+        string action
+        string post_id
+        string file_id
+        string reaction "a reaction's name is its id"
+        decimal event_ts "reaction order"
+        datetime created_at "10-minute TTL"
     }
     federation_file_parts {
         int id PK
@@ -226,7 +241,7 @@ Bolt OAuth (not in `schemas.py`) keys off Slack `team_id` / `user_id` strings, n
 | Table | Role |
 |-------|------|
 | `processed_events` | Slack Events API claim on `(team_id, event_id)`. |
-| `user_action_echoes` | User-token write fingerprints so inbound echoes skip. Unique `(team_id, user_id, kind, fingerprint)`. |
+| `pending_events` | Pending events: one event waiting on another. Only rows from the last 10 minutes count; keep-warm, `/health`, and `/ready` sweep older ones (`purge_expired_pending_events` in `refresh_instance`), and a handler deletes only the rows it takes. Slack addresses only (ids, timestamps, and a reaction's name, which is its id), never content: a replay reads the message again from Slack. The target side is where SyncBot wrote a copy, or will write one; the source side is where a person acted. `kind` is SyncBot's own user-token write (`message`, `file`, `reaction_added`, `reaction_removed`), the reaction order on a target (`reaction_event`), a file share waiting for its ts (`pending_share`), or a reply, edit, delete, or reaction waiting for its message's PostMeta (`replay`). `remember_pending_event`, `check_pending_event`, and `take_pending_event` serve every kind. Each kind fills only its own columns. No unique key: a take is one `DELETE … WHERE`. Dashed lines in the diagram are references by value, not foreign keys. |
 | `federation_file_parts` | See above. |
 | `slack_oauth_states` | Bolt OAuth CSRF state. |
 
@@ -257,13 +272,13 @@ SyncBot builds one source-canonical envelope and sends it through [`run_sync_pip
 
 **Same-instance** means the target workspace is live on this install ([`is_local_workspace`](../syncbot/helpers/workspace_kind.py#L50)). **Cross-instance** means the Channel belongs to a workspace on a peer install ([`is_stub_workspace`](../syncbot/helpers/workspace_kind.py#L63)). That workspace is still a stub row in the database; the pipeline talks to the peer instead of posting with a local bot token.
 
-1. Slack POSTs `/slack/events`. Bolt matches every event in [`app.py`](../syncbot/app.py#L473). [`main_response`](../syncbot/app.py#L394) acks Slack, then [`MAIN_MAPPER`](../syncbot/routing.py#L170) sends `message` to [`respond_to_message_event`](../syncbot/handlers/message.py#L820) and `reaction_added` / `reaction_removed` to [`handle_reaction`](../syncbot/handlers/reaction_event.py#L54). [`run_claimed`](../syncbot/db/event_claims.py#L129) claims Slack `event_id` + `team_id` so a retry does not double-apply.
-2. The handler builds one envelope with [`build_envelope`](../syncbot/helpers/envelope.py#L35) (people, source channel and workspace, body, optional files) and builds origin PostMeta with [`build_origin_post_meta_rows`](../syncbot/helpers/post_meta.py#L163). A new top-level post does that in [`_handle_new_post`](../syncbot/handlers/message.py#L470). A thread reply is [`_handle_thread_reply`](../syncbot/handlers/message.py#L550). A reaction is [`_sync_reaction_records`](../syncbot/handlers/reaction_event.py#L12). Origin rows are persisted after the pipeline returns. A same-instance copy is persisted inside `apply_target`. A cross-instance copy on this install is saved from the peer response.
+1. Slack POSTs `/slack/events`. Bolt matches every event in [`app.py`](../syncbot/app.py#L473). [`main_response`](../syncbot/app.py#L394) acks Slack, then [`MAIN_MAPPER`](../syncbot/routing.py#L170) sends `message` to [`respond_to_message_event`](../syncbot/handlers/message.py#L819) and `reaction_added` / `reaction_removed` to [`handle_reaction`](../syncbot/handlers/reaction_event.py#L54). [`run_claimed`](../syncbot/db/event_claims.py#L129) claims Slack `event_id` + `team_id` so a retry does not double-apply.
+2. The handler builds one envelope with [`build_envelope`](../syncbot/helpers/envelope.py#L35) (people, source channel and workspace, body, optional files) and builds origin PostMeta with [`build_origin_post_meta_rows`](../syncbot/helpers/post_meta.py#L190). A new top-level post does that in [`_handle_new_post`](../syncbot/handlers/message.py#L467). A thread reply is [`_handle_thread_reply`](../syncbot/handlers/message.py#L547). A reaction is [`_sync_reaction_records`](../syncbot/handlers/reaction_event.py#L12). Origin rows are persisted after the pipeline returns. A same-instance copy is persisted inside `apply_target`. A cross-instance copy on this install is saved from the peer response.
 3. [`run_sync_pipeline`](../syncbot/helpers/sync_pipeline.py#L59) calls [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L319). That finds every subscribing Channel in syncs where the origin publishes, and deduplicates by workspace and channel.
 4. A top-level create keeps every publish target. A thread create (and a file in a thread) goes same-instance only to Channels that already have the parent PostMeta (`is_thread_create` in [`run_sync_pipeline`](../syncbot/helpers/sync_pipeline.py#L93)). Trusted cross-instance Channels still get that envelope; the peer returns 409 if it has no parent.
 5. Same-instance targets run [`apply_target`](../syncbot/helpers/sync_apply.py#L66) in the [local loop](../syncbot/helpers/sync_pipeline.py#L209-L218). Cross-instance targets run [`deliver_remote`](../syncbot/federation/deliver.py#L258) in the [peer loop](../syncbot/helpers/sync_pipeline.py#L272-L279): [`stage_unique_files_for_peer`](../syncbot/federation/deliver.py#L358) first, then the envelope. Origin puts that Channel's Slack ts on the envelope as `target_ts` when it already has the copy row. [`build_remote_envelope`](../syncbot/federation/deliver.py#L62) adds `channel_id` and drops local integer ids.
 6. On the peer, [`handle_message`](../syncbot/federation/api.py#L1097) applies an inbound create. Replies use [`_inbound_thread_ts`](../syncbot/federation/api.py#L153) (`target_ts`, or PostMeta on the resolved SyncChannel). Inbound edits, deletes, and reactions ([`handle_message_edit`](../syncbot/federation/api.py#L1208), [`handle_message_delete`](../syncbot/federation/api.py#L1270), [`handle_message_react`](../syncbot/federation/api.py#L1331)) need that PostMeta row. Missing parent is 409 `parent_missing` ([`_parent_missing`](../syncbot/federation/api.py#L171)). Missing file parts are 409 `incomplete_file`. A complete part set that does not assemble is 409 `assemble_failed` ([materialize loop](../syncbot/federation/api.py#L1121-L1123)).
-7. The copy's inbound create is skipped in [`respond_to_message_event`](../syncbot/handlers/message.py#L1029) (user-token echo and copy PostMeta). Follow-ups on a publishing Channel still fan out on that message's shared `post_id`. There is no second hop: [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L319) does not walk the target Channel's other groups.
+7. The copy's inbound create is skipped in [`respond_to_message_event`](../syncbot/handlers/message.py#L1027) (user-token echo and copy PostMeta). Reactions, thread replies, edits, and deletes on a publishing Channel still fan out on that message's shared `post_id`. There is no second hop: [`iter_publish_targets`](../syncbot/helpers/sync_participation.py#L319) does not walk the target Channel's other groups.
 
 A thread reply in Workspace A `#general` from Ada Lovelace looks like this before fan-out. Edits, deletes, and reactions use that message `post_id` and do not carry `thread_post_id`. Federation outbound adds `channel_id` and `target_ts`, and drops local integer ids (`source_workspace_id`, `source_sync_channel_id`, `mapped_user_id`).
 
@@ -384,22 +399,22 @@ The same envelope path applies to edits (`chat.update`), deletes (`chat.delete`)
 - Reactions use the mapped person's target-workspace user token when possible. Hybrid falls back to a bot thread notice only when that person has not authorized or their target token is invalid.
 - Before that notice, SyncBot probes the target emoji name with the bot token when the target is in another Slack workspace (same-instance cross-workspace or federation inbound). Same-workspace targets skip the probe because they share an emoji catalog. Direct-only, Off, and a successful native add never probe.
 - On Hybrid and Direct targets, unreact removes native reactions and deletes matching Hybrid notices (children first) via deterministic `rxn-` `post_id` rows in `post_meta` (`kind`, `parent_post_id`, `reaction`, `source_user_id`, `source_workspace_id`). A user deleting a notice on one target is a local tombstone only.
-- Native reactions SyncBot applied with a user token emit a normal `reaction_added` / `reaction_removed` as that person. Those echoes are remembered in `user_action_echoes` and skipped inside `run_claimed` before fan-out.
+- Native reactions SyncBot applied with a user token emit a normal `reaction_added` / `reaction_removed` as that person. Those echoes are remembered in `pending_events` and skipped inside `run_claimed` before fan-out.
 
 **Claims and retries**
 
 Slack delivers Events API payloads **at least once**. Message and reaction handlers claim Slack envelope `event_id` + `team_id` in `processed_events` before side effects.
 
 - A duplicate delivery is a no-op. A failed attempt releases the claim so the retry can recover.
-- SyncBot acknowledges an event before it does the work, so Slack does not send an event again just because its work was not ready. A reply, edit, delete, or reaction can arrive before (or while) its message is copied. In that case it leaves a short note in `user_action_echoes` and completes its claim. Right after the message's copy is recorded, the create picks up those notes, reads each message again from the synced Channel, and runs it through the normal path (`hand_off_follow_up`, `_replay_follow_ups`).
+- SyncBot acknowledges an event before it does the work, so Slack does not send an event again just because its work was not ready. A reply, edit, delete, or reaction can arrive before (or while) its message is copied. In that case it is left pending in `pending_events` (where it happened, never what it said) and completes its claim. Right after the message's copy is recorded, the create takes those pending events, reads each message again from the synced Channel, and replays it through the normal path (`leave_pending_event`, `_replay_pending_events`).
 - Envelopes that will never sync complete the claim as a no-op so Slack stops retrying them: SyncBot's own posts, a top-level plain message that is waiting for `file_share` because the files are not downloadable yet, and unsynced subtypes.
 - Local fixtures that omit `event_id` are processed without claiming.
 
-User-token echo rows are separate from envelope `event_id`.
+User-token echo rows (`pending_events`) are separate from envelope `event_id`.
 
 - Reaction echoes are consumed when the matching inbound event is skipped.
-- File-id echo matches kept-file inbound events (the share SyncBot just posted).
-- Message-ts echo and copy `post_meta` skip the inbound create of that copy.
+- File-id echo matches kept-file inbound events (the share SyncBot just posted). It is peeked, not consumed.
+- Message-ts echo and copy `post_meta` skip the inbound create of that copy. It is peeked, not consumed.
 
 At `LOG_LEVEL=DEBUG`, skip and fan-out steps emit structured `log_debug()` events (message skip, missing parent, pipeline with no targets, file share ts, `workspace_convert`, `teams_convert`, inbound federation skip, missing bot token, and `/teams`). Pair success and migration export/import use `log_info()`.
 
@@ -460,7 +475,7 @@ The Function URL is Slack and federation only (`/slack/*`, `/api/federation/*`).
 - The wrapper (`infra/aws/lambda/handler.py`) imports the app when Lambda loads it, in the init phase, so a new execution environment is ready before its first request. The package ships Python 3.12 bytecode, because Lambda cannot write the bytecode it would otherwise compile from source on every cold start.
 - For **mysql** / **postgresql**, Alembic runs only on that migrate invoke, not on every Slack cold start.
 - For **sqlite**, the wrapper restores from S3 and runs Alembic once per execution environment, in the same init phase (then `litestream replicate`). A true cold start can miss Slack’s 3s window. Keep-warm (`ENABLE_KEEP_WARM`) makes that rare; events still retry.
-- EventBridge keep-warm ScheduleV2 **invokes the Lambda** (`source` `aws.scheduler` / `aws.events`). `app.handler` pulses federation allowlists and a group/sync snapshot, and does **not** republish Home.
+- EventBridge keep-warm ScheduleV2 **invokes the Lambda** (`source` `aws.scheduler` / `aws.events`). `app.handler` pulses federation allowlists and a group/sync snapshot, sweeps expired pending events, and does **not** republish Home.
 - After migrate, the deploy script invokes `{"action":"ready"}`, which pulses again and republishes remembered Home tabs.
 - Inbound federation returns 503 if identity or the database is not ready.
 
@@ -489,7 +504,7 @@ flowchart LR
 
 - GitHub Actions never runs `terraform apply`. Image updates are CI-only. Terraform `lifecycle.ignore_changes` keeps the container image from being overwritten on later applies.
 - Sqlite forces `max_instances=1` and concurrency 1.
-- Keep-warm uses request-based billing (`cpu_idle=true`) with an OIDC Cloud Scheduler **`GET /health`** (allowlist pulse only; not Home republish). The app finishes Slack listener work before the HTTP response, because CPU is throttled once that response is sent. The Lambda adapter acks first and re-invokes.
+- Keep-warm uses request-based billing (`cpu_idle=true`) with an OIDC Cloud Scheduler **`GET /health`** (allowlist pulse and the pending-event sweep; not Home republish). The app finishes Slack listener work before the HTTP response, because CPU is throttled once that response is sent. The Lambda adapter acks first and re-invokes.
 - After a deploy, the script waits for `/health` and then **`GET /ready`**, which pulses again and republishes remembered Home tabs.
 - The default `min_instances=1` meets Slack's 3s budget. Scale-to-zero (`min_instances=0`) relies on Slack retries; sync handlers are idempotent on `event_id`.
 - Inbound federation returns 503 if identity or the database is not ready.
@@ -530,7 +545,7 @@ To keep database and Slack API usage low on Home and User Mapping:
 ## Backup, Restore, and Data Migration
 
 - **Full-instance backup** — Durable tables are dumped as plain JSON (no compression), including `instance_settings`.
-  - Omitted: Slack `event_id` claims (`processed_events`), user-token echo rows (`user_action_echoes`), and in-flight federation file parts (`federation_file_parts`).
+  - Omitted: Slack `event_id` claims (`processed_events`), pending events (`pending_events`: user-token echoes, reaction order, waiting file shares, and replays), and in-flight federation file parts (`federation_file_parts`).
   - Bolt user and bot tokens in the dump are ciphertext when encryption is on. Restore needs the same `DATA_ENCRYPTION_KEY`.
   - The payload includes `version` (dump format; restore requires an exact match), `syncbot_version` (package label; not a gate), `exported_at`, `encryption_key_hash` (SHA-256 of `DATA_ENCRYPTION_KEY`), and `hmac` (HMAC-SHA256 over canonical JSON).
   - Restore inserts rows in FK order. It is intended for an empty or fresh database (for example after a rebuild). On HMAC or encryption-key mismatch, the UI warns but allows proceeding. After restore, Home tab caches (`home_tab_hash`, `home_tab_blocks`) are invalidated for all restored workspaces. Restore skips the `instance_settings` row `public_base_url`.

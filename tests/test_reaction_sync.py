@@ -26,6 +26,11 @@ def _sync_channel(
     )
 
 
+def _order_rows(remember):
+    """The reaction-order rows among a ``remember_pending_event`` mock's calls."""
+    return [call for call in remember.call_args_list if call.args[0] == "reaction_event"]
+
+
 def _apply(**kwargs):
     defaults = dict(
         action="add",
@@ -145,7 +150,7 @@ class TestSkipOrigin:
 
 
 class TestHandleReactionClaim:
-    def test_empty_post_records_hands_off_to_the_create(self):
+    def test_empty_post_records_leaves_it_pending_for_the_create(self):
         from handlers.reaction_event import handle_reaction
 
         body = {
@@ -166,19 +171,21 @@ class TestHandleReactionClaim:
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="B1"),
             patch("handlers.reaction_event.helpers.get_team_id_from_body", return_value="T1"),
-            patch("handlers.reaction_event.helpers.take_user_action_echo", return_value=False),
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=False),
             patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
             patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
-            patch("handlers.reaction_event.helpers.hand_off_follow_up", return_value=[]) as hand_off,
+            patch("handlers.reaction_event.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.reaction_event.log_debug") as log_debug,
             patch("handlers.reaction_event.run_claimed", side_effect=_run),
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
 
-        # Handed to the message's create; the claim completes.
+        # Left pending for the message's create; the claim completes.
         assert captured["result"] is None
-        hand_off.assert_called_once_with("T1", "C1", "1.000000", "reaction|reaction_added|U1|eyes")
+        leave.assert_called_once_with(
+            "T1", "C1", action="add", source_ts="1.000000", source_user_id="U1", reaction="eyes", event_ts=None
+        )
         log_debug.assert_called_once()
         assert log_debug.call_args.args[0] == "reaction_no_post_meta"
 
@@ -725,7 +732,7 @@ class TestApplyDirect:
             patch("helpers.reaction._mapped_user_for_target", return_value="U_MAPPED"),
             patch("helpers.reaction.get_bot_token") as get_bot_token,
             patch("helpers.reaction.WebClient", return_value=user_client),
-            patch("helpers.reaction.remember_user_action") as remember_mock,
+            patch("helpers.reaction.remember_pending_event") as remember_mock,
         ):
             _apply(
                 source_sync_channel=source,
@@ -736,10 +743,12 @@ class TestApplyDirect:
 
         get_bot_token.assert_not_called()
         remember_mock.assert_called_once_with(
-            "T_TGT",
-            "U_MAPPED",
             "reaction_added",
-            "C_TGT:100.000000:thumbsup",
+            target_team_id="T_TGT",
+            target_user_id="U_MAPPED",
+            target_channel_id="C_TGT",
+            target_ts="100.000000",
+            reaction="thumbsup",
         )
 
     def test_reaction_removed_never_threads(self):
@@ -877,7 +886,7 @@ class TestApplyLastWriteWins:
         with (
             patch("helpers.reaction.reaction_event_ts_is_stale", return_value=True),
             patch("helpers.reaction.get_user_token") as get_token,
-            patch("helpers.reaction.remember_reaction_event_ts") as remember,
+            patch("helpers.reaction.remember_pending_event") as remember,
         ):
             result, notice = _apply(target_sync_channel=target, event_ts="1.000001")
 
@@ -894,8 +903,7 @@ class TestApplyLastWriteWins:
             patch("helpers.reaction.get_user_token", return_value="xoxp-test"),
             patch("helpers.reaction._mapped_user_for_target", return_value="U_MAPPED"),
             patch("helpers.reaction.WebClient", return_value=user_client),
-            patch("helpers.reaction.remember_user_action"),
-            patch("helpers.reaction.remember_reaction_event_ts") as remember,
+            patch("helpers.reaction.remember_pending_event") as remember,
             patch("helpers.reaction.delete_notices_for_unreact"),
         ):
             result, notice = _apply(
@@ -907,8 +915,8 @@ class TestApplyLastWriteWins:
         assert result == "direct"
         assert notice is None
         user_client.reactions_remove.assert_called_once()
-        remember.assert_called_once()
-        assert remember.call_args.args[-1] == "2.000000"
+        order = _order_rows(remember)
+        assert [call.kwargs["event_ts"] for call in order] == ["2.000000"]
 
     def test_later_readd_still_applies(self):
         target = _sync_channel(constants.REACTION_STYLE_DIRECT_ONLY, channel_id="C_TGT")
@@ -918,11 +926,10 @@ class TestApplyLastWriteWins:
             patch("helpers.reaction.get_user_token", return_value="xoxp-test"),
             patch("helpers.reaction._mapped_user_for_target", return_value="U_MAPPED"),
             patch("helpers.reaction.WebClient", return_value=user_client),
-            patch("helpers.reaction.remember_user_action"),
-            patch("helpers.reaction.remember_reaction_event_ts") as remember,
+            patch("helpers.reaction.remember_pending_event") as remember,
         ):
             result, _notice = _apply(target_sync_channel=target, event_ts="3.000000")
 
         assert result == "direct"
         user_client.reactions_add.assert_called_once()
-        remember.assert_called_once()
+        assert len(_order_rows(remember)) == 1

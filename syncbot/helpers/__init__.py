@@ -109,12 +109,19 @@ from helpers.oauth import (
     get_oauth_flow,
     get_public_base_url,
 )
+from helpers.pending_events import (
+    FILE_ECHO,
+    MESSAGE_ECHO,
+    check_pending_event,
+    take_pending_event,
+    take_pending_events_to_replay,
+)
 from helpers.post_meta import (
     build_origin_post_meta_rows,
     complete_copy_ts_from_pending_share,
     get_post_records,
     get_publishing_post_records,
-    hand_off_follow_up,
+    leave_pending_event,
     post_meta_exists_for_channel_ts,
 )
 from helpers.refresh import (
@@ -137,6 +144,7 @@ from helpers.slack_api import (
     get_own_bot_user_id,
     get_user_info,
 )
+from helpers.slack_ts import slack_message_ts
 from helpers.sync_cleanup import (
     purge_sync,
     purge_sync_channels,
@@ -158,15 +166,6 @@ from helpers.sync_participation import (
     sync_state_label,
 )
 from helpers.sync_pipeline import run_sync_pipeline
-from helpers.user_action_echo import (
-    has_user_action_echo,
-    pack_reaction_note,
-    reaction_echo_fingerprint,
-    slack_message_ts,
-    take_follow_ups,
-    take_user_action_echo,
-    unpack_reaction_note,
-)
 from helpers.user_map import (
     _upsert_single_user_to_directory,
     ensure_mapped_target_user_id,
@@ -280,11 +279,13 @@ __all__ = [
     "get_own_bot_user_id",
     "get_publishing_post_records",
     "get_post_records",
-    "unpack_reaction_note",
-    "take_follow_ups",
-    "pack_reaction_note",
+    "FILE_ECHO",
+    "MESSAGE_ECHO",
+    "check_pending_event",
+    "take_pending_event",
+    "take_pending_events_to_replay",
     "fetch_source_message",
-    "hand_off_follow_up",
+    "leave_pending_event",
     "build_origin_post_meta_rows",
     "get_request_type",
     "get_team_id_from_body",
@@ -360,8 +361,5 @@ __all__ = [
     "run_sync_pipeline",
     "post_meta_exists_for_channel_ts",
     "complete_copy_ts_from_pending_share",
-    "reaction_echo_fingerprint",
-    "has_user_action_echo",
     "slack_message_ts",
-    "take_user_action_echo",
 ]
