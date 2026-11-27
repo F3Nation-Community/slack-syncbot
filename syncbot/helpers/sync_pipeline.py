@@ -12,6 +12,7 @@ from slack_sdk import WebClient
 from db import schemas
 from helpers.envelope import ACTION_CREATE, KIND_MESSAGE, get_post_id_for_post_records
 from helpers.post_meta import get_post_records_for_post_id
+from helpers.slack_api import slack_error_code
 from helpers.slack_ts import slack_message_ts
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import channel_subscribes, get_active_sync_channel, iter_publish_targets
@@ -69,7 +70,8 @@ def run_sync_pipeline(
 
     *report*, when given, collects ``(sync_channel, workspace, error, copied)`` for
     each target that refused the copy (``copied`` False) or posted it in a reduced
-    form (``copied`` True). A Slack code is final; only a raised error is tried again.
+    form (``copied`` True). A Slack code is final. A raised error is tried again, and
+    so is Slack asking for a later try (``ratelimited`` and similar), which the write raises.
     A gate is never reported.
 
     Thread creates (``thread_post_id`` on a message create) fan out locally
@@ -217,7 +219,7 @@ def run_sync_pipeline(
                     name_probe_cache=name_probe_cache,
                 )
             except Exception as exc:
-                last_error.append(type(exc).__name__)
+                last_error.append(slack_error_code(exc) or type(exc).__name__)
                 raise
             from helpers.sync_apply import ApplyOutcome
 

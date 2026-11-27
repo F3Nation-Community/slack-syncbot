@@ -38,6 +38,10 @@ _NO_AUTHORIZE_ERRORS = frozenset({"invalid_auth", "not_authed", "token_revoked",
 _USER_WRITE_ERRORS = _NO_AUTHORIZE_ERRORS | frozenset({"not_in_channel", "channel_not_found", "restricted_action"})
 # Reasons SyncBot gives itself. Any other failure without a Slack code is retried by the pipeline.
 _WRITE_REASONS = frozenset({"bot_token_unavailable", "empty_message_create"})
+# Slack asking for a later try. Retried by the pipeline, like a failure without a Slack code.
+_TRY_AGAIN_ERRORS = frozenset(
+    {"ratelimited", "internal_error", "fatal_error", "service_unavailable", "request_timeout"}
+)
 _BLOCK_ERRORS = frozenset({"invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long", "invalid_attachments"})
 
 
@@ -496,8 +500,8 @@ def slack_write_create(
     def _fail_create(exc: Exception) -> tuple[None, None, str]:
         code = slack_error_code(exc) or (str(exc) if str(exc) in _WRITE_REASONS else None)
         log_warning("slack_write_create_failed", channel_id=sync_channel.channel_id, error=code or str(exc))
-        if code is None:
-            # Not an answer from Slack (a timeout or a dropped connection): the pipeline tries again.
+        if code is None or code in _TRY_AGAIN_ERRORS:
+            # Not a final answer from Slack (a timeout, a dropped connection, or a rate limit): the pipeline tries again.
             raise exc
         if file_refs:
             log_error(

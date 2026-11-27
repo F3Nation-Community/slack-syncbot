@@ -13,6 +13,7 @@ os.environ.setdefault("DATABASE_PASSWORD", "test")
 os.environ.setdefault("DATABASE_SCHEMA", "syncbot")
 os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
+import pytest  # noqa: E402
 from slack_sdk.errors import SlackApiError  # noqa: E402
 
 from federation.deliver import deliver_remote  # noqa: E402
@@ -115,6 +116,19 @@ class TestPipelineReport:
         assert apply.call_count == 3
         assert report == [(general[0], general[1], "TimeoutError", False)]
 
+    def test_slack_asking_for_a_later_try_is_tried_again_and_reports_its_code(self):
+        general = (_row("C0GENERAL", row_id=1), _workspace(10, "Workspace B"))
+        limited = SlackApiError("later", {"ok": False, "error": "ratelimited"})
+
+        result, report, apply, _warn = _pipeline([general], [limited, ApplyOutcome(created=["copy"], ts="1.0")])
+        assert result == ["copy"]
+        assert apply.call_count == 2
+        assert report == []
+
+        _result, report, apply, _warn = _pipeline([general], limited)
+        assert apply.call_count == 3
+        assert report == [(general[0], general[1], "ratelimited", False)]
+
     def test_a_gate_is_not_reported(self):
         paused = _row("C0PAUSED", row_id=1)
         paused.status = "paused"
@@ -210,6 +224,51 @@ class TestBrokenTargetPauses:
 
         assert result == ("2.0", None, None)
         assert post.call_args_list[1].kwargs["bot_token"] == "xoxb-bot"
+
+    @pytest.mark.parametrize("code", ["ratelimited", "internal_error", "service_unavailable"])
+    def test_slack_asking_for_a_later_try_is_raised_so_the_pipeline_tries_again(self, code):
+        later = SlackApiError("later", {"ok": False, "error": code})
+        with (
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
+            patch("helpers.slack_write.WebClient"),
+            patch("helpers.workspace.get_workspace_by_id", return_value=None),
+            patch(
+                "helpers.slack_write.get_display_name_and_icon_for_synced_message",
+                return_value=(None, None, False, None),
+            ),
+            patch("helpers.slack_write.post_message", side_effect=later),
+            pytest.raises(SlackApiError),
+        ):
+            slack_write_create(
+                envelope=_envelope(),
+                sync_channel=_row("C0GENERAL", row_id=1),
+                workspace=_workspace(10, "Workspace B"),
+            )
+
+    def test_a_rate_limited_upload_is_raised_and_a_final_code_is_returned(self):
+        def create(error):
+            with (
+                patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
+                patch("helpers.slack_write.WebClient"),
+                patch("helpers.workspace.get_workspace_by_id", return_value=None),
+                patch(
+                    "helpers.slack_write.get_display_name_and_icon_for_synced_message",
+                    return_value=(None, None, False, None),
+                ),
+                patch(
+                    "helpers.slack_write._upload_target_files",
+                    side_effect=SlackApiError("no", {"ok": False, "error": error}),
+                ),
+            ):
+                return slack_write_create(
+                    envelope=_envelope(file_refs=[{"path": "/tmp/a.png", "name": "a.png"}]),
+                    sync_channel=_row("C0GENERAL", row_id=1),
+                    workspace=_workspace(10, "Workspace B"),
+                )
+
+        with pytest.raises(SlackApiError):
+            create("ratelimited")
+        assert create("storage_limit_reached") == (None, None, "storage_limit_reached")
 
     def test_a_delete_of_a_copy_that_is_gone_is_not_a_failure(self):
         gone = SlackApiError("gone", {"ok": False, "error": "message_not_found"})
