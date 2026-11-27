@@ -355,14 +355,14 @@ class TestBrokenTargetPauses:
             ) == (True, None)
 
 
-def _notify(report, *, action="create", user_id="U0ADA", **ctx_overrides):
+def _notify(report, *, action="create", user_id="U0ADA", nothing_posted=False, copied_any=True, **ctx_overrides):
     ctx = make_event_context(channel_id="C0SOURCE", ts="1733497200.423469", **ctx_overrides)
     with (
         patch("handlers.message.helpers.resolve_workspace_name", side_effect=lambda ws: ws.workspace_name),
         patch("handlers.message.helpers.lookup_channel_name", return_value=None),
         patch("handlers.message.helpers.notify_source_user_error") as notify,
     ):
-        _notify_author(MagicMock(), user_id, ctx, action, report)
+        _notify_author(MagicMock(), user_id, ctx, action, report, nothing_posted=nothing_posted, copied_any=copied_any)
     return notify
 
 
@@ -443,6 +443,26 @@ class TestAuthorDm:
         assert "could not copy your file to the other Channels." in summary
         assert notify.call_args.kwargs["details"]["event"] == "message_degraded"
         assert notify.call_args.kwargs["details"]["reason"] == "unknown_subtype, download_empty"
+
+    def test_a_reduction_is_not_called_a_copy_when_nothing_was_copied(self):
+        general = (_row("C0GENERAL", row_id=1, name="general"), _workspace(10, "Workspace B"))
+        report = [(*general, "not_in_channel", False)]
+
+        none_copied = _notify(report, degraded=["unknown_subtype"], copied_any=False).call_args.kwargs["summary"]
+        some_copied = _notify(report, degraded=["unknown_subtype"]).call_args.kwargs["summary"]
+
+        assert "could not copy your message to `#general (Workspace B)`." in none_copied
+        assert "may not look the same" not in none_copied
+        assert "may not look the same in the other Channels." in some_copied
+
+    def test_a_message_with_nothing_readable_that_went_nowhere_is_not_copied(self):
+        notify = _notify([], degraded=["nothing_readable"], nothing_posted=True)
+
+        summary = notify.call_args.kwargs["summary"]
+        assert summary.startswith(":warning: SyncBot could not copy your message to the other Channels.")
+        assert "may not look the same" not in summary
+        assert notify.call_args.kwargs["details"]["event"] == "message_not_copied"
+        assert notify.call_args.kwargs["details"]["reason"] == "nothing_readable"
 
     def test_nothing_to_report_or_no_author_sends_nothing(self):
         general = (_row("C0GENERAL", row_id=1), _workspace(10, "Workspace B"))

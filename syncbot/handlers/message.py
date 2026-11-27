@@ -184,6 +184,7 @@ _NO_REPLY = {
 _REDUCED = "SyncBot copied your {what} to {names}, but it may not look the same there."
 _REDUCED_EVERYWHERE = "SyncBot copied your message, but it may not look the same in the other Channels."
 _FILE_NOT_COPIED = "SyncBot could not copy your file to the other Channels."
+_NOTHING_COPIED = "SyncBot could not copy your message to the other Channels."
 _STORAGE_FULL = "That workspace's file storage is full."
 _REPORT_IT = "Please send this to a workspace admin so it can be fixed."
 
@@ -213,10 +214,13 @@ def _notify_author(
     report: list | None,
     *,
     nothing_posted: bool = False,
+    copied_any: bool = True,
 ) -> None:
     """One DM to the author when their message did not copy all the way.
 
     *report* is ``run_sync_pipeline``'s ``(sync_channel, workspace, error, copied)``.
+    *nothing_posted* is a create that went nowhere before fan-out. *copied_any* is False
+    when no target got a copy, so the DM never says the message was copied.
     A target that never answered (``no_response``) is "sent, but didn't reply", not "could not copy".
     ``ctx["degraded"]`` holds causes found before fan-out, and ``ctx["files_failed"]``
     an unreadable file. Gates are never reported. No message words go in the DM.
@@ -224,7 +228,7 @@ def _notify_author(
     report = list(report or [])
     reasons = list(ctx.get("degraded") or [])
     files_failed = bool(ctx.get("files_failed"))
-    if not (report or reasons or files_failed) or not user_id:
+    if not (report or reasons or files_failed or nothing_posted) or not user_id:
         return
     refused = [(_build_target_label(sc, ws), error) for sc, ws, error, copied in report if not copied]
     failed = [(name, error) for name, error in refused if error != helpers.NO_RESPONSE]
@@ -241,10 +245,12 @@ def _notify_author(
     if reduced:
         what = "edit" if action == "edit" else "message"
         lines.append(_REDUCED.format(what=what, names=_join_names([n for n, _ in reduced])))
-    if set(reasons) - {"download_empty"}:
+    if copied_any and not nothing_posted and set(reasons) - {"download_empty"}:
         lines.append(_REDUCED_EVERYWHERE)
     if files_failed:
         lines.append(_FILE_NOT_COPIED)
+    elif nothing_posted and not failed:
+        lines.append(_NOTHING_COPIED)
     if any(error == "storage_limit_reached" for _n, error in failed):
         lines.append(_STORAGE_FULL)
     lines.append(_REPORT_IT)
@@ -559,7 +565,7 @@ def _handle_new_post(
     DbManager.create_records(post_list)
     _replay_pending_events(client, logger, ctx)
     emit_metric("messages_synced", value=len(synced), sync_type="new_post")
-    _notify_author(client, user_id, ctx, "create", report)
+    _notify_author(client, user_id, ctx, "create", report, copied_any=bool(synced))
 
 
 def _handle_thread_reply(
@@ -648,7 +654,7 @@ def _handle_thread_reply(
     DbManager.create_records(post_list)
     _replay_pending_events(client, logger, ctx)
     emit_metric("messages_synced", value=len(synced), sync_type="thread_reply")
-    _notify_author(client, user_id, ctx, "create", report)
+    _notify_author(client, user_id, ctx, "create", report, copied_any=bool(synced))
     log_debug(
         "thread_reply_applied",
         post_id=post_uuid,
@@ -1178,6 +1184,8 @@ def respond_to_message_event(
             }
             if not permalink:
                 log_warning("message_skip", reason="nothing_readable", **details)
+                ctx["degraded"] = [*(ctx.get("degraded") or []), "nothing_readable"]
+                _notify_author(client, user_id, ctx, "create", [], nothing_posted=True)
                 return
             log_warning("message_degraded", reason="nothing_readable", **details)
             ctx["msg_text"] = permalink

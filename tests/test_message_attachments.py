@@ -406,7 +406,7 @@ class TestNothingReadable:
         assert degraded[0].kwargs["block_types"] == ["actions"]
         mocks["notify"].assert_not_called()
 
-    def test_without_a_permalink_nothing_posts(self):
+    def test_without_a_permalink_nothing_posts_and_the_author_hears(self):
         client = MagicMock()
         client.chat_getPermalink.side_effect = SlackApiError("nope", {"ok": False, "error": "channel_not_found"})
         with ExitStack() as stack:
@@ -416,6 +416,8 @@ class TestNothingReadable:
         mocks["new_post"].assert_not_called()
         skips = [c for c in mocks["warn"].call_args_list if c.args[0] == "message_skip"]
         assert skips[0].kwargs["reason"] == "nothing_readable"
+        summary = mocks["notify"].call_args.kwargs["summary"]
+        assert "could not copy your message to the other Channels." in summary
 
 
 class TestCanvasAndSubtypes:
