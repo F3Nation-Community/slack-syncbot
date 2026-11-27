@@ -43,11 +43,12 @@ class ApplyOutcome:
 
 
 # Codes that mean the target Channel itself is broken: pause it, and its managers hear once.
+# Not ``restricted_action``: a posting limit still lets the people it allows post, so a later
+# copy with their token can land. The refused copy is reported to its author.
 _PAUSE_VIA = {
     "not_in_channel": "kick",
     "channel_not_found": "kick",
     "is_archived": "archive",
-    "restricted_action": "restricted",
 }
 
 

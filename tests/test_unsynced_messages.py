@@ -173,7 +173,6 @@ class TestBrokenTargetPauses:
             ("not_in_channel", "kick"),
             ("channel_not_found", "kick"),
             ("is_archived", "archive"),
-            ("restricted_action", "restricted"),
         ):
             outcome, pause, row = self._apply(code)
 
@@ -208,6 +207,13 @@ class TestBrokenTargetPauses:
 
             assert outcome.error == code
             pause.assert_not_called()
+
+    def test_a_posting_limit_does_not_pause(self):
+        """``restricted_action`` stays active: a later copy with an allowed person's token can still post."""
+        outcome, pause, _row_out = self._apply("restricted_action")
+
+        assert outcome.error == "restricted_action"
+        pause.assert_not_called()
 
     def test_a_message_code_or_a_reduced_copy_does_not_pause(self):
         for code, ts in (("msg_too_long", None), ("invalid_attachments", "1.0")):

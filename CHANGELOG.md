@@ -22,7 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A message still syncs when a file on it cannot be copied
 - A canvas shared into a Channel syncs as its link
 - When a message is not copied, or not copied all the way, SyncBot DMs the author once
-- A Channel SyncBot cannot post in pauses and tells that workspace's managers
+- A copy that fails because SyncBot was removed or the Channel was archived pauses that Channel and tells its workspace's managers
 - A copy that could not keep its formatting says so
 - A file that cannot be copied no longer sends three DMs or uploads three times
 - Replies, edits, deletes, and reactions on messages from before a Channel was synced are no longer retried
