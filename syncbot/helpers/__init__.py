@@ -166,7 +166,7 @@ from helpers.sync_participation import (
     parse_participation_flags,
     sync_state_label,
 )
-from helpers.sync_pipeline import run_sync_pipeline
+from helpers.sync_pipeline import NO_RESPONSE, run_sync_pipeline
 from helpers.user_map import (
     _upsert_single_user_to_directory,
     ensure_mapped_target_user_id,
@@ -359,6 +359,7 @@ __all__ = [
     "format_action_notice",
     "format_sync_member",
     "sync_state_label",
+    "NO_RESPONSE",
     "run_sync_pipeline",
     "post_meta_exists_for_channel_ts",
     "is_before_sync",

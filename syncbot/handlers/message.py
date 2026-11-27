@@ -174,6 +174,11 @@ _NOT_COPIED = {
     "edit": "SyncBot could not copy your edit to {names}.",
     "delete": "SyncBot could not delete the copy of your message in {names}.",
 }
+_NO_REPLY = {
+    "create": "SyncBot sent your message to {names}, but {whom} didn't reply.",
+    "edit": "SyncBot sent your edit to {names}, but {whom} didn't reply.",
+    "delete": "SyncBot asked {names} to delete the copy of your message, but {whom} didn't reply.",
+}
 _REDUCED = "SyncBot copied your {what} to {names}, but it may not look the same there."
 _REDUCED_EVERYWHERE = "SyncBot copied your message, but it may not look the same in the other Channels."
 _FILE_NOT_COPIED = "SyncBot could not copy your file to the other Channels."
@@ -210,6 +215,7 @@ def _notify_author(
     """One DM to the author when their message did not copy all the way.
 
     *report* is ``run_sync_pipeline``'s ``(sync_channel, workspace, error, copied)``.
+    A target that never answered (``no_response``) is "sent, but didn't reply", not "could not copy".
     ``ctx["degraded"]`` holds causes found before fan-out, and ``ctx["files_failed"]``
     an unreadable file. Gates are never reported. No message words go in the DM.
     """
@@ -218,11 +224,18 @@ def _notify_author(
     files_failed = bool(ctx.get("files_failed"))
     if not (report or reasons or files_failed) or not user_id:
         return
-    failed = [(_build_target_label(sc, ws), error) for sc, ws, error, copied in report if not copied]
+    refused = [(_build_target_label(sc, ws), error) for sc, ws, error, copied in report if not copied]
+    failed = [(name, error) for name, error in refused if error != helpers.NO_RESPONSE]
+    no_reply = [(name, error) for name, error in refused if error == helpers.NO_RESPONSE]
     reduced = [(_build_target_label(sc, ws), error) for sc, ws, error, copied in report if copied]
     lines: list[str] = []
     if failed:
         lines.append(_NOT_COPIED.get(action, _NOT_COPIED["create"]).format(names=_join_names([n for n, _ in failed])))
+    if no_reply:
+        whom = "that Workspace" if len(no_reply) == 1 else "those Workspaces"
+        lines.append(
+            _NO_REPLY.get(action, _NO_REPLY["create"]).format(names=_join_names([n for n, _ in no_reply]), whom=whom)
+        )
     if reduced:
         what = "edit" if action == "edit" else "message"
         lines.append(_REDUCED.format(what=what, names=_join_names([n for n, _ in reduced])))
@@ -234,13 +247,13 @@ def _notify_author(
         lines.append(_STORAGE_FULL)
     lines.append(_REPORT_IT)
     details: dict = {
-        "event": "message_not_copied" if failed or nothing_posted else "message_degraded",
+        "event": "message_not_copied" if refused or nothing_posted else "message_degraded",
         "action": action,
         "channel": ctx.get("channel_id"),
         "ts": ctx.get("ts"),
         "reason": ", ".join(reasons) or None,
     }
-    for label, error in failed + reduced:
+    for label, error in refused + reduced:
         details[label] = error
     helpers.notify_source_user_error(
         source_client=client,

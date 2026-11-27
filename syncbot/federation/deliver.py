@@ -27,6 +27,7 @@ from helpers.envelope import (
 )
 from helpers.files import hashed_file_path, hashed_file_ready, pin_hashed_file, unpin_hashed_file
 from helpers.slack_ts import post_meta_ts, slack_message_ts
+from helpers.sync_pipeline import NO_RESPONSE
 from logger import log_warning
 
 
@@ -247,7 +248,7 @@ PEER_PARENT_MISSING = "parent_missing"
 def _get_failed_call_code(result: dict | None, status: object) -> str:
     if status == 409 and (result or {}).get("error") == PEER_PARENT_MISSING:
         return PEER_PARENT_MISSING
-    return f"http_{status}" if status else "no_response"
+    return f"http_{status}" if status else NO_RESPONSE
 
 
 def _note_failure(errors: list | None, code: str) -> None:
@@ -322,7 +323,7 @@ def deliver_remote(
                 post_id=envelope.get("post_id"),
                 thread_post_id=envelope.get("thread_post_id"),
             )
-            _note_failure(errors, f"http_{status}" if status else "no_response")
+            _note_failure(errors, f"http_{status}" if status else NO_RESPONSE)
             return None
         if not _read_peer_answer(result, errors):
             return []

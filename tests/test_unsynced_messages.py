@@ -129,6 +129,14 @@ class TestPipelineReport:
         assert apply.call_count == 3
         assert report == [(general[0], general[1], "ratelimited", False)]
 
+    def test_a_target_that_never_answers_is_reported_as_no_response(self):
+        general = (_row("C0GENERAL", row_id=1), _workspace(10, "Workspace B"))
+
+        _result, report, apply, _warn = _pipeline([general], lambda *_args, **_kwargs: ApplyOutcome())
+
+        assert apply.call_count == 3
+        assert report == [(general[0], general[1], "no_response", False)]
+
     def test_a_gate_is_not_reported(self):
         paused = _row("C0PAUSED", row_id=1)
         paused.status = "paused"
@@ -330,6 +338,37 @@ class TestAuthorDm:
         assert "could not copy your edit to" in edit.call_args.kwargs["summary"]
         assert "could not delete the copy of your message in" in delete.call_args.kwargs["summary"]
         assert delete.call_args.kwargs["details"]["action"] == "delete"
+
+    def test_a_target_that_did_not_reply_is_sent_not_failed(self):
+        general = (_row("C0GENERAL", row_id=1, name="general"), _workspace(10, "Workspace B"))
+        peer = (_row("C0PEER", row_id=2, name="peer"), _workspace(20, "Partner Org"))
+        other = (_row("C0OTHER", row_id=3, name="other"), _workspace(30, "Third Org"))
+
+        one = _notify([(*general, "no_response", False)])
+        two = _notify(
+            [(*general, "no_response", False), (*peer, "no_response", False), (*other, "not_in_channel", False)]
+        )
+        edit = _notify([(*general, "no_response", False)], action="edit")
+        delete = _notify([(*general, "no_response", False)], action="delete")
+
+        summary = one.call_args.kwargs["summary"]
+        assert summary.startswith(
+            ":warning: SyncBot sent your message to `#general (Workspace B)`, but that Workspace didn't reply."
+        )
+        assert "could not copy" not in summary
+        assert one.call_args.kwargs["details"]["event"] == "message_not_copied"
+        assert one.call_args.kwargs["details"]["#general (Workspace B)"] == "no_response"
+        both = two.call_args.kwargs["summary"]
+        assert "could not copy your message to `#other (Third Org)`." in both
+        assert "sent your message to `#general (Workspace B)` and `#peer (Partner Org)`, but those Workspaces" in both
+        assert (
+            "SyncBot sent your edit to `#general (Workspace B)`, but that Workspace didn't reply."
+            in (edit.call_args.kwargs["summary"])
+        )
+        assert (
+            "asked `#general (Workspace B)` to delete the copy of your message, but that Workspace"
+            in (delete.call_args.kwargs["summary"])
+        )
 
     def test_reduced_before_fan_out_and_unreadable_files(self):
         notify = _notify([], degraded=["unknown_subtype", "download_empty"], files_failed=True)

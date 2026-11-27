@@ -26,6 +26,9 @@ from helpers.workspace_kind import (
 from logger import log_debug, log_info, log_warning
 
 _ATTEMPT_WAITS = (1, 2)
+# The report's code for a target that never answered: a peer that did not reply, or an
+# upload Slack never returned the share for. The copy may still have posted.
+NO_RESPONSE = "no_response"
 
 
 def _sleep_between_attempts(seconds: float) -> None:
@@ -72,6 +75,7 @@ def run_sync_pipeline(
     each target that refused the copy (``copied`` False) or posted it in a reduced
     form (``copied`` True). A Slack code is final. A raised error is tried again, and
     so is Slack asking for a later try (``ratelimited`` and similar), which the write raises.
+    A target that never answered is reported as :data:`NO_RESPONSE`.
     A gate is never reported.
 
     Thread creates (``thread_post_id`` on a message create) fan out locally
@@ -236,7 +240,7 @@ def run_sync_pipeline(
     for sync_channel, workspace in local_targets:
         last_error: list[str] = []
         if not _while_active(sync_channel, _local_landed(sync_channel, workspace, last_error)):
-            _record(sync_channel, workspace, last_error[-1] if last_error else "no_response", False)
+            _record(sync_channel, workspace, last_error[-1] if last_error else NO_RESPONSE, False)
 
     if stub_by_peer:
         from federation.deliver import PEER_PARENT_MISSING, deliver_remote, stage_unique_files_for_peer
@@ -288,7 +292,7 @@ def run_sync_pipeline(
                     return True
 
                 if not _while_active(sync_channel, _remote_landed):
-                    error = peer_errors[-1][0] if peer_errors else "no_response"
+                    error = peer_errors[-1][0] if peer_errors else NO_RESPONSE
                     if error == PEER_PARENT_MISSING:
                         # The peer has no copy of this message, so there is nothing to change there.
                         log_debug("pipeline_skip", reason=PEER_PARENT_MISSING, channel_id=sync_channel.channel_id)
