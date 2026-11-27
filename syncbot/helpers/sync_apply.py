@@ -160,7 +160,9 @@ def apply_target(
         if not meta:
             return ApplyOutcome()
         ok, delete_error = slack_write_delete(sync_channel=sync_channel, workspace=workspace, target_post_meta=meta)
-        if not ok:
+        # A copy posted as a person is deleted with their token only (the bot cannot delete it).
+        # Their token being refused is about them, not SyncBot, so only the bot's refusal pauses.
+        if not ok and not getattr(meta, "posted_as_user_id", None):
             _pause_broken_target(sync_channel, delete_error)
         return ApplyOutcome(error=delete_error, applied=ok)
 

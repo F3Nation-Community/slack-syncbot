@@ -157,6 +157,35 @@ class TestBrokenTargetPauses:
             assert outcome.error == code
             pause.assert_called_once_with(row, via=via, leave=False)
 
+    def _delete(self, error, *, posted_as):
+        row = _row("C0GENERAL", row_id=1)
+        meta = SimpleNamespace(ts="5.000000", posted_as_user_id=posted_as)
+        with (
+            patch("helpers.sync_apply.get_active_sync_channel", side_effect=lambda r: r),
+            patch("helpers.sync_apply.get_target_post_meta", return_value=meta),
+            patch("helpers.sync_apply.slack_write_delete", return_value=(False, error)),
+            patch("helpers.sync_lifecycle.pause_sync_channel") as pause,
+        ):
+            outcome = apply_target(_envelope(action="delete"), row, _workspace(10, "Workspace B"))
+        return outcome, pause, row
+
+    def test_a_delete_refused_to_the_bot_pauses(self):
+        outcome, pause, row = self._delete("not_in_channel", posted_as=None)
+
+        assert outcome.error == "not_in_channel"
+        pause.assert_called_once_with(row, via="kick", leave=False)
+
+    def test_a_delete_refused_to_the_person_it_was_posted_as_does_not_pause(self):
+        """Only their token can delete their copy, and their access is not SyncBot's.
+
+        A private Channel the person left answers ``channel_not_found`` while SyncBot is still a member.
+        """
+        for code in ("not_in_channel", "channel_not_found", "restricted_action", "is_archived"):
+            outcome, pause, _row_out = self._delete(code, posted_as="U0ADA")
+
+            assert outcome.error == code
+            pause.assert_not_called()
+
     def test_a_message_code_or_a_reduced_copy_does_not_pause(self):
         for code, ts in (("msg_too_long", None), ("invalid_attachments", "1.0")):
             _outcome, pause, _row_out = self._apply(code, ts=ts)
