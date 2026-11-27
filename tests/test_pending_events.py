@@ -484,6 +484,32 @@ class TestCompleteCopyPendingShare:
         )
         return workspace, sync_channel
 
+    def test_a_ts_matches_only_in_its_own_channel(self, real_db):
+        """Two Channels can each have a message at the same ts; only the asked Channel's matches."""
+        from decimal import Decimal
+
+        from db import DbManager
+        from helpers.post_meta import get_post_records
+
+        workspace, here = self._channel("C_HERE")
+        there = DbManager.create_record(
+            schemas.SyncChannel(
+                sync_id=here.sync_id,
+                workspace_id=workspace.id,
+                channel_id="C_THERE",
+                status="active",
+                publishes=True,
+                subscribes=True,
+                created_at=here.created_at,
+            )
+        )
+        DbManager.create_record(schemas.PostMeta(post_id="P_HERE", sync_channel_id=here.id, ts=Decimal("300.000001")))
+        DbManager.create_record(schemas.PostMeta(post_id="P_THERE", sync_channel_id=there.id, ts=Decimal("300.000001")))
+
+        assert {pm.post_id for pm, _sc, _ws in get_post_records("300.000001", channel_id="C_HERE")} == {"P_HERE"}
+        assert get_post_records("300.000001", channel_id="C_ELSEWHERE") == []
+        assert {pm.post_id for pm, _sc, _ws in get_post_records("300.000001")} == {"P_HERE", "P_THERE"}
+
     def _remember(self, sync_channel, file_id, post_id, **columns):
         remember_pending_event(
             PENDING_SHARE,

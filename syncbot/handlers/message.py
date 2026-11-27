@@ -314,7 +314,7 @@ def _replay_pending_event(client: WebClient, logger: Logger, ctx: EventContext, 
         }
         if pending.event_ts is not None:
             event["event_ts"] = helpers.slack_message_ts(pending.event_ts)
-        records = helpers.get_post_records(ts)
+        records = helpers.get_post_records(ts, channel_id=channel_id)
         if records:
             log_debug("pending_event_replayed", action=pending.action, channel=channel_id, ts=ts)
             _sync_reaction_records({"team_id": team_id, "event": event}, client, records)
@@ -363,10 +363,10 @@ def _get_post_records_or_leave_pending(
     pending for it (``leave_pending_event``).
     """
     message_ts = source_thread_ts or source_ts
-    records = helpers.get_post_records(message_ts)
+    channel_id = ctx.get("channel_id")
+    records = helpers.get_post_records(message_ts, channel_id=channel_id)
     if records:
         return records
-    channel_id = ctx.get("channel_id")
     if helpers.is_before_sync(channel_id, message_ts):
         log_info("message_skip", reason="before_sync", channel=channel_id, ts=message_ts, action=action)
         return []

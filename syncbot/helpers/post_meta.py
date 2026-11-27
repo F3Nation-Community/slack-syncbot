@@ -50,18 +50,33 @@ def get_post_records_for_post_id(
     return _dedupe_post_records(post_records)
 
 
-def get_post_records(thread_ts: str) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]]:
+def get_post_records(
+    thread_ts: str, channel_id: str | None = None
+) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]]:
     """Look up all PostMeta records that share a ``post_id`` with this timestamp.
 
     A Channel that publishes in more than one sync stores one origin row per
     membership, so several ``PostMeta`` rows can share the same ``ts``. Union
     every matching ``post_id`` rather than taking ``post[0]`` only.
+
+    A ts names a message only within its Channel: two Channels can each have a
+    message at the same ts. With *channel_id*, only rows in that Channel match.
     """
     try:
         ts_value = post_meta_ts(thread_ts)
     except (TypeError, ValueError):
         return []
-    posts = DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.ts == ts_value])
+    if channel_id:
+        posts = [
+            post
+            for post, _sync_channel in DbManager.find_join_records2(
+                schemas.PostMeta,
+                schemas.SyncChannel,
+                [schemas.PostMeta.ts == ts_value, schemas.SyncChannel.channel_id == channel_id],
+            )
+        ]
+    else:
+        posts = DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.ts == ts_value])
     post_ids = {row.post_id for row in posts if row.post_id}
     if not post_ids:
         return []
@@ -120,7 +135,7 @@ def leave_pending_event(
         reaction=reaction,
         event_ts=event_ts,
     )
-    records = get_post_records(message_ts)
+    records = get_post_records(message_ts, channel_id=channel_id)
     if records and (pending_id is None or take_pending_event(REPLAY, id=pending_id)):
         return records
     if pending_id is None:

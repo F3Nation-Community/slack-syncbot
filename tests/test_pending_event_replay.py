@@ -93,7 +93,8 @@ class TestLeavePendingEvent:
         assert _take() == []
 
     def test_when_the_create_took_the_row_the_event_does_not_apply(self, pending_db):
-        def create_finishes_and_takes(_ts):
+        def create_finishes_and_takes(_ts, channel_id=None):
+            assert channel_id == "C1"
             assert _take() == [("edit", MESSAGE_TS)]
             return RECORDS
 
@@ -106,14 +107,14 @@ class TestLeavePendingEvent:
                 leave_pending_event("T1", "C1", action="create", source_ts=REPLY_TS, source_thread_ts=MESSAGE_TS) == []
             )
 
-        records.assert_called_once_with(MESSAGE_TS)
+        records.assert_called_once_with(MESSAGE_TS, channel_id="C1")
         assert _take() == [("create", REPLY_TS)]
 
     def test_a_thread_ts_counts_only_on_a_new_reply(self, pending_db):
         with patch("helpers.post_meta.get_post_records", return_value=[]) as records:
             leave_pending_event("T1", "C1", action="edit", source_ts=REPLY_TS, source_thread_ts=MESSAGE_TS)
 
-        records.assert_called_once_with(REPLY_TS)
+        records.assert_called_once_with(REPLY_TS, channel_id="C1")
         assert _take() == []
         assert _take(REPLY_TS) == [("edit", REPLY_TS)]
 

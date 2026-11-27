@@ -95,7 +95,7 @@ def handle_reaction(
         if not helpers.origin_publishes_anywhere(channel_id):
             return
 
-        reacted_records = helpers.get_post_records(msg_ts)
+        reacted_records = helpers.get_post_records(msg_ts, channel_id=channel_id)
         if not reacted_records:
             log_debug("reaction_no_post_meta", msg_ts=msg_ts, channel_id=channel_id)
             if helpers.is_before_sync(channel_id, msg_ts):
