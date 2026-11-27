@@ -1104,12 +1104,14 @@ class TestHandleReactionEchoSkip:
         with (
             patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="UBOT"),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=records),
-            patch("handlers.reaction_event.helpers.take_pending_event", return_value=True),
+            # Only the first call finds the echo; the second must be stopped by the claim, not by a take.
+            patch("handlers.reaction_event.helpers.take_pending_event", side_effect=[True, False]) as take_mock,
             patch("handlers.reaction_event._sync_reaction_records") as sync_mock,
         ):
             handle_reaction(body, MagicMock(), MagicMock(), {})
             handle_reaction(body, MagicMock(), MagicMock(), {})
 
+        take_mock.assert_called_once()
         sync_mock.assert_not_called()
 
 

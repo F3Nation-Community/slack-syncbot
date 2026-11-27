@@ -548,7 +548,7 @@ class TestPostingCards:
                 sync_channel=_sync_channel(),
                 workspace=_workspace(),
                 target_post_meta=meta,
-            )
+            ) == (True, None)
         assert post.call_args.kwargs["attachments"] == [_card()]
         assert post.call_args.kwargs["update_ts"] == "10.000000"
 
@@ -559,7 +559,7 @@ class TestPostingCards:
                 sync_channel=_sync_channel(),
                 workspace=_workspace(),
                 target_post_meta=meta,
-            )
+            ) == (True, "invalid_attachments")
         retry = post.call_args_list[1].kwargs
         assert retry["attachments"] == []
         assert "All good." in retry["msg_text"]

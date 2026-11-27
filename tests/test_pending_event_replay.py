@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -15,6 +14,7 @@ from helpers.pending_events import REPLAY, remember_pending_event, take_pending_
 from helpers.post_meta import leave_pending_event
 from helpers.slack_api import fetch_source_message
 from helpers.slack_ts import post_meta_ts, slack_message_ts
+from tests.db_fixtures import temp_sqlite_database
 from tests.event_fixtures import make_event_context
 
 MESSAGE_TS = "1795710083.439439"
@@ -25,21 +25,8 @@ EDIT = {"action": "edit", "source_ts": MESSAGE_TS}
 
 @pytest.fixture
 def pending_db(tmp_path):
-    import db as db_mod
-    from db import get_engine, initialize_database
-
-    url = f"sqlite:///{tmp_path / 'replay.db'}"
-    old_engine = db_mod.GLOBAL_ENGINE
-    old_schema = db_mod.GLOBAL_SCHEMA
-    with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
-        db_mod.GLOBAL_ENGINE = None
-        db_mod.GLOBAL_SCHEMA = None
-        initialize_database()
-        yield get_engine()
-        if db_mod.GLOBAL_ENGINE:
-            db_mod.GLOBAL_ENGINE.dispose()
-        db_mod.GLOBAL_ENGINE = old_engine
-        db_mod.GLOBAL_SCHEMA = old_schema
+    with temp_sqlite_database(tmp_path / "replay.db") as engine:
+        yield engine
 
 
 def _take(message_ts=MESSAGE_TS):

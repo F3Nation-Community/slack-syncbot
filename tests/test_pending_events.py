@@ -1,6 +1,5 @@
 """Pending events: addresses only, one trio for every kind, live rows only, swept on the pulse."""
 
-import os
 from datetime import timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -27,6 +26,7 @@ from helpers.pending_events import (
     take_pending_events_to_replay,
 )
 from helpers.slack_ts import post_meta_ts, slack_message_ts
+from tests.db_fixtures import temp_sqlite_database
 
 TS = "1795710083.439439"
 MESSAGE = {"target_team_id": "T2", "target_user_id": "U_MAPPED", "target_channel_id": "C_TGT", "target_ts": "200.0"}
@@ -44,21 +44,8 @@ SHARE = {"target_team_id": "T2", "target_channel_id": "C_TGT", "file_id": "F1"}
 
 @pytest.fixture
 def pending_db(tmp_path):
-    import db as db_mod
-    from db import get_engine, initialize_database
-
-    url = f"sqlite:///{tmp_path / 'pending.db'}"
-    old_engine = db_mod.GLOBAL_ENGINE
-    old_schema = db_mod.GLOBAL_SCHEMA
-    with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
-        db_mod.GLOBAL_ENGINE = None
-        db_mod.GLOBAL_SCHEMA = None
-        initialize_database()
-        yield get_engine()
-        if db_mod.GLOBAL_ENGINE:
-            db_mod.GLOBAL_ENGINE.dispose()
-        db_mod.GLOBAL_ENGINE = old_engine
-        db_mod.GLOBAL_SCHEMA = old_schema
+    with temp_sqlite_database(tmp_path / "pending.db") as engine:
+        yield engine
 
 
 def _rows():
@@ -426,35 +413,8 @@ class TestSweep:
 class TestCompleteCopyPendingShare:
     @pytest.fixture
     def real_db(self, tmp_path):
-        import db as db_mod
-        from db import initialize_database
-        from helpers._cache import clear_all_caches
-
-        url = f"sqlite:///{tmp_path / 'pending_copy.db'}"
-        old_engine = db_mod.GLOBAL_ENGINE
-        old_session = db_mod.GLOBAL_SESSION
-        old_schema = db_mod.GLOBAL_SCHEMA
-        with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
-            try:
-                db_mod.GLOBAL_ENGINE = None
-                db_mod.GLOBAL_SESSION = None
-                db_mod.GLOBAL_SCHEMA = None
-                initialize_database()
-                from federation import core as federation_core
-
-                federation_core._INSTANCE_ID = None
-                federation_core._cached_private_key = None
-                federation_core._cached_public_pem = None
-                federation_core.get_or_create_instance_keypair()
-                clear_all_caches()
-                yield
-            finally:
-                clear_all_caches()
-                if db_mod.GLOBAL_ENGINE:
-                    db_mod.GLOBAL_ENGINE.dispose()
-                db_mod.GLOBAL_ENGINE = old_engine
-                db_mod.GLOBAL_SESSION = old_session
-                db_mod.GLOBAL_SCHEMA = old_schema
+        with temp_sqlite_database(tmp_path / "pending_copy.db", with_instance=True):
+            yield
 
     def _channel(self, channel_id="C_TGT"):
         from datetime import UTC, datetime

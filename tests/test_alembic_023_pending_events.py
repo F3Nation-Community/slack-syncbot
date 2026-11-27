@@ -5,7 +5,6 @@ import os
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -17,6 +16,8 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 
 from alembic import command  # noqa: E402
 from sqlalchemy import inspect, text  # noqa: E402
+
+from tests.db_fixtures import temp_sqlite_database  # noqa: E402
 
 _PATH = Path(__file__).resolve().parents[1] / "syncbot" / "db" / "alembic" / "versions" / "023_pending_events.py"
 _spec = importlib.util.spec_from_file_location("migration_023", _PATH)
@@ -91,29 +92,8 @@ class TestConvertRow:
 
 @pytest.fixture
 def real_db(tmp_path):
-    import db as db_mod
-    from db import initialize_database
-
-    url = f"sqlite:///{tmp_path / 'alembic023.db'}"
-    old_engine = db_mod.GLOBAL_ENGINE
-    old_schema = db_mod.GLOBAL_SCHEMA
-    with patch.dict(os.environ, {"DATABASE_BACKEND": "sqlite", "DATABASE_URL": url}, clear=False):
-        try:
-            db_mod.GLOBAL_ENGINE = None
-            db_mod.GLOBAL_SCHEMA = None
-            initialize_database()
-            from federation import core as federation_core
-
-            federation_core._INSTANCE_ID = None
-            federation_core._cached_private_key = None
-            federation_core._cached_public_pem = None
-            federation_core.get_or_create_instance_keypair()
-            yield
-        finally:
-            if db_mod.GLOBAL_ENGINE:
-                db_mod.GLOBAL_ENGINE.dispose()
-            db_mod.GLOBAL_ENGINE = old_engine
-            db_mod.GLOBAL_SCHEMA = old_schema
+    with temp_sqlite_database(tmp_path / "alembic023.db", with_instance=True):
+        yield
 
 
 def _tables():
