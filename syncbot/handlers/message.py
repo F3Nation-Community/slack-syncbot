@@ -348,6 +348,9 @@ def _get_post_records_or_leave_pending(
 ) -> list:
     """PostMeta of the message this reply, edit, or delete acts on. ``[]`` means nothing to do now.
 
+    ``None`` means it could not be left pending either: the handler returns ``False``
+    so the claim is released.
+
     A new reply acts on its parent (*source_thread_ts*); an edit or a delete on
     its own message (*source_ts*). A message from before the Sync never gets
     PostMeta. Otherwise its create may still be running, so the event is left
@@ -566,10 +569,11 @@ def _handle_thread_reply(
     ctx: EventContext,
     photo_blocks: list[dict],
     direct_files: list[dict] | None = None,
-) -> None:
+) -> bool | None:
     """Publish a threaded reply through the target pipeline.
 
     When the parent has no PostMeta yet, the reply is left pending for the parent's create.
+    ``False`` when it could not be left pending, so the claim is released.
     """
     channel_id = ctx["channel_id"]
     user_id = ctx["user_id"]
@@ -579,7 +583,7 @@ def _handle_thread_reply(
     )
     if not post_records:
         helpers.cleanup_temp_files(None, direct_files)
-        return
+        return False if post_records is None else None
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         helpers.cleanup_temp_files(None, direct_files)
@@ -660,16 +664,17 @@ def _handle_message_edit(
     logger: Logger,
     ctx: EventContext,
     photo_blocks: list[dict],
-) -> None:
+) -> bool | None:
     """Publish an edited message through the target pipeline.
 
     When the message has no PostMeta yet, the edit is left pending for its create.
+    ``False`` when it could not be left pending, so the claim is released.
     """
     channel_id = ctx["channel_id"]
     ts = ctx["ts"]
     post_records = _get_post_records_or_leave_pending(ctx, action=helpers.ACTION_EDIT, source_ts=ts)
     if not post_records:
-        return
+        return False if post_records is None else None
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         return
@@ -708,16 +713,17 @@ def _handle_message_delete(
     logger: Logger,
     client: WebClient | None = None,
     deleted_by: str | None = None,
-) -> None:
+) -> bool | None:
     """Publish a deleted message through the target pipeline.
 
     When the message has no PostMeta yet, the delete is left pending for its create.
+    ``False`` when it could not be left pending, so the claim is released.
     """
     channel_id = ctx["channel_id"]
     ts = ctx["ts"]
     post_records = _get_post_records_or_leave_pending(ctx, action=helpers.ACTION_DELETE, source_ts=ts)
     if not post_records:
-        return
+        return False if post_records is None else None
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         return

@@ -79,7 +79,7 @@ def handle_reaction(
 
     team_id = helpers.get_team_id_from_body(body)
 
-    def _sync_reaction() -> None:
+    def _sync_reaction() -> bool | None:
         # SyncBot's own reaction as a mapped person: the echo's kind is Slack's event type.
         if helpers.take_pending_event(
             event_type,
@@ -113,6 +113,9 @@ def handle_reaction(
                 reaction=reaction,
                 event_ts=event.get("event_ts") or event.get("event_time"),
             )
+            if reacted_records is None:
+                # Nothing was kept: release the claim so a resend can try again.
+                return False
             if not reacted_records:
                 return
         _sync_reaction_records(body, client, reacted_records)

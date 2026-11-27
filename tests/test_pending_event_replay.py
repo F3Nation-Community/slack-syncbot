@@ -124,6 +124,14 @@ class TestLeavePendingEvent:
         ):
             assert leave_pending_event("T1", "C1", **EDIT) == RECORDS
 
+    def test_nothing_kept_and_nothing_to_apply_is_none(self, pending_db):
+        """A row that could not be written, and no PostMeta: the caller releases its claim."""
+        with (
+            patch("helpers.post_meta.remember_pending_event", return_value=None),
+            patch("helpers.post_meta.get_post_records", return_value=[]),
+        ):
+            assert leave_pending_event("T1", "C1", **EDIT) is None
+
     def test_two_of_the_same_edit_each_take_back_their_own_row(self, pending_db):
         """No unique key: a second edit in flight is not folded into the first one's row."""
         with patch("helpers.post_meta.get_post_records", return_value=RECORDS):
@@ -323,6 +331,57 @@ class TestHandlersLeavePending:
             reaction="wave",
             event_ts="1795710085.000200",
         )
+        sync.assert_not_called()
+
+
+class TestNothingKeptReleasesTheClaim:
+    """``leave_pending_event`` returned ``None``: each handler returns ``False`` so the claim is released."""
+
+    def test_a_reply_an_edit_and_a_delete_release_the_claim(self):
+        from handlers.message import _handle_message_delete, _handle_message_edit, _handle_thread_reply
+
+        with (
+            patch("handlers.message.helpers.get_post_records", return_value=[]),
+            patch("handlers.message.helpers.is_before_sync", return_value=False),
+            patch("handlers.message.helpers.leave_pending_event", return_value=None),
+            patch("handlers.message.helpers.cleanup_temp_files"),
+            patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
+        ):
+            reply = _handle_thread_reply({}, MagicMock(), MagicMock(), _ctx(ts=REPLY_TS, thread_ts=MESSAGE_TS), [], [])
+            edit = _handle_message_edit(MagicMock(), MagicMock(), _ctx(), [])
+            delete = _handle_message_delete(_ctx(), MagicMock(), MagicMock(), "U0ADA")
+
+        assert (reply, edit, delete) == (False, False, False)
+        pipeline.assert_not_called()
+
+    def test_a_reaction_releases_the_claim(self):
+        from handlers.reaction_event import handle_reaction
+
+        body = {
+            "team_id": "T1",
+            "event_id": "Ev1",
+            "event": {
+                "type": "reaction_added",
+                "user": "U0BEN",
+                "reaction": "wave",
+                "item": {"type": "message", "channel": "C1", "ts": MESSAGE_TS},
+            },
+        }
+        returned: list = []
+        with (
+            patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="U0BOT"),
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=False),
+            patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
+            patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.is_before_sync", return_value=False),
+            patch("handlers.reaction_event.helpers.leave_pending_event", return_value=None),
+            patch("handlers.reaction_event._sync_reaction_records") as sync,
+            patch("handlers.reaction_event.run_claimed", side_effect=lambda _body, work: returned.append(work())),
+        ):
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+
+        assert returned == [False]
         sync.assert_not_called()
 
 

@@ -88,7 +88,7 @@ def leave_pending_event(
     source_user_id: str | None = None,
     reaction: str | None = None,
     event_ts: str | None = None,
-) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]]:
+) -> list[tuple[schemas.PostMeta, schemas.SyncChannel, schemas.Workspace]] | None:
     """A reply, edit, delete, or reaction whose message has no PostMeta yet: leave it pending for that create.
 
     Slack can deliver one before, or while, its message's create runs (Slack's
@@ -99,6 +99,8 @@ def leave_pending_event(
     writes PostMeta and replays it. Each side writes before it checks, and each
     take is atomic, so exactly one side applies the event. A row that could not
     be written leaves nothing to take, so PostMeta found now is applied now.
+    With no row and no PostMeta, return ``None``: nothing was kept, so the
+    caller releases its claim and a resend of the event can try again.
 
     *source_thread_ts* is a new reply's parent, which it waits on; it counts
     only with ``ACTION_CREATE``. Anything else waits on its own message.
@@ -121,6 +123,8 @@ def leave_pending_event(
     records = get_post_records(message_ts)
     if records and (pending_id is None or take_pending_event(REPLAY, id=pending_id)):
         return records
+    if pending_id is None:
+        return None
     log_debug("pending_event_left", channel=channel_id, ts=message_ts, action=action)
     return []
 
