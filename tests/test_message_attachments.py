@@ -29,7 +29,7 @@ from helpers.message_blocks import (  # noqa: E402
 )
 from helpers.slack_api import post_message  # noqa: E402
 from helpers.slack_write import slack_write_create, slack_write_edit  # noqa: E402
-from helpers.user_map import rewrite_envelope_channel_refs  # noqa: E402
+from helpers.user_map import resolve_channel_references, rewrite_envelope_channel_refs  # noqa: E402
 from tests.event_fixtures import FORWARD_PERMALINK, forwarded_app_post_body  # noqa: E402
 
 
@@ -612,6 +612,31 @@ class TestFederationRewrite:
             {"type": "link", "url": FORWARD_PERMALINK, "text": "message in #general (Workspace A)"}
         ]
         assert append_link_lines(text, blocks, [FORWARD_PERMALINK]) == (text, blocks)
+
+    def test_a_reply_preview_header_keeps_the_authors_name_linked(self):
+        """A reply's permalink has ``?thread_ts=…&cid=…``; the rewrite must not split the header link."""
+        reply_url = (
+            "https://workspace-a.slack.com/archives/C0GENERAL/p1733497250123456"
+            "?thread_ts=1733497200.423469&cid=C0GENERAL"
+        )
+        preview = {
+            "fallback": "[December 6th, 2024 3:00 PM] Ada Lovelace: I see it!",
+            "from_url": reply_url,
+            "original_url": reply_url,
+            "author_subname": "Ada Lovelace",
+            "author_name": "SyncBot",
+            "is_msg_unfurl": True,
+            "is_reply_unfurl": True,
+            "ts": "1733497250.123456",
+            "channel_id": "C0GENERAL",
+            "text": "I see it!",
+            "footer": "Thread in Slack Conversation",
+        }
+
+        header = build_attachments_for_sync([preview])[0]["blocks"][0]["elements"][-1]["text"]
+
+        assert header.startswith(f"*<{reply_url}|Ada Lovelace>*")
+        assert resolve_channel_references(header, None, None) == header
 
     def test_rewrite_attachments_reaches_text_fields_and_blocks(self):
         raw = [{"text": "hi <@U1>", "fields": [{"title": "Who", "value": "<@U1>"}], "blocks": [{"type": "divider"}]}]

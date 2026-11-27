@@ -517,6 +517,30 @@ class TestResolveChannelReferences:
         )
         assert result == (f"<{url}|This>? Or this: <{url}|message in #announcements (Workspace A)>")
 
+    def test_a_reply_permalink_keeps_its_link_text(self):
+        """A reply's ``?thread_ts=…&cid=…`` ends at ``|``: the forward card header links its author."""
+        client = self._make_client(channel_name="announcements")
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456?thread_ts=1234567800.000100&cid=CSRC123"
+
+        assert resolve_channel_references(f"*<{url}|Ada Lovelace>*  today", client, ws) == (
+            f"*<{url}|Ada Lovelace>*  today"
+        )
+        assert resolve_channel_references(f"<{url}|Ada>", client, ws) == f"<{url}|Ada>"
+        assert resolve_channel_references(f"<{url}>", client, ws) == (
+            f"<{url}|message in #announcements (Workspace A)>"
+        )
+
+    def test_a_pasted_reply_permalink_is_labeled_once(self):
+        """Slack sends a pasted link as ``<url|url>``, with ``&amp;`` in both."""
+        client = self._make_client(channel_name="announcements")
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456?thread_ts=1234567800.000100&amp;cid=CSRC123"
+
+        assert resolve_channel_references(f"<{url}|{url}>", client, ws) == (
+            f"<{url}|message in #announcements (Workspace A)>"
+        )
+
     def test_message_permalink_uses_subdomain_when_channel_unknown(self):
         client = MagicMock()
         client.conversations_info.side_effect = Exception("channel_not_found")

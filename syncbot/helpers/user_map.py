@@ -710,9 +710,10 @@ def apply_mentioned_users(
 
 _CHANNEL_MENTION = re.compile(r"<#(C[A-Z0-9]+)(?:\|([^>]*))?>")
 # Keep pasted app.slack.com/client message URLs too; never *emit* that scheme for #channel.
+# A reply's permalink has a query (``?thread_ts=…&cid=…``). It ends at ``|``, so link text stays link text.
 _MESSAGE_PERMALINK = re.compile(
     r"<?(https://(?:app\.slack\.com/client/T[A-Z0-9]+/([CDG][A-Z0-9]+)/[\d.]+|"
-    r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/([CDG][A-Z0-9]+)/p\d+(?:\?[^\s>]*)?))"
+    r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/([CDG][A-Z0-9]+)/p\d+(?:\?[^\s|>]*)?))"
     r"(?:\|([^>]+))?>?"
 )
 # Lookahead so greedy C[A-Z0-9]+ does not backtrack into /p permalinks.
