@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A copy that fails because SyncBot was removed or the Channel was archived pauses that Channel and tells its workspace's managers
 - A copy that could not keep its formatting says so
 - A file that cannot be copied no longer sends three DMs or uploads three times
+- A reply, edit, delete, or reaction that arrives while its message is still being copied is applied once the copy is made
 - Replies, edits, deletes, and reactions on messages from before a Channel was synced are no longer retried
 - A link to a thread reply keeps its link text, including the author's name on a message preview
 
