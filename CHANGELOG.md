@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - NOTICE: Database migration in this release; `user_action_echoes` is replaced by `pending_events`, and rows in flight are copied over
 - AWS Lambda uses 512 MB and loads the app before the first request
+- A link to a Slack message reads as it does in Slack, `Name in #channel (Workspace)`, instead of `message in #channel (Workspace)`
 
 ### Fixed
 

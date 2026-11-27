@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from slack_sdk.errors import SlackApiError
 
 # Ensure minimal env vars are set before importing app code
 os.environ.setdefault("DATABASE_HOST", "localhost")
@@ -19,7 +20,12 @@ import helpers
 from helpers._cache import _CACHE
 from helpers.encryption import decrypt_bot_token, encrypt_bot_token
 from helpers.slack_api import slack_retry
-from helpers.user_map import apply_mentioned_users, resolve_channel_references, rewrite_envelope_channel_refs
+from helpers.user_map import (
+    apply_mentioned_users,
+    note_message_link_names,
+    resolve_channel_references,
+    rewrite_envelope_channel_refs,
+)
 from helpers.workspace import is_request_for_team
 
 # -----------------------------------------------------------------------
@@ -540,6 +546,75 @@ class TestResolveChannelReferences:
         assert resolve_channel_references(f"<{url}|{url}>", client, ws) == (
             f"<{url}|message in #announcements (Workspace A)>"
         )
+
+    def _linked(self, client, message):
+        client.conversations_replies.return_value = {"ok": True, "messages": [message]}
+        return client
+
+    def test_a_message_link_is_named_like_slacks_link(self):
+        """``{name} in #channel (Workspace)``: a bot post's name, read once and cached."""
+        client = self._linked(
+            self._make_client(channel_name="announcements"),
+            {"ts": "1234567890.123456", "username": "Ada Lovelace", "bot_id": "B1"},
+        )
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456"
+
+        assert resolve_channel_references(f"see <{url}>", client, ws) == (
+            f"see <{url}|Ada Lovelace in #announcements (Workspace A)>"
+        )
+        assert resolve_channel_references(f"<{url}>", client, ws).endswith(
+            "|Ada Lovelace in #announcements (Workspace A)>"
+        )
+        client.conversations_replies.assert_called_once()
+
+    def test_a_reply_link_reads_the_reply_in_its_thread_and_names_the_person(self):
+        client = self._linked(
+            self._make_client(channel_name="announcements"),
+            {"ts": "1234567890.123456", "user": "U0ADA"},
+        )
+        client.users_info.return_value = {"user": {"profile": {"display_name": "Ada <Lovelace>"}}}
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456?thread_ts=1234567800.000100&cid=CSRC123"
+
+        result = resolve_channel_references(f"<{url}>", client, ws)
+
+        assert result == f"<{url}|Ada Lovelace in #announcements (Workspace A)>"
+        assert client.conversations_replies.call_args.kwargs["ts"] == "1234567800.000100"
+        assert client.conversations_replies.call_args.kwargs["oldest"] == "1234567890.123456"
+
+    def test_a_preview_names_the_link_without_reading_the_message(self):
+        """The forward's or preview's ``author_subname`` is the name Slack's card shows."""
+        client = self._make_client(channel_name="announcements")
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456?thread_ts=1234567800.000100&cid=CSRC123"
+        note_message_link_names(
+            [
+                {"is_msg_unfurl": True, "from_url": url, "author_subname": "Ada Lovelace", "author_name": "App"},
+                {"text": "not a preview", "from_url": "https://example.com", "author_name": "Someone"},
+            ]
+        )
+
+        assert resolve_channel_references(f"<{url}>", client, ws) == (
+            f"<{url}|Ada Lovelace in #announcements (Workspace A)>"
+        )
+        client.conversations_replies.assert_not_called()
+
+    def test_an_unreadable_message_or_a_dm_link_stays_message(self):
+        client = self._make_client(channel_name="announcements")
+        client.conversations_replies.side_effect = SlackApiError("no", {"ok": False, "error": "not_in_channel"})
+        ws = self._make_workspace(team_id="T123", name="Workspace A")
+        url = "https://workspace-a.slack.com/archives/CSRC123/p1234567890123456"
+
+        assert resolve_channel_references(f"<{url}>", client, ws) == (
+            f"<{url}|message in #announcements (Workspace A)>"
+        )
+
+        dm_client = MagicMock()
+        dm_client.conversations_info.return_value = {"channel": {"id": "D0DIRECT", "is_im": True}}
+        dm = "https://workspace-a.slack.com/archives/D0DIRECT/p1234567890123456"
+        assert resolve_channel_references(f"<{dm}>", dm_client, ws) == f"<{dm}|message in Workspace A>"
+        dm_client.conversations_replies.assert_not_called()
 
     def test_message_permalink_uses_subdomain_when_channel_unknown(self):
         client = MagicMock()

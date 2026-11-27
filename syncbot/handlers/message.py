@@ -136,11 +136,13 @@ def _fold_event_attachments(event: dict, ctx: EventContext) -> None:
     """Copy forwards and other attachments Slack already delivered on this event.
 
     A forward and a bare link to a message copy the same way: the author's
-    words, the labeled link (``message in #channel (Workspace)``), then the card.
+    words, the labeled link (``{name} in #channel (Workspace)``), then the card.
+    The name is the card's, noted for the label (``note_message_link_names``).
     A link the author wrote their own words for keeps them and gets no card.
     The source Channel's privacy is not a second gate.
     """
     raw = helpers.get_event_attachments(event)
+    helpers.note_message_link_names(raw)
     event_text = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
     raw = helpers.drop_previews_of_labeled_links(raw, event_text, helpers.get_event_layout_blocks(event))
     ctx["attachments"] = helpers.build_attachments_for_sync(raw)

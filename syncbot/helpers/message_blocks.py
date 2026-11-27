@@ -877,7 +877,7 @@ def get_share_permalinks(attachments: list[dict] | None) -> list[str]:
     return urls
 
 
-def _get_message_link_key(url: object) -> tuple[str, str] | None:
+def get_message_link_key(url: object) -> tuple[str, str] | None:
     """Channel and message of a Slack permalink, ignoring host and query."""
     match = _MESSAGE_LINK_KEY.search(url) if isinstance(url, str) else None
     return (match.group(1), match.group(2)) if match else None
@@ -887,7 +887,7 @@ def _find_message_link_labels(text: str | None, blocks: list | None) -> list[tup
     """Each message link in the source, and whether the author gave it their own words."""
     found: list[tuple[tuple[str, str], bool]] = []
     for match in _MRKDWN_URL.finditer(text or ""):
-        key = _get_message_link_key(match.group(1))
+        key = get_message_link_key(match.group(1))
         if key:
             label = match.group(2) or ""
             found.append((key, not is_url_display_text(label, match.group(1))))
@@ -900,7 +900,7 @@ def _find_message_link_labels(text: str | None, blocks: list | None) -> list[tup
         if not isinstance(node, dict):
             return
         if node.get("type") in {"link", "message_mention"} and isinstance(node.get("url"), str):
-            key = _get_message_link_key(node["url"])
+            key = get_message_link_key(node["url"])
             if key:
                 label = node.get("text") if isinstance(node.get("text"), str) else ""
                 found.append((key, not is_url_display_text(label, node["url"])))
@@ -927,7 +927,7 @@ def drop_previews_of_labeled_links(
     kept: list[dict] = []
     for attachment in attachments or []:
         if isinstance(attachment, dict) and attachment.get("is_msg_unfurl") and not attachment.get("is_share"):
-            key = _get_message_link_key(attachment.get("from_url") or attachment.get("original_url"))
+            key = get_message_link_key(attachment.get("from_url") or attachment.get("original_url"))
             if key and key in worded and key not in bare:
                 continue
         kept.append(attachment)

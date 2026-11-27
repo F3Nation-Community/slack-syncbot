@@ -282,6 +282,23 @@ class TestForwardHandler:
             assert ctx["attachments"] == [forward_card]
             assert ctx["msg_text"].count(FORWARD_PERMALINK) == 2
 
+    def test_the_previews_name_labels_the_link(self):
+        """The card's ``author_subname`` is noted, so the link reads like Slack's: ``{name} in #channel``."""
+        from helpers._cache import clear_all_caches
+        from helpers.user_map import _message_link_name
+
+        clear_all_caches()
+        body = _link_preview_body(
+            f"<{FORWARD_PERMALINK}|{FORWARD_PERMALINK}>",
+            [_mention_block(FORWARD_PERMALINK, FORWARD_PERMALINK)],
+            subtype="message_changed",
+        )
+
+        _run(body)
+
+        assert _message_link_name(FORWARD_PERMALINK, None) == "Ada Lovelace (via App)"
+        clear_all_caches()
+
     def test_a_link_with_the_authors_own_words_gets_no_card(self):
         text = f"see <{FORWARD_PERMALINK}|the morning report>"
         body = _link_preview_body(text, [_mention_block(FORWARD_PERMALINK, "the morning report")])
