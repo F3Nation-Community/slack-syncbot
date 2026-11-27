@@ -12,12 +12,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- NOTICE: Database migration in this release; `user_action_echoes` is replaced by `pending_events`, and rows in flight are copied over
 - AWS Lambda uses 512 MB and loads the app before the first request
+- A link to a Slack message reads as it does in Slack, `Name in #channel (Workspace)`, instead of `message in #channel (Workspace)`
 
 ### Fixed
 
 - A new AWS Lambda instance no longer compiles every module from source on its first request
-
+- A forwarded message syncs as a card with its author, words, and any file the app can read
+- App posts with attachments, and link previews, sync as they look in the source
+- A message still syncs when a file on it cannot be copied
+- A canvas shared into a Channel syncs as its link
+- When a message is not copied, or not copied all the way, SyncBot DMs the author once
+- A copy that fails because SyncBot was removed or the Channel was archived pauses that Channel and tells its workspace's managers
+- A copy that could not keep its formatting says so
+- A file that cannot be copied no longer sends three DMs or uploads three times
+- A reply, edit, delete, or reaction that arrives while its message is still being copied is applied once the copy is made
+- Replies, edits, deletes, and reactions on messages from before a Channel was synced are no longer retried
+- A link to a thread reply keeps its link text, including the author's name on a message preview
 
 ## [1.8.0] - 2026-11-10
 

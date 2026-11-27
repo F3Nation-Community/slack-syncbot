@@ -19,6 +19,7 @@ from handlers.data_tools import (  # noqa: E402
     handle_data_tools_submit_ack,
     handle_data_tools_submit_work,
 )
+from tests.db_fixtures import lock_is_held  # noqa: E402
 
 
 @pytest.fixture
@@ -98,9 +99,9 @@ def _hold_lock():
 
 
 def _lock_is_held():
-    from db.run_lock import DATA_MAINTENANCE, DATA_MAINTENANCE_TTL, is_lock_held
+    from db.run_lock import DATA_MAINTENANCE, DATA_MAINTENANCE_TTL
 
-    return is_lock_held(DATA_MAINTENANCE, DATA_MAINTENANCE_TTL)
+    return lock_is_held(DATA_MAINTENANCE, DATA_MAINTENANCE_TTL)
 
 
 def _allow(admin=True, primary=True):

@@ -251,6 +251,7 @@ class TestParseEventUsesBlocks:
         client.conversations_replies.return_value = {
             "messages": [
                 {
+                    "ts": "1.0",
                     "text": "Backblast",
                     "blocks": [{"type": "image", "slack_file": {"id": "F0EXAMPLE1"}, "alt_text": "photo"}],
                 }
@@ -272,7 +273,9 @@ class TestParseEventUsesBlocks:
             },
         }
         client = MagicMock()
-        client.conversations_replies.return_value = {"messages": [{"text": "full", "blocks": _app_post_blocks()}]}
+        client.conversations_replies.return_value = {
+            "messages": [{"ts": "1.0", "text": "full", "blocks": _app_post_blocks()}]
+        }
         client.users_info.return_value = {
             "user": {"id": "U_SRC", "profile": {"display_name": "Loboto", "real_name": "Loboto"}}
         }
@@ -332,7 +335,9 @@ class TestParseEventUsesBlocks:
             },
         }
         client = MagicMock()
-        client.conversations_replies.return_value = {"messages": [{"text": "full", "blocks": _app_post_blocks()}]}
+        client.conversations_replies.return_value = {
+            "messages": [{"ts": "1.0", "text": "full", "blocks": _app_post_blocks()}]
+        }
         client.users_info.return_value = {
             "user": {"id": "U_SRC", "profile": {"display_name": "Loboto", "real_name": "Loboto"}}
         }

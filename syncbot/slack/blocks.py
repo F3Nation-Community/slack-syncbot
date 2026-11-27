@@ -84,12 +84,3 @@ def section_with_image(
             element=orm.ImageAccessoryElement(image_url=image_url, alt_text=alt_text),
         )
     return orm.SectionBlock(label=label)
-
-
-def workspace_card(
-    label: str,
-    ws_info: dict,
-    ws_name: str,
-) -> orm.SectionBlock:
-    """Section block showing workspace info with an optional team icon."""
-    return section_with_image(label, ws_info.get("icon_url"), ws_name)

@@ -11,7 +11,7 @@ from slack_sdk.errors import SlackApiError
 import constants
 from db import DbManager, schemas
 from helpers.slack_api import slack_error_code
-from helpers.user_action_echo import post_meta_ts, slack_message_ts
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from logger import log_debug, log_warning
 
 _slack_error_code = slack_error_code

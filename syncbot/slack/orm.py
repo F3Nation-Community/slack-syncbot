@@ -467,25 +467,6 @@ class NumberInputElement(BaseElement):
 
 
 @dataclass
-class ChannelsSelectElement(BaseElement):
-    initial_value: str = None
-
-    def get_selected_value(self, input_data, action):
-        return safe_get(input_data, action, action, "selected_channel")
-
-    def as_form_field(self, action: str):
-        j = {
-            "type": "channels_select",
-            "action_id": action,
-        }
-        if self.placeholder:
-            j.update(self.make_placeholder_field())
-        if self.initial_value:
-            j["initial_channel"] = self.initial_value
-        return j
-
-
-@dataclass
 class ConversationsSelectElement(BaseElement):
     """Slack's native channel picker, searchable over all of the user's conversations.
 
@@ -519,44 +500,6 @@ class ConversationsSelectElement(BaseElement):
             j.update(self.make_placeholder_field())
         if self.initial_value:
             j["initial_conversation"] = self.initial_value
-        return j
-
-
-@dataclass
-class DatepickerElement(BaseElement):
-    initial_value: str = None
-
-    def get_selected_value(self, input_data, action):
-        return safe_get(input_data, action, action, "selected_date")
-
-    def as_form_field(self, action: str):
-        j = {
-            "type": "datepicker",
-            "action_id": action,
-        }
-        if self.placeholder:
-            j.update(self.make_placeholder_field())
-        if self.initial_value:
-            j["initial_date"] = self.initial_value
-        return j
-
-
-@dataclass
-class TimepickerElement(BaseElement):
-    initial_value: str = None
-
-    def get_selected_value(self, input_data, action):
-        return safe_get(input_data, action, action, "selected_time")
-
-    def as_form_field(self, action: str):
-        j = {
-            "type": "timepicker",
-            "action_id": action,
-        }
-        if self.placeholder:
-            j.update(self.make_placeholder_field())
-        if self.initial_value:
-            j["initial_time"] = self.initial_value
         return j
 
 
@@ -619,21 +562,6 @@ class ContextBlock(BaseBlock):
         if self.action:
             j["block_id"] = self.action
         return j
-
-
-@dataclass
-class ImageContextElement(BaseElement):
-    """An image element for use inside a ContextBlock."""
-
-    image_url: str = None
-    alt_text: str = "icon"
-
-    def as_form_field(self):
-        return {
-            "type": "image",
-            "image_url": self.image_url,
-            "alt_text": self.alt_text,
-        }
 
 
 @dataclass

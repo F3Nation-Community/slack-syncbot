@@ -88,7 +88,7 @@ class TestBackupOmitsEphemeralTables:
             payload = build_full_backup()
         assert "federation_file_parts" not in payload
         assert "processed_events" not in payload
-        assert "user_action_echoes" not in payload
+        assert "pending_events" not in payload
         assert "instance_settings" in payload
         assert payload["version"] == 1
         assert payload["syncbot_version"]

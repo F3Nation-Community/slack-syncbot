@@ -45,17 +45,7 @@ class TestFileShareOriginPostMeta:
                 return_value=[SimpleNamespace(post_id="child", sync_channel_id=2, ts=200.0)],
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
-            patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
-            patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-test"),
-            patch("handlers.message.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
-            patch("handlers.message.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
             patch("handlers.message.DbManager.find_records", return_value=[]),
-            patch(
-                "handlers.message.helpers.get_display_name_and_icon_for_synced_message",
-                return_value=("N", None, False, None),
-            ),
-            patch("handlers.message.helpers.post_message", return_value={"ts": "200.000000"}),
-            patch("handlers.message.helpers.upload_files_to_slack", return_value=(None, "300.000000")),
             patch("handlers.message.helpers.cleanup_temp_files"),
             patch("handlers.message.DbManager.create_records", side_effect=capture_post_meta),
         ):
@@ -104,17 +94,7 @@ class TestFileShareOriginPostMeta:
                 return_value=[SimpleNamespace(post_id="child", sync_channel_id=22, ts=250.0)],
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
-            patch("handlers.message.helpers.get_mapped_target_user_id", return_value=None),
-            patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-test"),
-            patch("handlers.message.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
-            patch("handlers.message.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
             patch("handlers.message.DbManager.find_records", return_value=[]),
-            patch(
-                "handlers.message.helpers.get_display_name_and_icon_for_synced_message",
-                return_value=("N", None, False, None),
-            ),
-            patch("handlers.message.helpers.post_message", return_value={"ts": "250.000000"}),
-            patch("handlers.message.helpers.upload_files_to_slack", return_value=(None, "350.000000")),
             patch("handlers.message.helpers.cleanup_temp_files"),
             patch("handlers.message.DbManager.create_records", side_effect=lambda rows: created.extend(rows)),
         ):
@@ -165,25 +145,12 @@ class TestFileOnlyThreadPostMeta:
                 return_value=[SimpleNamespace(post_id="child", sync_channel_id=22, ts=350.0)],
             ) as pipeline,
             patch("handlers.message.helpers.get_user_info", return_value=("N", "http://i")),
-            patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-test"),
-            patch("handlers.message.helpers.apply_mentioned_users", side_effect=lambda t, *a, **k: t),
-            patch("handlers.message.helpers.resolve_channel_references", side_effect=lambda t, *a, **k: t),
             patch("handlers.message.DbManager.find_records", return_value=[]),
-            patch(
-                "handlers.message.helpers.get_display_name_and_icon_for_synced_message",
-                return_value=("N", None, False, None),
-            ),
-            patch("handlers.message.helpers.post_message") as post_msg,
-            patch(
-                "handlers.message.helpers.upload_files_to_slack",
-                return_value=(None, "350.000000"),
-            ),
             patch("handlers.message.helpers.cleanup_temp_files"),
             patch("handlers.message.DbManager.create_records", side_effect=lambda rows: created.extend(rows)),
         ):
             _handle_thread_reply(body, client, logger, ctx, [], direct_files)
 
-        post_msg.assert_not_called()
         envelope = pipeline.call_args.args[0]
         assert envelope["thread_post_id"] == "parent"
         assert envelope["source_sync_channel_id"] == 11

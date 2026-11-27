@@ -272,12 +272,48 @@ def get_thread_root_ts(client: WebClient, channel_id: str, message_ts: str) -> s
     return str(thread_ts) if thread_ts else message_ts
 
 
+_MESSAGE_GONE_ERRORS = frozenset({"thread_not_found", "message_not_found"})
+
+
+def fetch_source_message(client: WebClient, channel_id: str, ts: str, *, thread_ts: str | None = None) -> dict | None:
+    """One message from a Channel SyncBot is in, as Slack stores it now. ``None`` when it is gone.
+
+    ``conversations.replies`` on the thread (or on the message itself), because
+    channel history omits replies. Any other Slack error is raised.
+    """
+    from helpers.slack_ts import slack_message_ts
+
+    parent = str(thread_ts or ts)
+    try:
+        res = _conversations_replies(
+            client,
+            channel=channel_id,
+            ts=parent,
+            oldest=str(ts),
+            latest=str(ts),
+            inclusive=True,
+            limit=2,
+        )
+    except SlackApiError as exc:
+        if slack_error_code(exc) in _MESSAGE_GONE_ERRORS:
+            return None
+        raise
+    wanted = slack_message_ts(ts)
+    for message in _conversation_messages(res) or []:
+        if (
+            isinstance(message, dict)
+            and slack_message_ts(message.get("ts")) == wanted
+            and message.get("subtype") != "tombstone"
+        ):
+            return message
+    return None
+
+
 def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
-    """Load Block Kit from ``conversations.replies`` when the Events payload omitted it.
+    """Load Block Kit from the stored message when the Events payload omitted it.
 
     Bot posts sometimes arrive with flattened ``text`` and no ``blocks``. The
-    client ``Show more`` control is not a second payload; replies is the stored
-    message, including thread replies that channel history omits.
+    client ``Show more`` control is not a second payload; the stored message is.
     """
     if not event:
         return []
@@ -285,17 +321,15 @@ def fetch_message_layout_blocks(client: WebClient, event: dict) -> list[dict]:
     channel = event.get("channel") or nested.get("channel")
     # message_changed uses event.ts as the edit-event id; the stored message is message.ts.
     ts = nested.get("ts") or event.get("ts")
+    thread_ts = nested.get("thread_ts") or event.get("thread_ts")
     if not channel or not ts:
         return []
     try:
-        res = _conversations_replies(client, channel=channel, ts=str(ts), limit=1)
+        message = fetch_source_message(client, channel, str(ts), thread_ts=thread_ts)
     except SlackApiError as exc:
         log_debug("fetch_message_layout_blocks_failed_s", error=str(exc))
         return []
-    messages = _conversation_messages(res)
-    if not messages or not isinstance(messages[0], dict):
-        return []
-    return get_event_layout_blocks(messages[0])
+    return get_event_layout_blocks(message or {})
 
 
 @slack_retry
@@ -309,6 +343,7 @@ def post_message(
     update_ts: str | None = None,
     workspace_name: str | None = None,
     blocks: list[dict] | None = None,
+    attachments: list[dict] | None = None,
     reply_broadcast: bool = False,
     post_id: str | None = None,
 ) -> dict:
@@ -322,13 +357,17 @@ def post_message(
             all_blocks = blocks
     else:
         all_blocks = []
-    fallback_text = msg_text.strip() or (" " if all_blocks else "")
+    posted_attachments = list(attachments or [])
+    show_text = msg_text.strip()
+    if not show_text and not posted_attachments:
+        show_text = " " if all_blocks else ""
     if update_ts:
         update_kwargs: dict = {
             "channel": channel_id,
-            "text": fallback_text,
             "ts": update_ts,
             "blocks": all_blocks,
+            "attachments": posted_attachments,
+            "text": show_text,
             "unfurl_links": False,
             "unfurl_media": False,
         }
@@ -339,7 +378,6 @@ def post_message(
         username_str = format_synced_from_line(user_name, workspace_name) if user_name else None
         kwargs: dict = {
             "channel": channel_id,
-            "text": fallback_text,
             "username": username_str,
             "icon_url": user_profile_url,
             "thread_ts": thread_ts,
@@ -347,6 +385,10 @@ def post_message(
             "unfurl_links": False,
             "unfurl_media": False,
         }
+        if show_text or not posted_attachments:
+            kwargs["text"] = show_text
+        if posted_attachments:
+            kwargs["attachments"] = posted_attachments
         if reply_broadcast:
             kwargs["reply_broadcast"] = True
         if post_id:

@@ -1,7 +1,7 @@
 """Shared handler utilities and types."""
 
 import contextlib
-from typing import Any
+from typing import Any, NotRequired
 
 import helpers
 from db import schemas
@@ -27,6 +27,10 @@ class EventContext(TypedDict):
     reply_broadcast: bool
     content_blocks: list[dict]
     block_file_ids: list[str]
+    attachments: NotRequired[list[dict]]
+    share_files: NotRequired[list[dict]]
+    degraded: NotRequired[list[str]]
+    files_failed: NotRequired[bool]
 
 
 def _parse_private_metadata(body: dict) -> dict:

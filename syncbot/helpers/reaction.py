@@ -11,17 +11,17 @@ import constants
 from db import DbManager, schemas
 from helpers.conversations import get_user_token
 from helpers.core import safe_get
+from helpers.pending_events import (
+    REACTION_ADDED_ECHO,
+    REACTION_ORDER,
+    REACTION_REMOVED_ECHO,
+    reaction_event_ts_is_stale,
+    remember_pending_event,
+)
 from helpers.reaction_notice import build_reaction_notice_post_id, delete_notices_for_unreact
 from helpers.slack_api import get_thread_root_ts, get_user_info, slack_error_code
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from helpers.sync_participation import channel_subscribes
-from helpers.user_action_echo import (
-    post_meta_ts,
-    reaction_echo_fingerprint,
-    reaction_event_ts_is_stale,
-    remember_reaction_event_ts,
-    remember_user_action,
-    slack_message_ts,
-)
 from helpers.workspace import get_bot_token
 from logger import log_debug, log_warning
 
@@ -234,14 +234,13 @@ def _remember_native_reaction(
     target_ts: str,
     reaction: str,
 ) -> None:
-    if not team_id or not user_id:
-        return
-    kind = "reaction_added" if action == "add" else "reaction_removed"
-    remember_user_action(
-        team_id,
-        user_id,
-        kind,
-        reaction_echo_fingerprint(channel_id, target_ts, reaction),
+    remember_pending_event(
+        REACTION_ADDED_ECHO if action == "add" else REACTION_REMOVED_ECHO,
+        target_team_id=team_id,
+        target_user_id=user_id,
+        target_channel_id=channel_id,
+        target_ts=target_ts,
+        reaction=reaction,
     )
 
 
@@ -434,12 +433,12 @@ def apply_reaction_to_target(
         padded_event_ts
         and source_user_id
         and reaction_event_ts_is_stale(
-            target_workspace.team_id,
-            source_user_id,
-            channel_id,
-            target_ts,
-            reaction,
-            padded_event_ts,
+            team_id=target_workspace.team_id,
+            source_user_id=source_user_id,
+            channel_id=channel_id,
+            ts=target_ts,
+            reaction=reaction,
+            event_ts=padded_event_ts,
         )
     ):
         return "skipped", None
@@ -479,13 +478,14 @@ def apply_reaction_to_target(
         )
         if direct is not None:
             if padded_event_ts and source_user_id and direct[0] != "failed":
-                remember_reaction_event_ts(
-                    target_workspace.team_id,
-                    source_user_id,
-                    channel_id,
-                    target_ts,
-                    reaction,
-                    padded_event_ts,
+                remember_pending_event(
+                    REACTION_ORDER,
+                    target_team_id=target_workspace.team_id,
+                    source_user_id=source_user_id,
+                    target_channel_id=channel_id,
+                    target_ts=target_ts,
+                    reaction=reaction,
+                    event_ts=padded_event_ts,
                 )
             return direct
 
@@ -519,13 +519,14 @@ def apply_reaction_to_target(
         style=style,
     )
     if padded_event_ts and source_user_id and hybrid[0] != "failed":
-        remember_reaction_event_ts(
-            target_workspace.team_id,
-            source_user_id,
-            channel_id,
-            target_ts,
-            reaction,
-            padded_event_ts,
+        remember_pending_event(
+            REACTION_ORDER,
+            target_team_id=target_workspace.team_id,
+            source_user_id=source_user_id,
+            target_channel_id=channel_id,
+            target_ts=target_ts,
+            reaction=reaction,
+            event_ts=padded_event_ts,
         )
     return hybrid
 

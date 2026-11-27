@@ -1,8 +1,7 @@
-"""Invariant: deferred-ack view callback IDs stay registered in VIEW_ACK_MAPPER / VIEW_MAPPER."""
+"""Routing invariants: deferred-ack views keep their ack and work handlers, and dropped Slack ids stay unrouted."""
 
 from routing import ACTION_MAPPER, VIEW_ACK_MAPPER, VIEW_MAPPER
 from slack import actions
-from slack.deferred_ack_views import DEFERRED_ACK_VIEW_CALLBACK_IDS
 
 # Dropped Slack ids must not stay routed. Refresh Home after a rename.
 _REMOVED_SLACK_IDS = (
@@ -30,8 +29,31 @@ _REMOVED_SLACK_IDS = (
 )
 
 
-def test_deferred_ack_is_subset_of_view_ack_mapper():
-    assert frozenset(VIEW_ACK_MAPPER.keys()) >= DEFERRED_ACK_VIEW_CALLBACK_IDS
+def _work_partners(ack_handler) -> list:
+    """Work handlers named after *ack_handler*: ``handle_x`` or ``handle_x_work`` for ``handle_x_ack``."""
+    import handlers
+
+    base = ack_handler.__name__.removesuffix("_ack")
+    return [getattr(handlers, name) for name in (base, f"{base}_work") if hasattr(handlers, name)]
+
+
+def test_a_view_that_acks_first_keeps_its_work_handler():
+    """An early ack with a work partner must route that partner after the ack, or the work never runs."""
+    for callback_id, ack_handler in VIEW_ACK_MAPPER.items():
+        partners = _work_partners(ack_handler)
+        if partners:
+            assert VIEW_MAPPER.get(callback_id) in partners, f"{callback_id!r} acks first but routes no work"
+
+
+def test_a_view_whose_work_has_an_ack_routes_that_ack():
+    """Work with an ``_ack`` partner must keep it, or Slack waits on the work instead of the fast ack."""
+    import handlers
+
+    for callback_id, work_handler in VIEW_MAPPER.items():
+        base = work_handler.__name__.removesuffix("_work")
+        ack_handler = getattr(handlers, f"{base}_ack", None)
+        if ack_handler is not None:
+            assert VIEW_ACK_MAPPER.get(callback_id) is ack_handler, f"{callback_id!r} lost its ack handler"
 
 
 def test_join_group_checks_the_code_in_the_ack():
@@ -52,12 +74,3 @@ def test_removed_slack_ids_are_not_routed():
     routed = set(ACTION_MAPPER) | set(VIEW_MAPPER) | set(VIEW_ACK_MAPPER)
     for leftover in _REMOVED_SLACK_IDS:
         assert leftover not in routed
-
-
-def test_deferred_work_views_have_work_handlers():
-    for callback_id in DEFERRED_ACK_VIEW_CALLBACK_IDS:
-        assert callback_id in VIEW_MAPPER, f"missing VIEW_MAPPER work entry for {callback_id!r}"
-
-
-def test_deferred_ack_set_is_nonempty():
-    assert len(DEFERRED_ACK_VIEW_CALLBACK_IDS) >= 1

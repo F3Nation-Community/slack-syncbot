@@ -18,9 +18,9 @@ from helpers.envelope import (
     KIND_REACTION,
 )
 from helpers.post_meta import get_target_post_meta
+from helpers.slack_ts import post_meta_ts, slack_message_ts
 from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit
 from helpers.sync_participation import channel_subscribes, get_active_sync_channel
-from helpers.user_action_echo import post_meta_ts, slack_message_ts
 from logger import log_debug, log_warning
 
 
@@ -30,12 +30,38 @@ class ApplyOutcome:
 
     ``ts`` / ``posted_as_user_id`` are Slack strings captured before
     ``create_records`` (expunged ``PostMeta`` attributes are not safe to read).
+    ``error`` is the code when the write failed, or when it posted in a reduced
+    form (``ts`` set, or ``applied`` for an edit or delete).
     """
 
     created: list[schemas.PostMeta] = field(default_factory=list)
     reaction_applied: bool = False
     ts: str | None = None
     posted_as_user_id: str | None = None
+    error: str | None = None
+    applied: bool = False
+
+
+# Codes that mean the target Channel itself is broken: pause it, and its managers hear once.
+# Not ``restricted_action``: a posting limit still lets the people it allows post, so a later
+# copy with their token can land. The refused copy is reported to its author.
+_PAUSE_VIA = {
+    "not_in_channel": "kick",
+    "channel_not_found": "kick",
+    "is_archived": "archive",
+}
+
+
+def _pause_broken_target(sync_channel: schemas.SyncChannel, error: str | None) -> None:
+    via = _PAUSE_VIA.get(error or "")
+    if not via:
+        return
+    from helpers.sync_lifecycle import pause_sync_channel
+
+    try:
+        pause_sync_channel(sync_channel, via=via, leave=False)
+    except Exception as exc:
+        log_warning("target_pause_failed", channel_id=sync_channel.channel_id, error=str(exc))
 
 
 def apply_target(
@@ -74,7 +100,7 @@ def apply_target(
             )
         if envelope.get("thread_post_id") and not thread_ts:
             return ApplyOutcome()
-        ts, posted_as = slack_write_create(
+        ts, posted_as, write_error = slack_write_create(
             envelope=envelope,
             sync_channel=sync_channel,
             workspace=workspace,
@@ -106,31 +132,40 @@ def apply_target(
             )
         if created:
             DbManager.create_records(created)
+        if not ts:
+            _pause_broken_target(sync_channel, write_error)
         return ApplyOutcome(
             created=created,
             ts=ts,
             posted_as_user_id=posted_as,
+            error=write_error,
         )
 
     if kind == KIND_MESSAGE and action == ACTION_EDIT:
         meta = target_post_meta or get_target_post_meta(str(post_id), sync_channel)
         if not meta:
             return ApplyOutcome()
-        slack_write_edit(
+        ok, edit_error = slack_write_edit(
             envelope=envelope,
             sync_channel=sync_channel,
             workspace=workspace,
             target_post_meta=meta,
             source_client=source_client,
         )
-        return ApplyOutcome()
+        if not ok:
+            _pause_broken_target(sync_channel, edit_error)
+        return ApplyOutcome(error=edit_error, applied=ok)
 
     if kind == KIND_MESSAGE and action == ACTION_DELETE:
         meta = target_post_meta or get_target_post_meta(str(post_id), sync_channel)
         if not meta:
             return ApplyOutcome()
-        slack_write_delete(sync_channel=sync_channel, workspace=workspace, target_post_meta=meta)
-        return ApplyOutcome()
+        ok, delete_error = slack_write_delete(sync_channel=sync_channel, workspace=workspace, target_post_meta=meta)
+        # A copy posted as a person is deleted with their token only (the bot cannot delete it).
+        # Their token being refused is about them, not SyncBot, so only the bot's refusal pauses.
+        if not ok and not getattr(meta, "posted_as_user_id", None):
+            _pause_broken_target(sync_channel, delete_error)
+        return ApplyOutcome(error=delete_error, applied=ok)
 
     if kind == KIND_REACTION and action in (ACTION_ADD, ACTION_REMOVE):
         from helpers.reaction import apply_reaction_to_target

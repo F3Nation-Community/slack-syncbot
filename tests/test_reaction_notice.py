@@ -448,7 +448,6 @@ def test_target_notice_message_deleted_is_local_tombstone_only():
         patch("helpers.reaction_notice.get_post_meta_by_channel_ts", return_value=notice),
         patch("helpers.reaction_notice.tombstone_reaction_notice_locally") as tombstone,
         patch("handlers.message._handle_message_delete") as handle_delete,
-        patch("handlers.message.helpers.decrypt_bot_token", return_value="xoxb-bot"),
         patch("handlers.message.WebClient"),
         patch("handlers.message.helpers.parse_mentioned_users", return_value=[]),
     ):

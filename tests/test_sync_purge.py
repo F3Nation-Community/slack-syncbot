@@ -24,6 +24,7 @@ from sqlalchemy.exc import IntegrityError  # noqa: E402
 
 from db import DbManager, schemas  # noqa: E402
 from federation.core import get_instance_id  # noqa: E402
+from helpers.sync_cleanup import purge_workspace  # noqa: E402
 
 
 @pytest.fixture
@@ -204,11 +205,9 @@ class TestPurgeWorkspace:
             DbManager.delete_records(schemas.Workspace, [schemas.Workspace.id == workspace.id])
 
     def test_purge_removes_the_workspace_and_its_channels(self, real_db):
-        import helpers
-
         workspace, sync, _ = _build_sync()
 
-        helpers.purge_workspace(workspace.id)
+        purge_workspace(workspace.id)
 
         assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == workspace.id]) == []
         assert DbManager.find_records(schemas.SyncChannel, [schemas.SyncChannel.workspace_id == workspace.id]) == []
@@ -216,12 +215,10 @@ class TestPurgeWorkspace:
         # empty syncs are cleaned up by Leave Sync / explicit purge_sync.
 
     def test_purge_is_idempotent(self, real_db):
-        import helpers
-
         workspace, _, _ = _build_sync()
 
-        helpers.purge_workspace(workspace.id)
-        helpers.purge_workspace(workspace.id)
+        purge_workspace(workspace.id)
+        purge_workspace(workspace.id)
 
         assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == workspace.id]) == []
 
@@ -231,7 +228,6 @@ class TestPurgeWorkspace:
         workspace_group_members references workspaces.id through two columns, so
         deleting by invited_by_workspace_id would evict a legitimate member.
         """
-        import helpers
 
         inviter = DbManager.create_record(
             schemas.Workspace(team_id="T_INVITER", workspace_name="Inviter", instance_id=get_instance_id())
@@ -264,7 +260,7 @@ class TestPurgeWorkspace:
             )
         )
 
-        helpers.purge_workspace(inviter.id)
+        purge_workspace(inviter.id)
 
         assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == inviter.id]) == []
         assert (
@@ -283,7 +279,6 @@ class TestPurgeWorkspace:
 
     def test_purge_keeps_syncs_owned_by_other_workspaces(self, real_db):
         """Purging a workspace removes its channels only, not sibling syncs."""
-        import helpers
 
         publisher = DbManager.create_record(
             schemas.Workspace(team_id="T_PUB", workspace_name="Pub", instance_id=get_instance_id())
@@ -321,7 +316,7 @@ class TestPurgeWorkspace:
             )
         )
 
-        helpers.purge_workspace(target.id)
+        purge_workspace(target.id)
 
         remaining = DbManager.find_records(schemas.Sync, [schemas.Sync.id == sync.id])
         assert len(remaining) == 1
@@ -329,13 +324,11 @@ class TestPurgeWorkspace:
         assert [c.workspace_id for c in channels] == [publisher.id]
 
     def test_purge_removes_settings_rows(self, real_db):
-        import helpers
-
         workspace, _, _ = _build_sync()
         DbManager.create_record(
             schemas.WorkspaceSetting(workspace_id=workspace.id, key="allow_private_channels", value="no")
         )
-        assert helpers.purge_workspace(workspace.id) is True
+        assert purge_workspace(workspace.id) is True
         assert DbManager.find_records(schemas.Workspace, [schemas.Workspace.id == workspace.id]) == []
         assert (
             DbManager.find_records(schemas.WorkspaceSetting, [schemas.WorkspaceSetting.workspace_id == workspace.id])
@@ -343,8 +336,6 @@ class TestPurgeWorkspace:
         )
 
     def test_purge_clears_source_workspace_on_other_copies(self, real_db):
-        import helpers
-
         source, _, _ = _build_sync()
         other = DbManager.create_record(
             schemas.Workspace(team_id="T_OTHER", workspace_name="Other", instance_id=get_instance_id())
@@ -362,14 +353,12 @@ class TestPurgeWorkspace:
         copy = DbManager.create_record(
             schemas.PostMeta(post_id="P_COPY", sync_channel_id=channel.id, ts=1.0, source_workspace_id=source.id)
         )
-        assert helpers.purge_workspace(source.id) is True
+        assert purge_workspace(source.id) is True
         kept = DbManager.find_records(schemas.PostMeta, [schemas.PostMeta.id == copy.id])
         assert len(kept) == 1
         assert kept[0].source_workspace_id is None
 
     def test_purge_keeps_a_workspace_on_an_allowlist(self, real_db):
-        import helpers
-
         workspace, _, channels = _build_sync()
         DbManager.create_record(
             schemas.WorkspaceSetting(workspace_id=workspace.id, key="allow_private_channels", value="no")
@@ -377,7 +366,7 @@ class TestPurgeWorkspace:
         DbManager.create_record(
             schemas.FederationWorkspaceAllowlist(instance_id=get_instance_id(), workspace_id=workspace.id)
         )
-        assert helpers.purge_workspace(workspace.id) is False
+        assert purge_workspace(workspace.id) is False
         assert DbManager.get_record(schemas.Workspace, id=workspace.team_id) is not None
         assert DbManager.get_record(schemas.SyncChannel, id=channels[0].id) is not None
         assert DbManager.find_records(
@@ -386,8 +375,6 @@ class TestPurgeWorkspace:
         )
 
     def test_purge_keeps_a_workspace_with_a_pending_stub(self, real_db):
-        import helpers
-
         workspace, _, _ = _build_sync()
         peer = "d" * 64
         DbManager.create_record(
@@ -401,20 +388,18 @@ class TestPurgeWorkspace:
             )
         )
         DbManager.create_record(schemas.FederationPendingStub(instance_id=peer, workspace_id=workspace.id))
-        assert helpers.purge_workspace(workspace.id) is False
+        assert purge_workspace(workspace.id) is False
         assert DbManager.get_record(schemas.Workspace, id=workspace.team_id) is not None
 
     def test_purge_runs_once_the_allowlist_row_is_gone(self, real_db):
-        import helpers
-
         workspace, _, _ = _build_sync()
         row = DbManager.create_record(
             schemas.FederationWorkspaceAllowlist(instance_id=get_instance_id(), workspace_id=workspace.id)
         )
-        assert helpers.purge_workspace(workspace.id) is False
+        assert purge_workspace(workspace.id) is False
         DbManager.delete_records(
             schemas.FederationWorkspaceAllowlist,
             [schemas.FederationWorkspaceAllowlist.id == row.id],
         )
-        assert helpers.purge_workspace(workspace.id) is True
+        assert purge_workspace(workspace.id) is True
         assert DbManager.get_record(schemas.Workspace, id=workspace.team_id) is None

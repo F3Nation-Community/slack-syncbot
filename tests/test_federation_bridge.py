@@ -227,7 +227,7 @@ def test_inbound_rejects_unknown_source_team(real_db):
     assert resp.get("error") == "workspace_not_found"
 
 
-def test_inbound_follow_ups_wait_for_parent_post_meta(real_db):
+def test_inbound_replies_edits_and_reactions_wait_for_parent_post_meta(real_db):
     from federation.api import handle_message, handle_message_edit, handle_message_react
 
     peer = _seed_peer()
@@ -273,11 +273,11 @@ def test_inbound_follow_ups_wait_for_parent_post_meta(real_db):
     assert react[1]["error"] == "parent_missing"
 
 
-def test_inbound_follow_ups_apply_when_parent_post_meta_exists(real_db):
+def test_inbound_replies_edits_and_reactions_apply_when_parent_post_meta_exists(real_db):
     from db import DbManager, schemas
     from federation.api import handle_message, handle_message_edit, handle_message_react
+    from helpers.slack_ts import post_meta_ts
     from helpers.sync_apply import ApplyOutcome
-    from helpers.user_action_echo import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
@@ -329,8 +329,8 @@ def test_inbound_follow_ups_apply_when_parent_post_meta_exists(real_db):
 
 def test_inbound_reply_uses_envelope_target_ts_without_parent_post_meta(real_db):
     from federation.api import handle_message
+    from helpers.slack_ts import post_meta_ts
     from helpers.sync_apply import ApplyOutcome
-    from helpers.user_action_echo import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
@@ -1685,7 +1685,7 @@ def test_inbound_edit_and_delete_call_apply_target():
 def test_handle_message_idempotent_create_returns_existing_ts(real_db):
     from db import DbManager, schemas
     from federation.api import handle_message
-    from helpers.user_action_echo import post_meta_ts
+    from helpers.slack_ts import post_meta_ts
 
     peer = _seed_peer()
     _sync, sc = _seed_inbound_channel(peer)
@@ -2198,7 +2198,7 @@ def test_post_parts_413_after_unlimited_retries_advertised_cap(tmp_path):
 
 def _seed_shared_sync(peer):
     from db import DbManager, schemas
-    from helpers.user_action_echo import post_meta_ts
+    from helpers.slack_ts import post_meta_ts
 
     now = datetime.now(UTC).replace(tzinfo=None)
     sync = DbManager.create_record(
@@ -3311,3 +3311,27 @@ def test_teams_payload_carries_this_app_name(real_db, monkeypatch):
     ):
         payload = teams_allowlist_payload(peer["fed"].instance_id)
     assert payload["app_name"] == "SyncBot (Test)"
+
+
+def test_handle_message_answers_ok_false_or_a_reduced_copy(real_db):
+    from federation.api import handle_message
+    from helpers.sync_apply import ApplyOutcome
+
+    peer = _seed_peer()
+    _seed_inbound_channel(peer)
+    body = {"kind": "message", "action": "create", "post_id": "pid-9", "channel_id": "CLOCAL", "text": "hi"}
+    with (
+        patch("federation.api._prepare_inbound_envelope"),
+        patch("federation.api.apply_target", return_value=ApplyOutcome(error="channel_not_found")),
+    ):
+        status, resp = handle_message(dict(body), peer["fed"])
+    assert status == 200
+    assert resp["ok"] is False
+    assert resp["error"] == "channel_not_found"
+
+    with (
+        patch("federation.api._prepare_inbound_envelope"),
+        patch("federation.api.apply_target", return_value=ApplyOutcome(ts="7.000001", error="invalid_blocks")),
+    ):
+        status, resp = handle_message(dict(body, post_id="pid-10"), peer["fed"])
+    assert (status, resp["ok"], resp["ts"], resp["error"]) == (200, True, "7.000001", "invalid_blocks")

@@ -22,7 +22,7 @@ from logging import Logger
 import requests
 from slack_sdk import WebClient
 
-from helpers.user_action_echo import slack_message_ts
+from helpers.slack_ts import slack_message_ts
 from logger import log_debug, log_error, log_info, log_warning
 
 # Slack documents 1 GB per file on every plan, including Free.
@@ -213,29 +213,6 @@ def _download_and_hash(url: str, headers: dict | None = None) -> tuple[str, int,
         raise
 
 
-def write_bytes_hashed(data: bytes, *, expected_sha256: str | None = None) -> tuple[str, int, str]:
-    """Write *data* into the hashed cache. Returns ``(sha256, size, path)``."""
-    if len(data) > _MAX_FILE_BYTES:
-        raise ValueError(f"File exceeds {_MAX_FILE_BYTES} byte limit")
-    sha256 = hashlib.sha256(data).hexdigest()
-    if expected_sha256 and sha256 != expected_sha256:
-        raise ValueError("sha256 mismatch")
-    path = hashed_file_path(sha256)
-    if not (os.path.isfile(path) and os.path.getsize(path) == len(data)):
-        fd, temp_path = tempfile.mkstemp(prefix="sb-asm-", dir="/tmp")
-        try:
-            with os.fdopen(fd, "wb") as fh:
-                fh.write(data)
-            os.replace(temp_path, path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                os.remove(temp_path)
-            raise
-    register_hashed_file(sha256, len(data))
-    pin_hashed_file(sha256)
-    return sha256, len(data), path
-
-
 def assemble_parts_to_hashed(
     parts,
     *,
@@ -304,12 +281,27 @@ def hosted_file_fetch_url(file: dict | None) -> str | None:
 
 
 def _outside_file_link(file: dict) -> str | None:
-    url = file.get("external_url")
-    if not isinstance(url, str) or not url.startswith("https://"):
+    from helpers.message_blocks import get_safe_https_url
+
+    return get_safe_https_url(file.get("external_url"))
+
+
+def get_link_only_file_url(file: dict | None) -> str | None:
+    """Https permalink for a Slack file that has no download URL.
+
+    ``hidden_by_limit``, ``tombstone``, and ``file_access`` stay unreadable.
+    A hosted file or snippet without a URL is still a file that failed, not a link.
+    A canvas (``quip``) is the usual case.
+    """
+    if not isinstance(file, dict) or is_outside_file(file):
         return None
-    if any(char in url for char in (" ", "\t", "\n", "<", ">", "|")):
+    if file.get("mode") in _SKIP_FILE_MODES or file.get("mode") in {"hosted", "snippet", "email"}:
         return None
-    return url
+    if hosted_file_fetch_url(file):
+        return None
+    from helpers.message_blocks import get_safe_https_url
+
+    return get_safe_https_url(file.get("permalink"))
 
 
 def add_outside_file_links(
@@ -317,15 +309,23 @@ def add_outside_file_links(
     blocks: list | None,
     files: list | None,
 ) -> tuple[str | None, list | None]:
-    """Append https ``external_url`` links for outside files. Skip a link already in *text*."""
+    """Append links for files SyncBot does not download. Skip a link already in *text*.
+
+    An outside file links to its https ``external_url``. A Slack file with no
+    download URL and an https ``permalink`` (a canvas) links to that permalink.
+    """
     from urllib.parse import urlparse
 
-    from helpers.message_blocks import blocks_include_body
+    from helpers.message_blocks import append_link_lines
 
-    source = text or ""
     links: list[str] = []
     for item in files or []:
-        if not isinstance(item, dict) or not is_outside_file(item):
+        if not isinstance(item, dict):
+            continue
+        if not is_outside_file(item):
+            permalink = get_link_only_file_url(item)
+            if permalink:
+                links.append(permalink)
             continue
         link = _outside_file_link(item)
         if link is None:
@@ -333,22 +333,8 @@ def add_outside_file_links(
             host = urlparse(raw).hostname if isinstance(raw, str) and raw else None
             log_info("file_share_skipped", host=host, external_type=item.get("external_type"))
             continue
-        if link in source:
-            continue
         links.append(link)
-    if not links:
-        return text, blocks
-    extra = "\n".join(f"<{url}>" for url in links)
-    new_text = extra if not source.strip() else f"{source.rstrip()}\n{extra}"
-    new_blocks = list(blocks or [])
-    if blocks_include_body(new_blocks):
-        elements: list[dict] = []
-        for index, url in enumerate(links):
-            if index:
-                elements.append({"type": "text", "text": "\n"})
-            elements.append({"type": "link", "url": url})
-        new_blocks.append({"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": elements}]})
-    return new_text, new_blocks
+    return append_link_lines(text, blocks, links)
 
 
 def drop_outside_files(body: dict) -> dict:

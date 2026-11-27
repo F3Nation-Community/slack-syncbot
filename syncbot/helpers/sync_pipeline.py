@@ -12,9 +12,10 @@ from slack_sdk import WebClient
 from db import schemas
 from helpers.envelope import ACTION_CREATE, KIND_MESSAGE, get_post_id_for_post_records
 from helpers.post_meta import get_post_records_for_post_id
+from helpers.slack_api import slack_error_code
+from helpers.slack_ts import slack_message_ts
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import channel_subscribes, get_active_sync_channel, iter_publish_targets
-from helpers.user_action_echo import slack_message_ts
 from helpers.workspace_kind import (
     is_local_workspace,
     is_stub_workspace,
@@ -22,9 +23,12 @@ from helpers.workspace_kind import (
     peer_is_trusted,
     workspace_allowed_for_peer,
 )
-from logger import log_debug, log_warning
+from logger import log_debug, log_info, log_warning
 
 _ATTEMPT_WAITS = (1, 2)
+# The report's code for a target that never answered: a peer that did not reply, or an
+# upload Slack never returned the share for. The copy may still have posted.
+NO_RESPONSE = "no_response"
 
 
 def _sleep_between_attempts(seconds: float) -> None:
@@ -63,8 +67,16 @@ def run_sync_pipeline(
     source_client: WebClient | None = None,
     source_sync_channel: schemas.SyncChannel | None = None,
     thread_parent_ts_by_channel: dict[str, str] | None = None,
+    report: list | None = None,
 ) -> list[schemas.PostMeta]:
     """Discover subscribers, dedupe, apply. Returns PostMeta rows to persist (targets only).
+
+    *report*, when given, collects ``(sync_channel, workspace, error, copied)`` for
+    each target that refused the copy (``copied`` False) or posted it in a reduced
+    form (``copied`` True). A Slack code is final. A raised error is tried again, and
+    so is Slack asking for a later try (``ratelimited`` and similar), which the write raises.
+    A target that never answered is reported as :data:`NO_RESPONSE`.
+    A gate is never reported.
 
     Thread creates (``thread_post_id`` on a message create) fan out locally
     only to Channels that already have that parent PostMeta, never a sibling
@@ -139,7 +151,7 @@ def run_sync_pipeline(
         if is_stub_workspace(workspace):
             fed_ws = peer_for_workspace(workspace)
             if not fed_ws or not peer_is_trusted(fed_ws):
-                log_debug(
+                log_info(
                     "pipeline_skip",
                     reason="stub_peer_unavailable",
                     channel_id=sync_channel.channel_id,
@@ -147,7 +159,7 @@ def run_sync_pipeline(
                 )
                 continue
             if source_ws is not None and not workspace_allowed_for_peer(source_ws, fed_ws):
-                log_debug(
+                log_info(
                     "pipeline_skip",
                     reason="origin_not_allowed",
                     channel_id=sync_channel.channel_id,
@@ -159,7 +171,7 @@ def run_sync_pipeline(
         elif is_local_workspace(workspace):
             local_targets.append((sync_channel, workspace))
         else:
-            log_debug(
+            log_info(
                 "pipeline_skip",
                 reason="workspace_not_deliverable",
                 channel_id=sync_channel.channel_id,
@@ -180,37 +192,58 @@ def run_sync_pipeline(
 
     is_create = envelope.get("kind") == KIND_MESSAGE and envelope.get("action") == ACTION_CREATE
 
-    def _local_landed(sync_channel, workspace) -> Callable[[schemas.SyncChannel], bool]:
+    def _record(sync_channel, workspace, error: str, copied: bool) -> None:
+        extra = {"reason": "target_refused"} if copied else {}
+        log_warning(
+            "message_degraded" if copied else "message_not_copied",
+            **extra,
+            error=error,
+            channel_id=sync_channel.channel_id,
+            post_id=envelope.get("post_id"),
+            kind=envelope.get("kind"),
+            action=envelope.get("action"),
+            source_channel=source_channel_id,
+        )
+        if report is not None:
+            report.append((sync_channel, workspace, error, copied))
+
+    def _local_landed(sync_channel, workspace, last_error: list[str]) -> Callable[[schemas.SyncChannel], bool]:
         def work(live: schemas.SyncChannel) -> bool:
             target_meta = post_records_by_channel.get(live.channel_id)
             thread_ts = parent_ts_by_channel.get(live.channel_id) if is_thread_create else None
-            created = apply_target(
-                envelope,
-                live,
-                workspace,
-                source_client=source_client,
-                source_sync_channel=source_sync_channel,
-                thread_ts=thread_ts,
-                target_post_meta=target_meta,
-                name_probe_cache=name_probe_cache,
-            )
+            try:
+                created = apply_target(
+                    envelope,
+                    live,
+                    workspace,
+                    source_client=source_client,
+                    source_sync_channel=source_sync_channel,
+                    thread_ts=thread_ts,
+                    target_post_meta=target_meta,
+                    name_probe_cache=name_probe_cache,
+                )
+            except Exception as exc:
+                last_error.append(slack_error_code(exc) or type(exc).__name__)
+                raise
             from helpers.sync_apply import ApplyOutcome
 
             if not isinstance(created, ApplyOutcome):
                 return True
-            if is_create and not created.created and not created.ts:
-                return False
             post_list.extend(created.created)
-            return True
+            if created.error:
+                _record(sync_channel, workspace, created.error, bool(created.ts or created.created or created.applied))
+                return True
+            return not (is_create and not created.created and not created.ts)
 
         return work
 
     for sync_channel, workspace in local_targets:
-        if not _while_active(sync_channel, _local_landed(sync_channel, workspace)):
-            log_warning("run_sync_pipeline_target_failed", channel_id=sync_channel.channel_id)
+        last_error: list[str] = []
+        if not _while_active(sync_channel, _local_landed(sync_channel, workspace, last_error)):
+            _record(sync_channel, workspace, last_error[-1] if last_error else NO_RESPONSE, False)
 
     if stub_by_peer:
-        from federation.deliver import deliver_remote, stage_unique_files_for_peer
+        from federation.deliver import PEER_PARENT_MISSING, deliver_remote, stage_unique_files_for_peer
 
         for _peer_id, stub_targets in stub_by_peer.items():
             fed_ws = stub_targets[0][2]
@@ -227,9 +260,18 @@ def run_sync_pipeline(
             except Exception as exc:
                 log_warning("run_sync_pipeline_stage_failed", error=str(exc))
                 staged = False
-            for sync_channel, _workspace, peer in stub_targets:
+            for sync_channel, stub_workspace, peer in stub_targets:
+                peer_errors: list[tuple[str, bool]] = []
 
-                def _remote_landed(live: schemas.SyncChannel, peer=peer, stage_files=not staged) -> bool:
+                def _remote_landed(
+                    live: schemas.SyncChannel,
+                    peer=peer,
+                    stage_files=not staged,
+                    peer_errors=peer_errors,
+                    sync_channel=sync_channel,
+                    stub_workspace=stub_workspace,
+                ) -> bool:
+                    peer_errors.clear()
                     env = dict(remote_envelope)
                     target_meta = post_records_by_channel.get(live.channel_id)
                     if target_meta is not None:
@@ -239,14 +281,22 @@ def run_sync_pipeline(
                         peer,
                         live,
                         stage_files=stage_files,
-                        source_client=source_client,
+                        errors=peer_errors,
                     )
                     if created is None:
                         return False
                     post_list.extend(created)
+                    if peer_errors:
+                        error, copied = peer_errors[-1]
+                        _record(sync_channel, stub_workspace, error, copied)
                     return True
 
                 if not _while_active(sync_channel, _remote_landed):
-                    log_warning("run_sync_pipeline_remote_failed", channel_id=sync_channel.channel_id)
+                    error = peer_errors[-1][0] if peer_errors else NO_RESPONSE
+                    if error == PEER_PARENT_MISSING:
+                        # The peer has no copy of this message, so there is nothing to change there.
+                        log_debug("pipeline_skip", reason=PEER_PARENT_MISSING, channel_id=sync_channel.channel_id)
+                        continue
+                    _record(sync_channel, stub_workspace, error, False)
 
     return post_list

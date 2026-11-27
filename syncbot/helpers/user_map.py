@@ -13,8 +13,14 @@ import constants
 from db import DbManager, schemas
 from helpers._cache import _CACHE, _USER_INFO_CACHE_TTL, _cache_get, _cache_set
 from helpers.core import code_ticked_display_name, safe_get
-from helpers.message_blocks import is_url_display_text
-from helpers.slack_api import _users_info, get_user_info, slack_retry
+from helpers.message_blocks import (
+    get_message_link_key,
+    is_share_attachment,
+    is_url_display_text,
+    rewrite_attachments,
+    rewrite_content_blocks,
+)
+from helpers.slack_api import _users_info, fetch_source_message, get_user_info, slack_error_code, slack_retry
 from helpers.workspace import (
     get_bot_token,
     get_workspace_by_id,
@@ -710,9 +716,10 @@ def apply_mentioned_users(
 
 _CHANNEL_MENTION = re.compile(r"<#(C[A-Z0-9]+)(?:\|([^>]*))?>")
 # Keep pasted app.slack.com/client message URLs too; never *emit* that scheme for #channel.
+# A reply's permalink has a query (``?thread_ts=…&cid=…``). It ends at ``|``, so link text stays link text.
 _MESSAGE_PERMALINK = re.compile(
-    r"<?(https://(?:app\.slack\.com/client/T[A-Z0-9]+/(C[A-Z0-9]+)/[\d.]+|"
-    r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/(C[A-Z0-9]+)/p\d+(?:\?[^\s>]*)?))"
+    r"<?(https://(?:app\.slack\.com/client/T[A-Z0-9]+/([CDG][A-Z0-9]+)/[\d.]+|"
+    r"([a-z0-9][a-z0-9-]*)\.slack\.com/archives/([CDG][A-Z0-9]+)/p\d+(?:\?[^\s|>]*)?))"
     r"(?:\|([^>]+))?>?"
 )
 # Lookahead so greedy C[A-Z0-9]+ does not backtrack into /p permalinks.
@@ -753,18 +760,96 @@ def _channel_tick_markup(ch_name: str, channel_id: str, ws_name: str | None) -> 
     return code_ticked_display_name(place, ws_name)
 
 
+_THREAD_TS_IN_LINK = re.compile(r"[?&](?:amp;)?thread_ts=(\d+\.\d+)")
+_MESSAGE_LINK_NAME_TTL = 300
+
+
+def _message_link_name_key(key: tuple[str, str]) -> str:
+    return f"message_link_name:{key[0]}:{key[1]}"
+
+
+def _link_text(value: object) -> str | None:
+    """A name that is safe as link text: no ``<``, ``>``, or ``|``."""
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(re.sub(r"[<>|]", " ", value).split())
+    return cleaned or None
+
+
+def note_message_link_names(attachments: list[dict] | None) -> None:
+    """Remember who wrote each forwarded or previewed message, by its Channel and ts.
+
+    That is the name Slack's own card shows. :func:`_message_permalink_label`
+    uses it before reading the message itself.
+    """
+    for attachment in attachments or []:
+        if not isinstance(attachment, dict) or not is_share_attachment(attachment):
+            continue
+        key = get_message_link_key(attachment.get("from_url") or attachment.get("original_url"))
+        name = _link_text(attachment.get("author_subname") or attachment.get("author_name"))
+        if key and name:
+            _cache_set(_message_link_name_key(key), name, ttl=_MESSAGE_LINK_NAME_TTL)
+
+
+def _read_message_link_name(source_client: WebClient, key: tuple[str, str], url: str) -> str | None:
+    """The linked message's author, read from Slack: a bot post's name, else the person's name.
+
+    Never raises: the name is optional, and the rewrite runs before any target is tried.
+    """
+    channel_id, digits = key
+    thread = _THREAD_TS_IN_LINK.search(url)
+    try:
+        message = fetch_source_message(
+            source_client,
+            channel_id,
+            f"{digits[:-6]}.{digits[-6:]}",
+            thread_ts=thread.group(1) if thread else None,
+        )
+        if not isinstance(message, dict):
+            return None
+        name = message.get("username") or safe_get(message, "bot_profile", "name")
+        if not name and message.get("user"):
+            name, _icon = get_user_info(source_client, message["user"])
+    except Exception as exc:
+        log_debug("message_link_name_failed", channel_id=channel_id, error=slack_error_code(exc) or type(exc).__name__)
+        return None
+    return _link_text(name)
+
+
+def _message_link_name(url: str | None, source_client: WebClient | None) -> str | None:
+    """Who wrote the linked message: a forward's or preview's name first, else read from Slack."""
+    key = get_message_link_key(url)
+    if not key:
+        return None
+    cached = _cache_get(_message_link_name_key(key))
+    if cached is not None:
+        return cached or None
+    if source_client is None:
+        return None
+    name = _read_message_link_name(source_client, key, str(url))
+    _cache_set(_message_link_name_key(key), name or "", ttl=_MESSAGE_LINK_NAME_TTL)
+    return name
+
+
 def _message_permalink_label(
     channel_id: str,
     domain: str | None,
     source_client: WebClient | None,
     ws_name: str | None,
+    url: str | None = None,
 ) -> str:
+    """``{name} in #channel (Workspace)``, as Slack's client names a message link.
+
+    The name is who wrote the linked message (:func:`_message_link_name`). Without
+    it, or without a readable Channel, the message is ``message``.
+    """
     place = _hash_channel_label(_lookup_channel_name(source_client, channel_id), channel_id)
     where = ws_name or domain
+    who = (_message_link_name(url, source_client) if place else None) or "message"
     if place and where:
-        return f"message in {place} ({where})"
+        return f"{who} in {place} ({where})"
     if place:
-        return f"message in {place}"
+        return f"{who} in {place}"
     if where:
         return f"message in {where}"
     return "source message"
@@ -776,7 +861,7 @@ def _rewrite_message_permalink(match: re.Match, source_client: WebClient | None,
     if existing and not is_url_display_text(existing, url):
         return f"<{url}|{existing}>"
     cid = match.group(2) or match.group(4)
-    label = _message_permalink_label(cid, match.group(3), source_client, ws_name)
+    label = _message_permalink_label(cid, match.group(3), source_client, ws_name, url)
     return f"<{url}|{label}>"
 
 
@@ -798,8 +883,9 @@ def resolve_channel_references(
     ``archives/C`` URLs.
 
     Message permalinks (``/archives/C…/p…``) without display text become
-    ``<url|message in #channel (Workspace)>``. Existing link text is left
-    alone.
+    ``<url|{name} in #channel (Workspace)>``, or ``message in …`` when the
+    name is unknown (:func:`_message_permalink_label`). Existing link text is
+    left alone.
     """
     if not msg_text:
         return msg_text
@@ -840,15 +926,9 @@ def rewrite_envelope_channel_refs(
     """
     if not source_client:
         return
-    from helpers.message_blocks import rewrite_content_blocks
-
     text = envelope.get("text")
     if isinstance(text, str) and text:
         envelope["text"] = resolve_channel_references(text, source_client, source_workspace)
-
-    blocks = envelope.get("blocks")
-    if not isinstance(blocks, list) or not blocks:
-        return
 
     def rewrite_mrkdwn(value: str) -> str:
         return resolve_channel_references(value, source_client, source_workspace)
@@ -859,7 +939,15 @@ def rewrite_envelope_channel_refs(
     def keep_unmapped(uid: str) -> str:
         return f"<@{uid}>"
 
-    envelope["blocks"] = rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
+    def rewrite_blocks(blocks: list[dict]) -> list[dict]:
+        return rewrite_content_blocks(blocks, rewrite_mrkdwn, keep_user, keep_unmapped)
+
+    blocks = envelope.get("blocks")
+    if isinstance(blocks, list) and blocks:
+        envelope["blocks"] = rewrite_blocks(blocks)
+    attachments = envelope.get("attachments")
+    if isinstance(attachments, list) and attachments:
+        envelope["attachments"] = rewrite_attachments(attachments, rewrite_mrkdwn, rewrite_blocks)
 
 
 def seed_user_mappings(source_workspace_id: int, target_workspace_id: int, group_id: int | None = None) -> int:

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from typing import Any
-
-from slack_sdk import WebClient
 
 from db import DbManager, schemas
 from federation.core import (
@@ -27,8 +26,8 @@ from helpers.envelope import (
     KIND_REACTION,
 )
 from helpers.files import hashed_file_path, hashed_file_ready, pin_hashed_file, unpin_hashed_file
-from helpers.notifications import notify_source_user_error
-from helpers.user_action_echo import post_meta_ts, slack_message_ts
+from helpers.slack_ts import post_meta_ts, slack_message_ts
+from helpers.sync_pipeline import NO_RESPONSE
 from logger import log_warning
 
 
@@ -224,29 +223,37 @@ def _postmeta_from_peer_response(
     return created
 
 
-_FILE_COPY_FAILED = ":warning: SyncBot could not copy your file to the other Channels."
+def _clean_peer_code(value: object) -> str | None:
+    """A peer's error code, kept to ``a-z0-9_``. A peer is another operator's server."""
+    code = re.sub(r"[^a-z0-9_]", "", str(value or "").lower())[:64]
+    return code or None
 
 
-def _notify_remote_file_failed(
-    envelope: dict[str, Any],
-    source_client: WebClient | None,
-    channel_id: str,
-    *,
-    reason: str,
-    error: str | None = None,
-) -> None:
-    notify_source_user_error(
-        source_client=source_client,
-        source_user_id=envelope.get("source_user_id"),
-        summary=_FILE_COPY_FAILED,
-        details={
-            "event": "file_share_failed",
-            "reason": reason,
-            "error": error,
-            "channel": channel_id,
-            "post_id": envelope.get("post_id"),
-        },
-    )
+def _read_peer_answer(result: dict, errors: list | None) -> bool:
+    """Record a 200 answer's ``error``. Returns False when the peer posted nothing (``ok: false``)."""
+    code = _clean_peer_code(result.get("error"))
+    refused = result.get("ok") is False
+    if code and errors is not None:
+        errors.append((code, not refused))
+    elif refused and errors is not None:
+        errors.append(("peer_refused", False))
+    return not refused
+
+
+# A peer with no copy of the message answers 409 ``parent_missing``. The retry gives a peer
+# still applying the create time to finish; when it is still missing, the pipeline skips it.
+PEER_PARENT_MISSING = "parent_missing"
+
+
+def _get_failed_call_code(result: dict | None, status: object) -> str:
+    if status == 409 and (result or {}).get("error") == PEER_PARENT_MISSING:
+        return PEER_PARENT_MISSING
+    return f"http_{status}" if status else NO_RESPONSE
+
+
+def _note_failure(errors: list | None, code: str) -> None:
+    if errors is not None:
+        errors.append((code, False))
 
 
 def deliver_remote(
@@ -255,9 +262,14 @@ def deliver_remote(
     sync_channel: schemas.SyncChannel,
     *,
     stage_files: bool = True,
-    source_client: WebClient | None = None,
-) -> list[schemas.PostMeta]:
-    """Bridge one envelope to a peer stub SyncChannel. Returns origin PostMeta rows."""
+    errors: list | None = None,
+) -> list[schemas.PostMeta] | None:
+    """Bridge one envelope to a peer stub SyncChannel. Returns origin PostMeta rows.
+
+    ``None`` means try again. *errors*, when given, collects ``(code, copied)``: a
+    peer that refused (``ok: false``), one that posted a reduced copy, a file
+    stage that failed, or the HTTP status of a failed call.
+    """
     kind = envelope.get("kind")
     action = envelope.get("action")
     channel_id = sync_channel.channel_id
@@ -273,7 +285,7 @@ def deliver_remote(
     if kind == KIND_MESSAGE and action == ACTION_CREATE:
         file_refs = list(envelope.get("file_refs") or [])
         if stage_files and file_refs and not _stage_files_to_peer(fed_ws, file_refs):
-            _notify_remote_file_failed(envelope, source_client, channel_id, reason="stage_failed")
+            _note_failure(errors, "stage_failed")
             return []
         remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
         result = push_message(fed_ws, remote)
@@ -281,18 +293,18 @@ def deliver_remote(
         error = (result or {}).get("error")
         if status == 409 and file_refs and error == "incomplete_file":
             if not _stage_files_to_peer(fed_ws, file_refs):
-                _notify_remote_file_failed(envelope, source_client, channel_id, reason="stage_failed")
+                _note_failure(errors, "stage_failed")
                 return []
             result = push_message(fed_ws, remote)
             status = (result or {}).get("_http_status")
             error = (result or {}).get("error")
             if status == 409 and error == "incomplete_file":
                 log_warning("deliver_remote_incomplete_files", channel_id=channel_id, post_id=envelope.get("post_id"))
-                _notify_remote_file_failed(envelope, source_client, channel_id, reason="incomplete_file", error=error)
+                _note_failure(errors, "incomplete_file")
                 return []
         if status == 409 and error == "assemble_failed":
             log_warning("deliver_remote_assemble_failed", channel_id=channel_id, post_id=envelope.get("post_id"))
-            _notify_remote_file_failed(envelope, source_client, channel_id, reason="assemble_failed", error=error)
+            _note_failure(errors, "assemble_failed")
             return []
         if status == 409 and error == "parent_missing":
             log_warning(
@@ -311,12 +323,21 @@ def deliver_remote(
                 post_id=envelope.get("post_id"),
                 thread_post_id=envelope.get("thread_post_id"),
             )
+            _note_failure(errors, f"http_{status}" if status else NO_RESPONSE)
             return None
+        if not _read_peer_answer(result, errors):
+            return []
         return _postmeta_from_peer_response(envelope, sync_channel, result)
 
-    if kind == KIND_MESSAGE and action == ACTION_EDIT:
+    push = {
+        (KIND_MESSAGE, ACTION_EDIT): push_edit,
+        (KIND_MESSAGE, ACTION_DELETE): push_delete,
+        (KIND_REACTION, ACTION_ADD): push_reaction,
+        (KIND_REACTION, ACTION_REMOVE): push_reaction,
+    }.get((kind, action))
+    if push:
         remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
-        result = push_edit(fed_ws, remote)
+        result = push(fed_ws, remote)
         status = (result or {}).get("_http_status")
         if result is None or status not in (None, 200):
             log_warning(
@@ -326,37 +347,9 @@ def deliver_remote(
                 error=(result or {}).get("error"),
                 post_id=envelope.get("post_id"),
             )
+            _note_failure(errors, _get_failed_call_code(result, status))
             return None
-        return []
-
-    if kind == KIND_MESSAGE and action == ACTION_DELETE:
-        remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
-        result = push_delete(fed_ws, remote)
-        status = (result or {}).get("_http_status")
-        if result is None or status not in (None, 200):
-            log_warning(
-                "deliver_remote_failed",
-                channel_id=channel_id,
-                status=status,
-                error=(result or {}).get("error"),
-                post_id=envelope.get("post_id"),
-            )
-            return None
-        return []
-
-    if kind == KIND_REACTION and action in (ACTION_ADD, ACTION_REMOVE):
-        remote = build_remote_envelope(envelope, channel_id, sync_uid=sync_uid)
-        result = push_reaction(fed_ws, remote)
-        status = (result or {}).get("_http_status")
-        if result is None or status not in (None, 200):
-            log_warning(
-                "deliver_remote_failed",
-                channel_id=channel_id,
-                status=status,
-                error=(result or {}).get("error"),
-                post_id=envelope.get("post_id"),
-            )
-            return None
+        _read_peer_answer(result, errors)
         return []
 
     log_warning("deliver_remote_unsupported", kind=kind, action=action)

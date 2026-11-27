@@ -112,18 +112,6 @@ def is_deliverable_workspace(workspace: schemas.Workspace | None) -> bool:
     return bool(peer and peer_is_trusted(peer))
 
 
-def can_select_channels(workspace: schemas.Workspace | None) -> bool:
-    return is_local_workspace(workspace)
-
-
-def can_publish_home(workspace: schemas.Workspace | None) -> bool:
-    return is_local_workspace(workspace)
-
-
-def can_dm(workspace: schemas.Workspace | None) -> bool:
-    return is_local_workspace(workspace)
-
-
 def can_promote(workspace: schemas.Workspace | None) -> bool:
     """True for an active workspace on this instance or another one.
 

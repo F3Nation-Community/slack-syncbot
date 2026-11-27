@@ -10,6 +10,7 @@ import pytest
 
 from db import DbManager, schemas
 from helpers.post_meta import get_post_records, get_publishing_post_records, post_meta_exists_for_channel_ts
+from helpers.slack_ts import post_meta_ts
 from helpers.sync_apply import ApplyOutcome
 from helpers.sync_participation import (
     already_subscribed_to_source,
@@ -24,7 +25,6 @@ from helpers.sync_participation import (
     participation_label,
 )
 from helpers.sync_pipeline import run_sync_pipeline
-from helpers.user_action_echo import post_meta_ts
 
 
 def test_participation_flags():
@@ -676,7 +676,7 @@ def test_synced_copy_is_detected_and_does_not_need_to_originate(real_db):
     assert not origin_publishes_anywhere("C_B")
 
 
-def test_publishing_copy_originates_follow_ups(real_db):
+def test_publishing_copy_originates_replies_edits_and_reactions(real_db):
     a, b = _workspace("T_A"), _workspace("T_B")
     sync = _sync(a, "two-way")
     _channel(sync, a, "C_A", publishes=True, subscribes=True)
@@ -716,7 +716,7 @@ def test_get_post_records_matches_six_decimal_slack_ts(real_db):
     assert records[0][0].ts == post_meta_ts(slack_ts)
 
 
-def test_bot_token_copy_originates_follow_ups(real_db):
+def test_bot_token_copy_originates_replies_edits_and_reactions(real_db):
     a, b = _workspace("T_A"), _workspace("T_B")
     sync = _sync(a, "two-way")
     _channel(sync, a, "C_A", publishes=True, subscribes=True)
@@ -736,7 +736,7 @@ def test_bot_token_copy_originates_follow_ups(real_db):
     assert rows[0][0].post_id == "P1"
 
 
-def test_federation_inbound_copy_originates_follow_ups(real_db):
+def test_federation_inbound_copy_originates_replies_edits_and_reactions(real_db):
     b = _workspace("T_B")
     sync = _sync(b, "fed")
     target = _channel(sync, b, "C_B", publishes=True, subscribes=True)
@@ -755,7 +755,7 @@ def test_federation_inbound_copy_originates_follow_ups(real_db):
     assert rows[0][0].post_id == "P1"
 
 
-def test_reaction_notice_does_not_originate_follow_ups(real_db):
+def test_reaction_notice_does_not_originate_replies_edits_or_reactions(real_db):
     b = _workspace("T_B")
     sync = _sync(b, "notices")
     target = _channel(sync, b, "C_B", publishes=True, subscribes=True)
@@ -773,7 +773,7 @@ def test_reaction_notice_does_not_originate_follow_ups(real_db):
     assert get_publishing_post_records(records, "C_B") == []
 
 
-def test_origin_post_still_originates_follow_ups(real_db):
+def test_origin_post_still_originates_replies_edits_and_reactions(real_db):
     a, b = _workspace("T_A"), _workspace("T_B")
     sync = _sync(a, "two-way")
     origin_ch = _channel(sync, a, "C_A", publishes=True, subscribes=True)

@@ -64,7 +64,7 @@ class TestFileOnlyAuthorAttribution:
             patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "200.0")) as upload,
         ):
-            ts, posted_as = _write(
+            ts, posted_as, _error = _write(
                 ctx,
                 [{"path": "/tmp/a.pdf", "name": "a.pdf", "mimetype": "application/pdf"}],
                 user_name="Ada Lovelace",
@@ -94,7 +94,7 @@ class TestFileOnlyAuthorAttribution:
             patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "350.0")) as upload,
         ):
-            ts, posted_as = _write(
+            ts, posted_as, _error = _write(
                 ctx,
                 [{"path": "/tmp/a.pdf", "name": "a.pdf", "mimetype": "application/pdf"}],
                 thread_ts="20.000000",
@@ -146,7 +146,7 @@ class TestTextPlusFileUpload:
             patch("helpers.slack_write.post_message") as post_msg,
             patch("helpers.slack_write.upload_files_to_slack", return_value=(None, "200.0")) as upload_files,
         ):
-            ts, posted_as = _write(ctx, [{"path": "/tmp/a.pdf", "name": "a.pdf"}])
+            ts, posted_as, _error = _write(ctx, [{"path": "/tmp/a.pdf", "name": "a.pdf"}])
         assert (ts, posted_as) == ("200.0", None)
         post_msg.assert_not_called()
         assert upload_files.call_args.kwargs["initial_comment"] == "see attached"

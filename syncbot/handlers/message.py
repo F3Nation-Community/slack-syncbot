@@ -11,7 +11,7 @@ from db import DbManager, schemas
 from db.event_claims import run_claimed
 from handlers._common import EventContext
 from helpers.sync_lifecycle import leave_channel_without_sync
-from logger import emit_metric, log_debug, log_error, log_info
+from logger import emit_metric, log_debug, log_error, log_info, log_warning
 from slack import orm
 
 
@@ -116,7 +116,11 @@ def _enrich_event_fields_for_sync(body: dict, client: WebClient, ctx: EventConte
         ctx["msg_text"] = helpers.choose_message_text(event_text, layout_blocks)
         ctx["content_blocks"] = layout_blocks
 
-    mentioned_users = helpers.parse_mentioned_users(ctx.get("msg_text") or "", client)
+    _fold_event_attachments(event, ctx)
+    mention_text = "\n".join(
+        part for part in (ctx.get("msg_text") or "", helpers.text_from_attachments(ctx.get("attachments"))) if part
+    )
+    mentioned_users = helpers.parse_mentioned_users(mention_text, client)
     extra_ids = [
         uid
         for uid in helpers.collect_user_ids_from_blocks(layout_blocks)
@@ -126,6 +130,273 @@ def _enrich_event_fields_for_sync(body: dict, client: WebClient, ctx: EventConte
         mentioned_users.extend(helpers.parse_mentioned_users("".join(f"<@{uid}>" for uid in extra_ids), client))
     ctx["mentioned_users"] = mentioned_users
     return ctx
+
+
+def _fold_event_attachments(event: dict, ctx: EventContext) -> None:
+    """Copy forwards and other attachments Slack already delivered on this event.
+
+    A forward and a bare link to a message copy the same way: the author's
+    words, the labeled link (``{name} in #channel (Workspace)``), then the card.
+    The name is the card's, noted for the label (``note_message_link_names``).
+    A link the author wrote their own words for keeps them and gets no card.
+    The source Channel's privacy is not a second gate.
+    """
+    raw = helpers.get_event_attachments(event)
+    helpers.note_message_link_names(raw)
+    event_text = helpers.safe_get(event, "text") or helpers.safe_get(event, "message", "text")
+    raw = helpers.drop_previews_of_labeled_links(raw, event_text, helpers.get_event_layout_blocks(event))
+    ctx["attachments"] = helpers.build_attachments_for_sync(raw)
+    ctx["share_files"] = helpers.get_share_files(raw)
+    forward_links = helpers.get_share_permalinks(raw)
+    if forward_links:
+        ctx["msg_text"], ctx["content_blocks"] = helpers.append_link_lines(
+            ctx.get("msg_text"),
+            ctx.get("content_blocks"),
+            forward_links,
+        )
+
+
+def _get_source_permalink(client: WebClient, channel_id: str | None, ts: str | None) -> str | None:
+    """Permalink for a message SyncBot cannot otherwise copy."""
+    if not channel_id or not ts:
+        return None
+    try:
+        res = client.chat_getPermalink(channel=channel_id, message_ts=ts)
+    except Exception as exc:
+        from helpers.slack_api import slack_error_code
+
+        log_warning("source_permalink_failed", channel=channel_id, ts=ts, error=slack_error_code(exc))
+        return None
+    permalink = helpers.safe_get(res, "permalink")
+    return permalink if isinstance(permalink, str) and permalink.startswith("https://") else None
+
+
+_NOT_COPIED = {
+    "create": "SyncBot could not copy your message to {names}.",
+    "edit": "SyncBot could not copy your edit to {names}.",
+    "delete": "SyncBot could not delete the copy of your message in {names}.",
+}
+_NO_REPLY = {
+    "create": "SyncBot sent your message to {names}, but {whom} didn't reply.",
+    "edit": "SyncBot sent your edit to {names}, but {whom} didn't reply.",
+    "delete": "SyncBot asked {names} to delete the copy of your message, but {whom} didn't reply.",
+}
+_REDUCED = "SyncBot copied your {what} to {names}, but it may not look the same there."
+_REDUCED_EVERYWHERE = "SyncBot copied your message, but it may not look the same in the other Channels."
+_FILE_NOT_COPIED = "SyncBot could not copy your file to the other Channels."
+_NOTHING_COPIED = "SyncBot could not copy your message to the other Channels."
+_STORAGE_FULL = "That workspace's file storage is full."
+_REPORT_IT = "Please send this to a workspace admin so it can be fixed."
+
+
+def _build_target_label(sync_channel, workspace) -> str:
+    """``#name (Workspace)``, or only the Workspace when the target Channel may be private."""
+    ws_name = helpers.resolve_workspace_name(workspace) or "Workspace"
+    if getattr(sync_channel, "is_private", None) is not False:
+        return ws_name
+    stored = (getattr(sync_channel, "channel_name", None) or "").strip()
+    name = stored or helpers.lookup_channel_name(sync_channel.channel_id, workspace) or sync_channel.channel_id
+    return f"#{name.lstrip('#')} ({ws_name})"
+
+
+def _join_names(labels: list[str]) -> str:
+    ticked = [f"`{label}`" for label in labels]
+    if len(ticked) < 3:
+        return " and ".join(ticked)
+    return ", ".join(ticked[:-1]) + f", and {ticked[-1]}"
+
+
+def _notify_author(
+    client: WebClient,
+    user_id: str | None,
+    ctx: EventContext,
+    action: str,
+    report: list | None,
+    *,
+    nothing_posted: bool = False,
+    copied_any: bool = True,
+) -> None:
+    """One DM to the author when their message did not copy all the way.
+
+    *report* is ``run_sync_pipeline``'s ``(sync_channel, workspace, error, copied)``.
+    *nothing_posted* is a create that went nowhere before fan-out. *copied_any* is False
+    when no target got a copy, so the DM never says the message was copied.
+    A target that never answered (``no_response``) is "sent, but didn't reply", not "could not copy".
+    ``ctx["degraded"]`` holds causes found before fan-out, and ``ctx["files_failed"]``
+    an unreadable file. Gates are never reported. No message words go in the DM.
+    """
+    report = list(report or [])
+    reasons = list(ctx.get("degraded") or [])
+    files_failed = bool(ctx.get("files_failed"))
+    if not (report or reasons or files_failed or nothing_posted) or not user_id:
+        return
+    refused = [(_build_target_label(sc, ws), error) for sc, ws, error, copied in report if not copied]
+    failed = [(name, error) for name, error in refused if error != helpers.NO_RESPONSE]
+    no_reply = [(name, error) for name, error in refused if error == helpers.NO_RESPONSE]
+    reduced = [(_build_target_label(sc, ws), error) for sc, ws, error, copied in report if copied]
+    lines: list[str] = []
+    if failed:
+        lines.append(_NOT_COPIED.get(action, _NOT_COPIED["create"]).format(names=_join_names([n for n, _ in failed])))
+    if no_reply:
+        whom = "that Workspace" if len(no_reply) == 1 else "those Workspaces"
+        lines.append(
+            _NO_REPLY.get(action, _NO_REPLY["create"]).format(names=_join_names([n for n, _ in no_reply]), whom=whom)
+        )
+    if reduced:
+        what = "edit" if action == "edit" else "message"
+        lines.append(_REDUCED.format(what=what, names=_join_names([n for n, _ in reduced])))
+    if copied_any and not nothing_posted and set(reasons) - {"download_empty"}:
+        lines.append(_REDUCED_EVERYWHERE)
+    if files_failed:
+        lines.append(_FILE_NOT_COPIED)
+    elif nothing_posted and not failed:
+        lines.append(_NOTHING_COPIED)
+    if any(error == "storage_limit_reached" for _n, error in failed):
+        lines.append(_STORAGE_FULL)
+    lines.append(_REPORT_IT)
+    details: dict = {
+        "event": "message_not_copied" if refused or nothing_posted else "message_degraded",
+        "action": action,
+        "channel": ctx.get("channel_id"),
+        "ts": ctx.get("ts"),
+        "reason": ", ".join(reasons) or None,
+    }
+    for label, error in refused + reduced:
+        details[label] = error
+    helpers.notify_source_user_error(
+        source_client=client,
+        source_user_id=user_id,
+        summary=":warning: " + " ".join(lines),
+        details=details,
+    )
+
+
+def _replay_pending_events(client: WebClient, logger: Logger, ctx: EventContext) -> None:
+    """Replay the replies, edits, deletes, and reactions that came before this message's copy.
+
+    Runs right after the create writes its PostMeta, on the ``REPLAY`` pending
+    events left for it (``leave_pending_event``). Each is taken once. An edit,
+    delete, or thread reply is read again from the synced Channel and sent
+    through ``respond_to_message_event``, so every gate and echo guard runs
+    again: a message still there is an edit, a gone one a delete, and a reply a
+    new message. One read covers every edit and delete of this message. A
+    reaction runs through ``_sync_reaction_records`` with its own ``event_ts``.
+    """
+    team_id = ctx.get("team_id")
+    channel_id = ctx.get("channel_id")
+    ts = ctx.get("ts")
+    if not team_id or not channel_id or not ts:
+        return
+    read: set = set()
+    for pending in helpers.take_pending_events_to_replay(team_id=team_id, channel_id=channel_id, message_ts=ts):
+        if pending.action not in (helpers.ACTION_ADD, helpers.ACTION_REMOVE):
+            if (pending.source_ts, pending.source_thread_ts) in read:
+                continue
+            read.add((pending.source_ts, pending.source_thread_ts))
+        try:
+            _replay_pending_event(client, logger, ctx, pending)
+        except Exception as exc:
+            log_warning("pending_event_replay_failed", channel=channel_id, ts=ts, error=str(exc))
+
+
+def _replay_pending_event(client: WebClient, logger: Logger, ctx: EventContext, pending: schemas.PendingEvent) -> None:
+    team_id = ctx.get("team_id")
+    channel_id = ctx.get("channel_id")
+    ts = ctx.get("ts")
+    if pending.action in (helpers.ACTION_ADD, helpers.ACTION_REMOVE):
+        from handlers.reaction_event import _sync_reaction_records
+
+        event: dict = {
+            "type": "reaction_added" if pending.action == helpers.ACTION_ADD else "reaction_removed",
+            "user": pending.source_user_id,
+            "reaction": pending.reaction,
+            "item": {"type": "message", "channel": channel_id, "ts": ts},
+        }
+        if pending.event_ts is not None:
+            event["event_ts"] = helpers.slack_message_ts(pending.event_ts)
+        records = helpers.get_post_records(ts, channel_id=channel_id)
+        if records:
+            log_debug("pending_event_replayed", action=pending.action, channel=channel_id, ts=ts)
+            _sync_reaction_records({"team_id": team_id, "event": event}, client, records)
+        return
+    if pending.action == helpers.ACTION_CREATE:
+        # A new reply in this message's thread.
+        reply_ts = helpers.slack_message_ts(pending.source_ts)
+        message = helpers.fetch_source_message(client, channel_id, reply_ts, thread_ts=ts)
+        if message is None:
+            return
+        event = {**message, "type": "message", "channel": channel_id}
+    else:
+        # An edit or a delete of this message: whatever it is now. Its own thread is its parent, if it is a reply.
+        message = helpers.fetch_source_message(client, channel_id, ts, thread_ts=ctx.get("thread_ts"))
+        if message is None:
+            event = {
+                "type": "message",
+                "subtype": "message_deleted",
+                "channel": channel_id,
+                "deleted_ts": ts,
+                "previous_message": {"ts": ts, "user": ctx.get("user_id")},
+            }
+        else:
+            event = {"type": "message", "subtype": "message_changed", "channel": channel_id, "message": message}
+    log_debug(
+        "pending_event_replayed",
+        action=pending.action,
+        subtype=event.get("subtype"),
+        channel=channel_id,
+        ts=helpers.slack_message_ts(pending.source_ts),
+    )
+    respond_to_message_event({"team_id": team_id, "event": event}, client, logger, {})
+
+
+def _get_post_records_or_leave_pending(
+    ctx: EventContext, *, action: str, source_ts: str | None, source_thread_ts: str | None = None
+) -> list:
+    """PostMeta of the message this reply, edit, or delete acts on. ``[]`` means nothing to do now.
+
+    ``None`` means it could not be left pending either: the handler returns ``False``
+    so the claim is released.
+
+    A new reply acts on its parent (*source_thread_ts*); an edit or a delete on
+    its own message (*source_ts*). A message from before the Sync never gets
+    PostMeta. Otherwise its create may still be running, so the event is left
+    pending for it (``leave_pending_event``).
+    """
+    message_ts = source_thread_ts or source_ts
+    channel_id = ctx.get("channel_id")
+    records = helpers.get_post_records(message_ts, channel_id=channel_id)
+    if records:
+        return records
+    if helpers.is_before_sync(channel_id, message_ts):
+        log_info("message_skip", reason="before_sync", channel=channel_id, ts=message_ts, action=action)
+        return []
+    return helpers.leave_pending_event(
+        ctx.get("team_id"), channel_id, action=action, source_ts=source_ts, source_thread_ts=source_thread_ts
+    )
+
+
+def _download_forward_files(
+    files: list[dict],
+    client: WebClient,
+    logger: Logger,
+    team_id: str | None,
+    user_id: str | None,
+) -> list[dict]:
+    """Read forward files with the source bot token, then the forwarder's token."""
+    downloaded = helpers.download_slack_files(files, client, logger)
+    have = {item.get("slack_file_id") for item in downloaded}
+    missing = [
+        item
+        for item in files
+        if isinstance(item, dict) and helpers.hosted_file_fetch_url(item) and str(item.get("id") or "") not in have
+    ]
+    if not missing or not team_id or not user_id:
+        return downloaded
+    token = helpers.get_user_token(team_id, user_id)
+    if not token:
+        return downloaded
+    downloaded.extend(helpers.download_slack_files(missing, WebClient(token=token), logger))
+    return downloaded
 
 
 def _parse_event_fields(body: dict, client: WebClient) -> EventContext:
@@ -192,9 +463,10 @@ def _build_file_context(
     attachments = event.get("attachments") or helpers.safe_get(event, "message", "attachments") or []
     seen_urls: set[str] = set()
     for att in attachments:
+        if not isinstance(att, dict) or not helpers.is_image_only_attachment(att):
+            continue
         img_url = _attachment_image_url(att)
         if not img_url:
-            log_info("attachment_no_image_url", att_keys=list(att.keys()), fallback=att.get("fallback"))
             continue
         if img_url in seen_urls or helpers.is_slack_hosted_media_url(img_url):
             continue
@@ -259,6 +531,7 @@ def _handle_new_post(
         blocks=ctx.get("content_blocks") or [],
         file_refs=direct_files or [],
         images=photo_blocks,
+        attachments=ctx.get("attachments") or None,
         source_user_id=user_id,
         user_name=user_name,
         user_avatar_url=user_profile_url,
@@ -278,17 +551,21 @@ def _handle_new_post(
     if not post_list:
         helpers.cleanup_temp_files(None, direct_files)
         return
+    report: list = []
     try:
         synced = helpers.run_sync_pipeline(
             envelope,
             source_channel_id=channel_id,
             source_client=client,
             source_sync_channel=source_sync_channel,
+            report=report,
         )
     finally:
         helpers.cleanup_temp_files(None, direct_files)
     DbManager.create_records(post_list)
+    _replay_pending_events(client, logger, ctx)
     emit_metric("messages_synced", value=len(synced), sync_type="new_post")
+    _notify_author(client, user_id, ctx, "create", report, copied_any=bool(synced))
 
 
 def _handle_thread_reply(
@@ -301,22 +578,18 @@ def _handle_thread_reply(
 ) -> bool | None:
     """Publish a threaded reply through the target pipeline.
 
-    Return ``False`` when the parent PostMeta is not stored yet so the
-    claim is released and Slack can retry. Other returns complete the claim.
+    When the parent has no PostMeta yet, the reply is left pending for the parent's create.
+    ``False`` when it could not be left pending, so the claim is released.
     """
     channel_id = ctx["channel_id"]
     user_id = ctx["user_id"]
     thread_ts = ctx["thread_ts"]
-    post_records = helpers.get_post_records(thread_ts)
+    post_records = _get_post_records_or_leave_pending(
+        ctx, action=helpers.ACTION_CREATE, source_ts=ctx.get("ts"), source_thread_ts=thread_ts
+    )
     if not post_records:
         helpers.cleanup_temp_files(None, direct_files)
-        log_debug(
-            "message_not_ready",
-            reason="parent_missing",
-            channel=channel_id,
-            thread_ts=thread_ts,
-        )
-        return False
+        return False if post_records is None else None
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         helpers.cleanup_temp_files(None, direct_files)
@@ -341,6 +614,7 @@ def _handle_thread_reply(
         blocks=ctx.get("content_blocks") or [],
         file_refs=direct_files or [],
         images=photo_blocks,
+        attachments=ctx.get("attachments") or None,
         thread_post_id=str(parent_meta.post_id),
         reply_broadcast=bool(ctx.get("reply_broadcast")),
         source_user_id=user_id,
@@ -365,6 +639,7 @@ def _handle_thread_reply(
         sync_channel.channel_id: helpers.slack_message_ts(post_meta.ts)
         for post_meta, sync_channel, _workspace in post_records
     }
+    report: list = []
     try:
         synced = helpers.run_sync_pipeline(
             envelope,
@@ -372,11 +647,14 @@ def _handle_thread_reply(
             source_client=client,
             source_sync_channel=source_sync_channel,
             thread_parent_ts_by_channel=parent_ts_by_channel,
+            report=report,
         )
     finally:
         helpers.cleanup_temp_files(None, direct_files)
     DbManager.create_records(post_list)
+    _replay_pending_events(client, logger, ctx)
     emit_metric("messages_synced", value=len(synced), sync_type="thread_reply")
+    _notify_author(client, user_id, ctx, "create", report, copied_any=bool(synced))
     log_debug(
         "thread_reply_applied",
         post_id=post_uuid,
@@ -395,13 +673,14 @@ def _handle_message_edit(
 ) -> bool | None:
     """Publish an edited message through the target pipeline.
 
-    Return ``False`` when PostMeta is not stored yet so Slack can retry.
+    When the message has no PostMeta yet, the edit is left pending for its create.
+    ``False`` when it could not be left pending, so the claim is released.
     """
     channel_id = ctx["channel_id"]
     ts = ctx["ts"]
-    post_records = helpers.get_post_records(ts)
+    post_records = _get_post_records_or_leave_pending(ctx, action=helpers.ACTION_EDIT, source_ts=ts)
     if not post_records:
-        return False
+        return False if post_records is None else None
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         return
@@ -419,31 +698,38 @@ def _handle_message_edit(
         text=ctx.get("msg_text") or "",
         blocks=ctx.get("content_blocks") or [],
         images=photo_blocks,
+        attachments=ctx.get("attachments") or None,
         source_user_id=user_id,
         workspace_name=helpers.resolve_workspace_name(workspace),
         source_ts=ts,
     )
+    report: list = []
     helpers.run_sync_pipeline(
         envelope,
         source_channel_id=channel_id,
         source_client=client,
         source_sync_channel=source_sync_channel,
+        report=report,
     )
+    _notify_author(client, user_id, ctx, "edit", report)
 
 
 def _handle_message_delete(
     ctx: EventContext,
     logger: Logger,
+    client: WebClient | None = None,
+    deleted_by: str | None = None,
 ) -> bool | None:
     """Publish a deleted message through the target pipeline.
 
-    Return ``False`` when PostMeta is not stored yet so Slack can retry.
+    When the message has no PostMeta yet, the delete is left pending for its create.
+    ``False`` when it could not be left pending, so the claim is released.
     """
     channel_id = ctx["channel_id"]
     ts = ctx["ts"]
-    post_records = helpers.get_post_records(ts)
+    post_records = _get_post_records_or_leave_pending(ctx, action=helpers.ACTION_DELETE, source_ts=ts)
     if not post_records:
-        return False
+        return False if post_records is None else None
     source_rows = helpers.get_publishing_post_records(post_records, channel_id)
     if not source_rows:
         return
@@ -460,11 +746,15 @@ def _handle_message_delete(
         workspace_name=helpers.resolve_workspace_name(workspace),
         source_ts=ts,
     )
+    report: list = []
     helpers.run_sync_pipeline(
         envelope,
         source_channel_id=channel_id,
         source_sync_channel=source_sync_channel,
+        report=report,
     )
+    if client is not None:
+        _notify_author(client, deleted_by, ctx, "delete", report)
 
 
 def _is_own_bot_message(body: dict, client: WebClient, context: dict) -> bool:
@@ -567,13 +857,13 @@ def respond_to_message_event(
     if event_type != "message":
         return
 
+    raw_event = body.get("event") if isinstance(body.get("event"), dict) else {}
     event_files = helpers.safe_get(body, "event", "files") or helpers.safe_get(body, "event", "message", "files") or []
     if not isinstance(event_files, list):
         event_files = []
     raw_outside = [item for item in event_files if isinstance(item, dict) and helpers.is_outside_file(item)]
     outside_files: list = []
     if raw_outside:
-        raw_event = body.get("event") if isinstance(body.get("event"), dict) else {}
         kept_event = raw_event
         if raw_event.get("subtype") == "message_changed" and isinstance(raw_event.get("message"), dict):
             kept_event = raw_event["message"]
@@ -596,6 +886,35 @@ def respond_to_message_event(
             "me_message",
             "message_changed",
             "message_deleted",
+        }
+    )
+    _SYSTEM_SUBTYPES = frozenset(
+        {
+            "channel_join",
+            "channel_leave",
+            "channel_name",
+            "channel_topic",
+            "channel_purpose",
+            "channel_posting_permissions",
+            "group_join",
+            "group_leave",
+            "group_name",
+            "group_topic",
+            "group_purpose",
+            "pinned_item",
+            "unpinned_item",
+            "message_replied",
+            "reminder_add",
+            "file_mention",
+            "file_comment",
+            "document_mention",
+            "ekm_access_denied",
+            "assistant_app_thread",
+            "huddle_thread",
+            "bot_add",
+            "bot_remove",
+            "bot_enable",
+            "bot_disable",
         }
     )
     _CHANNEL_STATE_SUBTYPES = frozenset(
@@ -636,6 +955,8 @@ def respond_to_message_event(
                     channel_id=ctx.get("channel_id"),
                     ts=ctx.get("ts"),
                 )
+                # The copy had no ts until now, so anything done on it was left pending.
+                _replay_pending_events(client, logger, ctx)
                 return
             log_debug(
                 "message_skip",
@@ -646,14 +967,31 @@ def respond_to_message_event(
             )
             return
 
-        if event_subtype not in _SYNCED_SUBTYPES:
+        if event_subtype in _SYSTEM_SUBTYPES:
             log_debug(
                 "message_skip",
-                reason="unhandled_subtype",
+                reason="system_subtype",
                 subtype=event_subtype,
                 channel=helpers.safe_get(body, "event", "channel"),
             )
             return
+
+        if event_subtype not in _SYNCED_SUBTYPES:
+            if raw_event.get("hidden") is True:
+                log_warning(
+                    "message_skip",
+                    reason="unknown_subtype",
+                    subtype=event_subtype,
+                    channel=helpers.safe_get(body, "event", "channel"),
+                )
+                return
+            log_warning(
+                "message_degraded",
+                reason="unknown_subtype",
+                subtype=event_subtype,
+                channel=helpers.safe_get(body, "event", "channel"),
+            )
+            ctx["degraded"] = ["unknown_subtype"]
 
         channel_id = ctx.get("channel_id")
         user_id = ctx.get("user_id")
@@ -691,7 +1029,9 @@ def respond_to_message_event(
 
         if team_id and user_id:
             if this_message_files and any(
-                helpers.has_user_action_echo(team_id, user_id, "file", file_id)
+                helpers.check_pending_event(
+                    helpers.FILE_ECHO, target_team_id=team_id, target_user_id=user_id, file_id=file_id
+                )
                 for file_id in helpers.file_ids_from_message_event(body)
             ):
                 echo_file_ids = helpers.file_ids_from_message_event(body)
@@ -710,22 +1050,20 @@ def respond_to_message_event(
                         channel_id=channel_id,
                         ts=ts,
                     )
+                    _replay_pending_events(client, logger, ctx)
                     return
                 log_debug("message_skip", reason="file_echo", **trace)
                 return
-            if ts:
-                fingerprint = f"{channel_id}:{helpers.slack_message_ts(ts)}"
-                if helpers.has_user_action_echo(team_id, user_id, "message", fingerprint):
-                    log_debug("message_skip", reason="message_echo", **trace)
-                    return
-        is_create = event_subtype in (
-            None,
-            "bot_message",
-            "file_share",
-            "thread_broadcast",
-            "reply_broadcast",
-            "me_message",
-        )
+            if helpers.check_pending_event(
+                helpers.MESSAGE_ECHO,
+                target_team_id=team_id,
+                target_user_id=user_id,
+                target_channel_id=channel_id,
+                target_ts=ts,
+            ):
+                log_debug("message_skip", reason="message_echo", **trace)
+                return
+        is_create = event_subtype not in ("message_changed", "message_deleted")
         if is_create and helpers.post_meta_exists_for_channel_ts(channel_id, ts):
             log_debug("message_skip", reason="copy_exists", **trace)
             return
@@ -742,6 +1080,8 @@ def respond_to_message_event(
             if isinstance(nested, dict):
                 event["message"] = {**nested, "files": []}
             file_body = {**body, "event": event}
+        forward_missing = False
+        forward_downloads: list[dict] = []
         if has_targets:
             _enrich_event_fields_for_sync(file_body, client, ctx)
             photo_blocks, direct_files = _build_file_context(
@@ -750,17 +1090,34 @@ def respond_to_message_event(
                 logger,
                 block_file_ids=ctx.get("block_file_ids") or [],
             )
-            if outside_files:
+            event_file_list = (
+                helpers.safe_get(file_body, "event", "files")
+                or helpers.safe_get(file_body, "event", "message", "files")
+                or []
+            )
+            link_files = list(outside_files) + (event_file_list if isinstance(event_file_list, list) else [])
+            if link_files:
                 ctx["msg_text"], ctx["content_blocks"] = helpers.add_outside_file_links(
                     ctx.get("msg_text"),
                     ctx.get("content_blocks"),
-                    outside_files,
+                    link_files,
                 )
+            # A forward's own files. Only a create uploads, so an edit never downloads them.
+            forward_files = [
+                item
+                for item in (ctx.get("share_files") or [])
+                if is_create and not helpers.is_outside_file(item) and not helpers.get_link_only_file_url(item)
+            ]
+            if forward_files:
+                forward_downloads = _download_forward_files(forward_files, client, logger, team_id, user_id)
+                forward_missing = len(forward_downloads) < len(forward_files)
+                direct_files = list(direct_files) + forward_downloads
         else:
             # Origin PostMeta still needed for later join/thread/reaction; skip Slack.
             photo_blocks, direct_files = [], []
 
         has_files = bool(photo_blocks or direct_files)
+        own_downloads = len(direct_files) - len(forward_downloads)
         text_blank = not (ctx.get("msg_text") or "").strip()
         download_files = (
             helpers.safe_get(file_body, "event", "files")
@@ -772,15 +1129,26 @@ def respond_to_message_event(
         expected_files = [
             item for item in download_files if isinstance(item, dict) and helpers.hosted_file_fetch_url(item)
         ]
+        only_links = bool(download_files) and all(
+            isinstance(item, dict) and (helpers.get_link_only_file_url(item) or helpers.is_outside_file(item))
+            for item in download_files
+        )
         file_missing = bool(
             is_create
             and has_targets
             and (
-                (expected_files and len(direct_files) < len(expected_files))
-                or (this_message_files and not has_files)
-                or (hosted_media and is_new_file_share and not has_files)
+                forward_missing
+                or (
+                    not only_links
+                    and (
+                        (expected_files and own_downloads < len(expected_files))
+                        or (this_message_files and not (photo_blocks or own_downloads))
+                        or (hosted_media and is_new_file_share and not (photo_blocks or own_downloads))
+                    )
+                )
             )
         )
+        has_body = not text_blank or bool(ctx.get("content_blocks")) or bool(ctx.get("attachments")) or has_files
         if file_missing:
             log_error(
                 "file_share_failed",
@@ -788,24 +1156,44 @@ def respond_to_message_event(
                 channel=channel_id,
                 ts=ts,
                 thread_ts=ctx.get("thread_ts"),
-                file_count=len(event_files),
+                file_count=len(event_files) + len(ctx.get("share_files") or []),
             )
-            helpers.notify_source_user_error(
-                source_client=client,
-                source_user_id=user_id,
-                summary=":warning: SyncBot could not copy your file to the other Channels.",
-                details={
-                    "event": "file_share_failed",
-                    "reason": "download_empty",
-                    "channel": channel_id,
-                    "ts": ts,
-                },
+            ctx["files_failed"] = True
+            ctx["degraded"] = [*(ctx.get("degraded") or []), "download_empty"]
+        if is_create and has_targets and not has_body:
+            # Only files, and none could be read: nothing posts. A later file_share may still bring them.
+            if file_missing:
+                _notify_author(client, user_id, ctx, "create", [], nothing_posted=True)
+                log_debug("message_skip", reason="empty_file_share", has_files=has_files, **trace)
+                return
+            permalink = _get_source_permalink(client, channel_id, ts)
+            details = {
+                "subtype": event_subtype,
+                "block_types": sorted(
+                    {
+                        str(block.get("type"))
+                        for block in helpers.get_event_layout_blocks(raw_event)
+                        if isinstance(block, dict) and block.get("type")
+                    }
+                ),
+                "attachment_keys": sorted(
+                    {str(key) for item in helpers.get_event_attachments(raw_event) for key in item}
+                ),
+                "channel": channel_id,
+                "ts": ts,
+            }
+            if not permalink:
+                log_warning("message_skip", reason="nothing_readable", **details)
+                ctx["degraded"] = [*(ctx.get("degraded") or []), "nothing_readable"]
+                _notify_author(client, user_id, ctx, "create", [], nothing_posted=True)
+                return
+            log_warning("message_degraded", reason="nothing_readable", **details)
+            ctx["msg_text"] = permalink
+            ctx["degraded"] = [*(ctx.get("degraded") or []), "nothing_readable"]
+        if is_create and has_targets and ctx.get("degraded"):
+            ctx["msg_text"], ctx["content_blocks"] = helpers.add_copy_note(
+                ctx.get("msg_text"), ctx.get("content_blocks")
             )
-            log_debug("message_skip", reason="empty_file_share", has_files=has_files, **trace)
-            return
-        if is_create and text_blank and not has_files and not ctx.get("content_blocks") and has_targets:
-            log_debug("message_skip", reason="empty_file_share", has_files=has_files, **trace)
-            return
         if is_create:
             if not ctx["thread_ts"]:
                 _handle_new_post(body, client, logger, ctx, photo_blocks, direct_files)
@@ -816,6 +1204,7 @@ def respond_to_message_event(
                 return _handle_message_edit(client, logger, ctx, photo_blocks)
             return
         if event_subtype == "message_deleted":
-            return _handle_message_delete(ctx, logger)
+            deleted_by = helpers.safe_get(body, "event", "previous_message", "user") or user_id
+            return _handle_message_delete(ctx, logger, client, deleted_by)
 
     run_claimed(body, _sync_message)

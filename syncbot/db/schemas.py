@@ -18,8 +18,11 @@ Tables:
   explicit "no map" records to avoid redundant lookups).
 * **processed_events** — Slack Events API ``event_id`` claims (at-least-once
   dedup). Ephemeral; not included in full-instance backup.
-* **user_action_echoes** — Remembered user-token Slack writes so inbound echo
-  events can be skipped. Ephemeral; not included in full-instance backup.
+* **pending_events** — Pending events: SyncBot's own user-token writes
+  (echoes), reaction order, file shares waiting for their ts, and replies,
+  edits, deletes, and reactions waiting for their message's PostMeta. The kind
+  says which. Slack addresses only, never content. Ephemeral (10 minutes, swept
+  on the scheduled pulse); not included in full-instance backup.
 * **federation_file_parts** — In-flight federation file mailbox (~5 min TTL).
   Payload is Fernet-encrypted when ``DATA_ENCRYPTION_KEY`` is set. Omitted
   from backup and migration export.
@@ -462,26 +465,42 @@ class ProcessedEvent(BaseClass, GetDBClass):
         return ProcessedEvent.id
 
 
-class UserActionEcho(BaseClass, GetDBClass):
-    """Remembered user-token side effect so the matching inbound event is skipped."""
+class PendingEvent(BaseClass, GetDBClass):
+    """A pending event: one event waiting on another, as a Slack address on each side, never content.
 
-    __tablename__ = "user_action_echoes"
+    ``kind`` says which (``helpers/pending_events.py``). The target side is
+    where SyncBot wrote a copy, or will write one. The source side is where a
+    person acted. Each kind fills only its own columns. Add a column only for an
+    address: an id, a ts, or a reaction's name. ``tests/test_pending_events.py``
+    pins the columns.
+    """
+
+    __tablename__ = "pending_events"
     __table_args__ = (
-        UniqueConstraint(
-            "team_id",
-            "user_id",
-            "kind",
-            "fingerprint",
-            name="uq_user_action_echoes_team_user_kind_fp",
-        ),
+        Index("ix_pending_events_kind_target_channel", "kind", "target_channel_id"),
+        Index("ix_pending_events_kind_source_channel", "kind", "source_channel_id"),
+        Index("ix_pending_events_kind_file", "kind", "file_id"),
+        Index("ix_pending_events_created_at", "created_at"),
     )
 
     id = Column(Integer, primary_key=True)
-    team_id = Column(String(32), nullable=False)
-    user_id = Column(String(100), nullable=False)
-    kind = Column(String(64), nullable=False)
-    fingerprint = Column(String(256), nullable=False)
+    kind = Column(String(32), nullable=False)
+    target_team_id = Column(String(32), nullable=True)
+    target_channel_id = Column(String(100), nullable=True)
+    target_ts = Column(DECIMAL(16, 6), nullable=True)  # post_meta_ts(); never float
+    target_user_id = Column(String(100), nullable=True)  # whose user token SyncBot used
+    target_sync_channel_id = Column(Integer, nullable=True)
+    source_team_id = Column(String(32), nullable=True)
+    source_channel_id = Column(String(100), nullable=True)
+    source_ts = Column(DECIMAL(16, 6), nullable=True)
+    source_thread_ts = Column(DECIMAL(16, 6), nullable=True)  # a new reply's parent
+    source_user_id = Column(String(100), nullable=True)  # who acted
+    action = Column(String(16), nullable=True)
+    post_id = Column(String(100), nullable=True)
+    file_id = Column(String(100), nullable=True)
+    reaction = Column(String(100), nullable=True)  # a reaction's name is its id
+    event_ts = Column(DECIMAL(16, 6), nullable=True)
     created_at = Column(DateTime, nullable=False)
 
     def get_id():
-        return UserActionEcho.id
+        return PendingEvent.id

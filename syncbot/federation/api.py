@@ -29,10 +29,10 @@ from helpers.envelope import (
 from helpers.export_import import invalidate_home_tab_caches_for_team
 from helpers.files import clear_request_file_pins
 from helpers.group_roles import get_owner_team_ids_blocking_stub_pause
-from helpers.message_blocks import rewrite_content_blocks, trim_target_blocks
+from helpers.message_blocks import rewrite_attachments, rewrite_content_blocks, trim_target_blocks
+from helpers.slack_ts import slack_message_ts
 from helpers.sync_apply import apply_target
 from helpers.sync_participation import channel_subscribes
-from helpers.user_action_echo import slack_message_ts
 from helpers.workspace import (
     get_allowed_local_workspace_ids,
     invalidate_fed_ws_for_sync_cache,
@@ -291,11 +291,15 @@ def _prepare_inbound_envelope(envelope: dict, workspace: schemas.Workspace) -> N
         def unmapped_label(uid: str) -> str:
             return _resolve_mentions_for_federated(f"<@{uid}>", workspace.id, label, people)
 
+        def rewrite_blocks(blocks: list[dict]) -> list[dict]:
+            return trim_target_blocks(rewrite_content_blocks(blocks, rewrite_mrkdwn, map_user_id, unmapped_label))
+
         blocks = envelope.get("blocks")
         if isinstance(blocks, list) and blocks:
-            envelope["blocks"] = trim_target_blocks(
-                rewrite_content_blocks(blocks, rewrite_mrkdwn, map_user_id, unmapped_label)
-            )
+            envelope["blocks"] = rewrite_blocks(blocks)
+        attachments = envelope.get("attachments")
+        if isinstance(attachments, list) and attachments:
+            envelope["attachments"] = rewrite_attachments(attachments, rewrite_mrkdwn, rewrite_blocks)
     except Exception:
         log_debug(
             "federation_inbound_prepare_failed",
@@ -502,14 +506,6 @@ def _trusted_peer_or_401(instance_id: str) -> tuple[int, dict] | schemas.Instanc
     if not _peer_accepted(fed_ws):
         return _UNAUTHORIZED
     return fed_ws
-
-
-def _verify_federated_request(body_str: str, headers: dict) -> schemas.Instance | None:
-    """Return the trusted peer or *None* (tests and leftover call sites)."""
-    result = _verify_known_peer(body_str, headers)
-    if isinstance(result, tuple):
-        return None
-    return result
 
 
 def _verify_known_peer(body_str: str, headers: dict) -> tuple[int, dict] | schemas.Instance:
@@ -1174,15 +1170,26 @@ def handle_message(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict]:
             source_sync_channel=_remote_source_ref(fed_ws, body, stub_id),
             thread_ts=thread_ts,
         )
-        return 200, {
-            "ok": True,
+        answer = {
+            "ok": not (outcome.error and not outcome.ts),
             "ts": outcome.ts,
             "posted_as_user_id": outcome.posted_as_user_id,
         }
+        if outcome.error:
+            answer["error"] = outcome.error
+        return 200, answer
 
     except Exception:
         log_error("federation_message_error", channel_id=channel_id, exc_info=True)
         return 500, {"error": "internal_error"}
+
+
+def _build_applied_answer(count_key: str, count: int, error: str | None) -> dict:
+    """An edit or delete answer. ``ok: false`` with ``error`` when no copy changed."""
+    answer: dict = {"ok": not (error and not count), count_key: count}
+    if error:
+        answer["error"] = error
+    return answer
 
 
 # ---------------------------------------------------------------------------
@@ -1227,20 +1234,24 @@ def handle_message_edit(body: dict, fed_ws: schemas.Instance) -> tuple[int, dict
 
     source_ref = _remote_source_ref(fed_ws, body, stub_id)
     updated = 0
+    error = None
     for post_meta in post_records:
         try:
-            apply_target(
+            outcome = apply_target(
                 dict(envelope),
                 sync_channel,
                 workspace,
                 source_sync_channel=source_ref,
                 target_post_meta=post_meta,
             )
-            updated += 1
         except Exception:
             log_warning("federation_edit_failed", channel_id=channel_id, ts=slack_message_ts(post_meta.ts))
+            continue
+        error = error or outcome.error
+        if outcome.applied or not outcome.error:
+            updated += 1
 
-    return 200, {"ok": True, "updated": updated}
+    return 200, _build_applied_answer("updated", updated, error)
 
 
 # ---------------------------------------------------------------------------
@@ -1284,20 +1295,24 @@ def handle_message_delete(body: dict, fed_ws: schemas.Instance) -> tuple[int, di
 
     source_ref = _remote_source_ref(fed_ws, body, stub_id)
     deleted = 0
+    error = None
     for post_meta in post_records:
         try:
-            apply_target(
+            outcome = apply_target(
                 dict(envelope),
                 sync_channel,
                 workspace,
                 source_sync_channel=source_ref,
                 target_post_meta=post_meta,
             )
-            deleted += 1
         except Exception:
             log_warning("federation_delete_failed", channel_id=channel_id, ts=slack_message_ts(post_meta.ts))
+            continue
+        error = error or outcome.error
+        if outcome.applied or not outcome.error:
+            deleted += 1
 
-    return 200, {"ok": True, "deleted": deleted}
+    return 200, _build_applied_answer("deleted", deleted, error)
 
 
 # ---------------------------------------------------------------------------

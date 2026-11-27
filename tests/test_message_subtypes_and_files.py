@@ -48,8 +48,7 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
-            patch("handlers.message.helpers.take_user_action_echo", return_value=False),
+            patch("handlers.message.helpers.check_pending_event", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         thread_reply.assert_called_once()
@@ -69,8 +68,7 @@ class TestMessageSubtypeAllowlist:
             patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
             patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
-            patch("handlers.message.helpers.has_user_action_echo", return_value=False),
-            patch("handlers.message.helpers.take_user_action_echo", return_value=False),
+            patch("handlers.message.helpers.check_pending_event", return_value=False),
         ):
             respond_to_message_event(body, MagicMock(), MagicMock(), {})
         new_post.assert_called_once()
@@ -101,6 +99,44 @@ class TestMessageSubtypeAllowlist:
         new_post.assert_not_called()
         thread_reply.assert_not_called()
         claimed.assert_called_once()
+
+    def test_forward_with_no_comment_is_posted(self):
+        body = _message_body(text="")
+        body["event"]["attachments"] = [
+            {
+                "is_share": True,
+                "is_msg_unfurl": True,
+                "text": "test message",
+                "from_url": "https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469",
+                "author_name": "Ada Lovelace",
+                "author_icon": "https://avatars.slack-edge.com/ada.png",
+                "channel_id": "CPRIVATE",
+                "footer": "Slack Conversation",
+                "ts": "1733497200.423469",
+                "fallback": "[December 6th, 2024 9:00 AM] Ada Lovelace: test message",
+            }
+        ]
+        with (
+            patch("handlers.message._is_own_bot_message", return_value=False),
+            patch("handlers.message._build_file_context", return_value=([], [])),
+            patch("handlers.message._handle_new_post") as new_post,
+            patch("handlers.message.run_claimed", side_effect=lambda _body, fn: fn()),
+            patch("handlers.message.helpers.has_channel_sync", return_value=True),
+            patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
+            patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
+            patch("handlers.message.helpers.check_pending_event", return_value=False),
+            patch("handlers.message.helpers.parse_mentioned_users", return_value=[]),
+        ):
+            respond_to_message_event(body, MagicMock(), MagicMock(), {})
+        new_post.assert_called_once()
+        ctx = new_post.call_args.args[3]
+        assert ctx["msg_text"] == "<https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469>"
+        card = ctx["attachments"][0]
+        assert set(card) == {"fallback", "blocks"}
+        header = card["blocks"][0]["elements"][-1]["text"]
+        assert header.startswith("*<https://workspace-a.slack.com/archives/C0GENERAL/p1733497200423469|Ada Lovelace>*")
+        assert card["blocks"][-1] == {"type": "section", "text": {"type": "mrkdwn", "text": "test message"}}
 
 
 class TestHostedFiles:
@@ -424,8 +460,6 @@ class TestFederationInboundReplyBroadcast:
             patch.object(federation_api, "_resolve_channel_for_federated", return_value=(sc, ws)),
             patch.object(federation_api, "_resolve_mentions_for_federated", side_effect=lambda text, *_a, **_k: text),
             patch.object(federation_api, "_source_stub_id", return_value=None),
-            patch("federation.api.helpers.decrypt_bot_token", return_value="xoxb"),
-            patch("federation.api.helpers.resolve_channel_references", side_effect=lambda text, *_a, **_k: text),
             patch("federation.api.WebClient"),
             patch("helpers.post_meta.get_target_post_meta", return_value=None),
             patch.object(federation_api, "_get_post_records", return_value=[]),
@@ -535,7 +569,7 @@ class TestFederationInboundReplyBroadcast:
 
 
 class TestDeliverRemoteFileContract:
-    def test_stage_fail_dms_and_skips_push(self):
+    def test_stage_fail_reports_and_skips_push(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -548,21 +582,18 @@ class TestDeliverRemoteFileContract:
         sc = MagicMock()
         sc.channel_id = "C1"
         sc.id = 1
-        source_client = MagicMock()
         with (
             patch("federation.deliver._stage_files_to_peer", return_value=False),
             patch("federation.deliver.push_message") as push,
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=source_client)
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
         push.assert_not_called()
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["source_client"] is source_client
-        assert notify.call_args.kwargs["source_user_id"] == "U001"
+        assert errors == [("stage_failed", False)]
 
-    def test_parent_missing_does_not_dm(self):
+    def test_parent_missing_is_a_skip(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -577,12 +608,12 @@ class TestDeliverRemoteFileContract:
         sc.id = 1
         with (
             patch("federation.deliver.push_message", return_value={"_http_status": 409, "error": "parent_missing"}),
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
-        notify.assert_not_called()
+        assert errors == []
 
     def test_incomplete_file_restages_then_succeeds(self):
         from federation.deliver import deliver_remote
@@ -606,17 +637,17 @@ class TestDeliverRemoteFileContract:
                     {"_http_status": 200, "ok": True, "ts": "11.000001"},
                 ],
             ) as push,
-            patch("federation.deliver.notify_source_user_error") as notify,
             patch("federation.deliver.DbManager.create_records"),
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert len(created) == 1
         assert stage.call_count == 2
         assert push.call_count == 2
-        notify.assert_not_called()
+        assert errors == []
 
-    def test_incomplete_file_second_409_dms(self):
+    def test_incomplete_file_second_409_reports(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -635,15 +666,14 @@ class TestDeliverRemoteFileContract:
                 "federation.deliver.push_message",
                 return_value={"_http_status": 409, "error": "incomplete_file"},
             ),
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["details"]["reason"] == "incomplete_file"
+        assert errors == [("incomplete_file", False)]
 
-    def test_assemble_failed_dms_without_another_upload(self):
+    def test_assemble_failed_reports_without_another_upload(self):
         from federation.deliver import deliver_remote
 
         envelope = {
@@ -662,16 +692,14 @@ class TestDeliverRemoteFileContract:
                 "federation.deliver.push_message",
                 return_value={"_http_status": 409, "error": "assemble_failed"},
             ) as push,
-            patch("federation.deliver.notify_source_user_error") as notify,
         ):
-            created = deliver_remote(envelope, MagicMock(), sc, source_client=MagicMock())
+            errors: list = []
+            created = deliver_remote(envelope, MagicMock(), sc, errors=errors)
 
         assert created == []
         assert stage.call_count == 1
         assert push.call_count == 1
-        notify.assert_called_once()
-        assert notify.call_args.kwargs["details"]["reason"] == "assemble_failed"
-        assert notify.call_args.kwargs["details"]["error"] == "assemble_failed"
+        assert errors == [("assemble_failed", False)]
 
 
 def _sync_patches():
@@ -683,8 +711,7 @@ def _sync_patches():
         patch("handlers.message.helpers.origin_publishes_anywhere", return_value=True),
         patch("handlers.message.helpers.iter_publish_targets", return_value=[object()]),
         patch("handlers.message.helpers.post_meta_exists_for_channel_ts", return_value=False),
-        patch("handlers.message.helpers.has_user_action_echo", return_value=False),
-        patch("handlers.message.helpers.take_user_action_echo", return_value=False),
+        patch("handlers.message.helpers.check_pending_event", return_value=False),
     ]
 
 

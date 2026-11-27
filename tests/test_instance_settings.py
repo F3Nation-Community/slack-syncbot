@@ -16,6 +16,7 @@ from sqlalchemy import inspect  # noqa: E402
 
 import constants  # noqa: E402
 from db import DbManager, schemas  # noqa: E402
+from helpers.settings import get_bool_setting, get_int_setting  # noqa: E402
 
 
 @pytest.fixture
@@ -85,22 +86,22 @@ class TestTypedParsing:
 
         for raw, expected in (("true", True), ("1", True), ("yes", True), ("false", False), ("0", False)):
             helpers.set_setting("t_bool", raw)
-            assert helpers.get_bool_setting("t_bool", False) is expected
+            assert get_bool_setting("t_bool", False) is expected
 
     def test_bool_falls_back_to_the_default_when_unparseable(self, real_db):
         import helpers
 
         helpers.set_setting("t_bool_bad", "perhaps")
-        assert helpers.get_bool_setting("t_bool_bad", True) is True
+        assert get_bool_setting("t_bool_bad", True) is True
 
     def test_int_parses_and_falls_back(self, real_db):
         import helpers
 
         helpers.set_setting("t_int", "45")
-        assert helpers.get_int_setting("t_int", 30) == 45
+        assert get_int_setting("t_int", 30) == 45
 
         helpers.set_setting("t_int_bad", "many")
-        assert helpers.get_int_setting("t_int_bad", 30) == 30
+        assert get_int_setting("t_int_bad", 30) == 30
 
     def test_retention_days_reads_the_setting(self, real_db):
         import helpers

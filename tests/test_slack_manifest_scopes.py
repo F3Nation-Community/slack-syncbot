@@ -8,8 +8,6 @@ from slack_manifest_scopes import (
     BOT_SCOPES,
     USER_PERMISSION_GROUPS,
     USER_SCOPES,
-    bot_scopes_comma_separated,
-    user_scopes_comma_separated,
 )
 
 
@@ -44,7 +42,7 @@ def test_sam_template_slack_oauth_default_matches_bot_scopes():
         re.MULTILINE,
     )
     assert m, "SlackOauthBotScopes Default not found in template.yaml"
-    assert m.group(1) == bot_scopes_comma_separated()
+    assert m.group(1) == ",".join(BOT_SCOPES)
 
 
 def test_sam_template_slack_user_oauth_default_matches_user_scopes():
@@ -57,16 +55,7 @@ def test_sam_template_slack_user_oauth_default_matches_user_scopes():
         re.MULTILINE,
     )
     assert m, "SlackOauthUserScopes Default not found in template.yaml"
-    assert m.group(1) == user_scopes_comma_separated()
-
-
-def test_bot_scopes_comma_separated_roundtrip():
-    assert bot_scopes_comma_separated().split(",") == list(BOT_SCOPES)
-
-
-def test_user_scopes_comma_separated_roundtrip():
-    s = user_scopes_comma_separated()
-    assert [x.strip() for x in s.split(",") if x.strip()] == list(USER_SCOPES)
+    assert m.group(1) == ",".join(USER_SCOPES)
 
 
 def test_every_user_scope_is_in_exactly_one_permission_group():
@@ -119,8 +108,8 @@ def test_gcp_variables_slack_scope_defaults_match_constants():
     )
     assert bot, "slack_bot_scopes default not found"
     assert user, "slack_user_scopes default not found"
-    assert bot.group(1) == bot_scopes_comma_separated()
-    assert user.group(1) == user_scopes_comma_separated()
+    assert bot.group(1) == ",".join(BOT_SCOPES)
+    assert user.group(1) == ",".join(USER_SCOPES)
 
 
 def test_aws_deploy_script_scope_fallbacks_match_constants():
@@ -133,5 +122,5 @@ def test_aws_deploy_script_scope_fallbacks_match_constants():
         bot_m = re.search(r"SLACK_BOT_SCOPES:-([^}]+)\}", text)
         user_m = re.search(r"SLACK_USER_SCOPES:-([^}]+)\}", text)
         assert bot_m and user_m, f"scope fallbacks missing in {rel}"
-        assert bot_m.group(1) == bot_scopes_comma_separated()
-        assert user_m.group(1) == user_scopes_comma_separated()
+        assert bot_m.group(1) == ",".join(BOT_SCOPES)
+        assert user_m.group(1) == ",".join(USER_SCOPES)

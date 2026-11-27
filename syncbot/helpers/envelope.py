@@ -13,7 +13,7 @@ ACTION_DELETE = "delete"
 ACTION_ADD = "add"
 ACTION_REMOVE = "remove"
 
-_FOLLOW_UP_ACTIONS = frozenset({ACTION_EDIT, ACTION_DELETE, ACTION_ADD, ACTION_REMOVE})
+_EXISTING_POST_ACTIONS = frozenset({ACTION_EDIT, ACTION_DELETE, ACTION_ADD, ACTION_REMOVE})
 
 
 def get_post_id_for_post_records(envelope: dict[str, Any]) -> str | None:
@@ -26,7 +26,7 @@ def get_post_id_for_post_records(envelope: dict[str, Any]) -> str | None:
     thread = envelope.get("thread_post_id")
     if thread:
         return str(thread)
-    if envelope.get("action") in _FOLLOW_UP_ACTIONS:
+    if envelope.get("action") in _EXISTING_POST_ACTIONS:
         pid = envelope.get("post_id")
         return str(pid) if pid else None
     return None
@@ -46,6 +46,7 @@ def build_envelope(
     blocks: list[dict] | None = None,
     file_refs: list[dict] | None = None,
     images: list[dict] | None = None,
+    attachments: list[dict] | None = None,
     thread_post_id: str | None = None,
     reply_broadcast: bool = False,
     reaction: str | None = None,
@@ -99,6 +100,8 @@ def build_envelope(
                 envelope["file_refs"] = file_refs
             if images:
                 envelope["images"] = images
+            if attachments:
+                envelope["attachments"] = attachments
             if thread_post_id:
                 envelope["thread_post_id"] = thread_post_id
             if reply_broadcast:
