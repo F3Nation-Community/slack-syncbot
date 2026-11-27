@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+from decimal import Decimal, InvalidOperation
+
 from db import DbManager, schemas
 from helpers._cache import _cache_delete_prefix, _cache_get, _cache_set
 
@@ -403,3 +406,27 @@ def already_subscribed_to_source(
         ],
     )
     return any(channel_publishes(p) for p in publishers)
+
+
+def is_before_sync(channel_id: str | None, ts: str | None) -> bool:
+    """True when *ts* is older than every publishing Sync of the Channel, so it has no PostMeta.
+
+    A reply, edit, delete, or reaction on such a message has nothing to apply to
+    and is skipped, not left pending. The Sync's start counts in whole seconds.
+    """
+    if not channel_id or not ts:
+        return False
+    try:
+        when = Decimal(str(ts))
+    except InvalidOperation:
+        return False
+    starts = [
+        getattr(sync_channel, "created_at", None)
+        for sync_channel, _workspace in get_channel_memberships(channel_id)
+        if channel_publishes(sync_channel)
+    ]
+    starts = [start for start in starts if start is not None]
+    if not starts:
+        return False
+    first = min(start if start.tzinfo else start.replace(tzinfo=UTC) for start in starts)
+    return when < Decimal(int(first.timestamp()))

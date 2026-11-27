@@ -16,10 +16,11 @@ os.environ.setdefault("SLACK_BOT_TOKEN", "xoxb-0-0")
 from slack_sdk.errors import SlackApiError  # noqa: E402
 
 from federation.deliver import deliver_remote  # noqa: E402
-from handlers.message import _handle_thread_reply, _is_before_sync, _notify_author  # noqa: E402
+from handlers.message import _handle_thread_reply, _notify_author  # noqa: E402
 from helpers.message_blocks import NOTE_COPY_DIFFERS, add_copy_note  # noqa: E402
 from helpers.slack_write import slack_write_create, slack_write_delete  # noqa: E402
 from helpers.sync_apply import ApplyOutcome, apply_target  # noqa: E402
+from helpers.sync_participation import is_before_sync  # noqa: E402
 from helpers.sync_pipeline import run_sync_pipeline  # noqa: E402
 from tests.event_fixtures import make_event_context  # noqa: E402
 
@@ -329,22 +330,51 @@ class TestOldMessages:
     def test_older_than_the_sync_is_done_and_newer_is_retried(self):
         started = datetime(2026, 11, 1, tzinfo=UTC)
         with (
-            patch("handlers.message.helpers.get_channel_memberships", return_value=self._memberships(started)),
-            patch("handlers.message.helpers.channel_publishes", return_value=True),
+            patch("helpers.sync_participation.get_channel_memberships", return_value=self._memberships(started)),
+            patch("helpers.sync_participation.channel_publishes", return_value=True),
         ):
-            assert _is_before_sync("C0SOURCE", "1700000000.000100") is True
-            assert _is_before_sync("C0SOURCE", "1795670312.814729") is False
+            assert is_before_sync("C0SOURCE", "1700000000.000100") is True
+            assert is_before_sync("C0SOURCE", "1795670312.814729") is False
+
+    def test_a_reaction_on_an_old_message_is_skipped_not_left_pending(self):
+        from handlers.reaction_event import handle_reaction
+
+        body = {
+            "team_id": "T1",
+            "event_id": "",
+            "event": {
+                "type": "reaction_added",
+                "user": "U0BEN",
+                "reaction": "wave",
+                "item": {"type": "message", "channel": "C0SOURCE", "ts": "1700000000.000100"},
+            },
+        }
+        with (
+            patch("handlers.reaction_event.helpers.get_own_bot_user_id", return_value="U0BOT"),
+            patch("handlers.reaction_event.helpers.take_pending_event", return_value=False),
+            patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
+            patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
+            patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.is_before_sync", return_value=True),
+            patch("handlers.reaction_event.helpers.leave_pending_event") as leave,
+            patch("handlers.reaction_event.log_info") as info,
+        ):
+            handle_reaction(body, MagicMock(), MagicMock(), {})
+
+        leave.assert_not_called()
+        assert info.call_args.args[0] == "reaction_skip"
+        assert info.call_args.kwargs["reason"] == "before_sync"
 
     def test_a_reply_under_an_old_thread_completes_the_claim(self):
         ctx = make_event_context(channel_id="C0SOURCE", thread_ts="1700000000.000100", ts="1795670312.814729")
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
-            patch("handlers.message._is_before_sync", return_value=True),
+            patch("handlers.message.helpers.is_before_sync", return_value=True),
         ):
             assert _handle_thread_reply({}, MagicMock(), MagicMock(), ctx, [], []) is None
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
-            patch("handlers.message._is_before_sync", return_value=False),
+            patch("handlers.message.helpers.is_before_sync", return_value=False),
             patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
         ):
             assert _handle_thread_reply({}, MagicMock(), MagicMock(), ctx, [], []) is None

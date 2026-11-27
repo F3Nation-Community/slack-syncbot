@@ -1,8 +1,6 @@
 """Message sync handlers — new posts, replies, edits, deletes, and files."""
 
 import uuid
-from datetime import UTC
-from decimal import Decimal, InvalidOperation
 from logging import Logger
 
 from slack_sdk.web import WebClient
@@ -330,26 +328,6 @@ def _replay_pending_event(client: WebClient, logger: Logger, ctx: EventContext, 
     respond_to_message_event({"team_id": team_id, "event": event}, client, logger, {})
 
 
-def _is_before_sync(channel_id: str | None, ts: str | None) -> bool:
-    """True when *ts* is older than every publishing Sync of the Channel, so it has no PostMeta."""
-    if not channel_id or not ts:
-        return False
-    try:
-        when = Decimal(str(ts))
-    except InvalidOperation:
-        return False
-    starts = [
-        getattr(sync_channel, "created_at", None)
-        for sync_channel, _workspace in helpers.get_channel_memberships(channel_id)
-        if helpers.channel_publishes(sync_channel)
-    ]
-    starts = [start for start in starts if start is not None]
-    if not starts:
-        return False
-    first = min(start if start.tzinfo else start.replace(tzinfo=UTC) for start in starts)
-    return when < Decimal(int(first.timestamp()))
-
-
 def _get_post_records_or_leave_pending(
     ctx: EventContext, *, action: str, source_ts: str | None, source_thread_ts: str | None = None
 ) -> list:
@@ -365,7 +343,7 @@ def _get_post_records_or_leave_pending(
     if records:
         return records
     channel_id = ctx.get("channel_id")
-    if _is_before_sync(channel_id, message_ts):
+    if helpers.is_before_sync(channel_id, message_ts):
         log_info("message_skip", reason="before_sync", channel=channel_id, ts=message_ts, action=action)
         return []
     return helpers.leave_pending_event(

@@ -264,7 +264,7 @@ class TestHandlersLeavePending:
 
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
-            patch("handlers.message._is_before_sync", return_value=False),
+            patch("handlers.message.helpers.is_before_sync", return_value=False),
             patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message.helpers.run_sync_pipeline") as pipeline,
         ):
@@ -279,7 +279,7 @@ class TestHandlersLeavePending:
         ctx = _ctx(ts=REPLY_TS, thread_ts=MESSAGE_TS)
         with (
             patch("handlers.message.helpers.get_post_records", return_value=[]),
-            patch("handlers.message._is_before_sync", return_value=False),
+            patch("handlers.message.helpers.is_before_sync", return_value=False),
             patch("handlers.message.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.message.helpers.cleanup_temp_files") as cleanup,
         ):
@@ -308,6 +308,7 @@ class TestHandlersLeavePending:
             patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
             patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.is_before_sync", return_value=False),
             patch("handlers.reaction_event.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.reaction_event._sync_reaction_records") as sync,
         ):

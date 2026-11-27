@@ -6,7 +6,7 @@ from slack_sdk.web import WebClient
 
 import helpers
 from db.event_claims import run_claimed
-from logger import log_debug
+from logger import log_debug, log_info
 
 
 def _sync_reaction_records(body: dict, client: WebClient, reacted_records: list[tuple]) -> None:
@@ -98,6 +98,9 @@ def handle_reaction(
         reacted_records = helpers.get_post_records(msg_ts)
         if not reacted_records:
             log_debug("reaction_no_post_meta", msg_ts=msg_ts, channel_id=channel_id)
+            if helpers.is_before_sync(channel_id, msg_ts):
+                log_info("reaction_skip", reason="before_sync", channel=channel_id, ts=msg_ts)
+                return
             # The message's create may still be running: leave this reaction pending for it.
             if not user_id:
                 return

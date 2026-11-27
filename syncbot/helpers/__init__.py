@@ -160,6 +160,7 @@ from helpers.sync_participation import (
     has_channel_sync,
     invalidate_channel_memberships,
     invalidate_sync_fanout_for_syncs,
+    is_before_sync,
     iter_publish_targets,
     origin_publishes_anywhere,
     parse_participation_flags,
@@ -360,6 +361,7 @@ __all__ = [
     "sync_state_label",
     "run_sync_pipeline",
     "post_meta_exists_for_channel_ts",
+    "is_before_sync",
     "complete_copy_ts_from_pending_share",
     "slack_message_ts",
 ]

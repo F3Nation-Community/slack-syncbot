@@ -175,6 +175,7 @@ class TestHandleReactionClaim:
             patch("handlers.reaction_event.helpers.has_channel_sync", return_value=True),
             patch("handlers.reaction_event.helpers.origin_publishes_anywhere", return_value=True),
             patch("handlers.reaction_event.helpers.get_post_records", return_value=[]),
+            patch("handlers.reaction_event.helpers.is_before_sync", return_value=False),
             patch("handlers.reaction_event.helpers.leave_pending_event", return_value=[]) as leave,
             patch("handlers.reaction_event.log_debug") as log_debug,
             patch("handlers.reaction_event.run_claimed", side_effect=_run),
