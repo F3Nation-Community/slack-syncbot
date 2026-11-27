@@ -659,6 +659,10 @@ class TestFederationRewrite:
         assert resolve_channel_references(header, None, None) == header
         assert card["blocks"][1]["elements"][0]["text"] == "From a thread in <#C0GENERAL>"
 
+    def test_words_of_a_fallback_only_attachment_are_kept(self):
+        assert text_from_attachments([{"fallback": "Deploy finished", "color": "good"}]) == "Deploy finished"
+        assert text_from_attachments([{"fallback": "Deploy finished", "text": "Build 42 passed"}]) == "Build 42 passed"
+
     def test_rewrite_attachments_reaches_text_fields_and_blocks(self):
         raw = [{"text": "hi <@U1>", "fields": [{"title": "Who", "value": "<@U1>"}], "blocks": [{"type": "divider"}]}]
 

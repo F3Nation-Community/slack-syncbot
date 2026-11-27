@@ -777,6 +777,7 @@ def text_from_attachments(attachments: list[dict] | None) -> str:
     """Mrkdwn for attachments built by ``build_attachments_for_sync``.
 
     Text-only fallbacks use it: a refused card, a file share, and mention lookup.
+    An attachment with no other words gives its ``fallback``.
     """
     parts: list[str] = []
     for attachment in attachments or []:
@@ -811,6 +812,10 @@ def text_from_attachments(attachments: list[dict] | None) -> str:
         footer = attachment.get("footer")
         if isinstance(footer, str) and footer.strip():
             lines.append(footer.strip())
+        fallback = attachment.get("fallback")
+        if not lines and isinstance(fallback, str) and fallback.strip():
+            # Only Slack's fallback carries words: keep them rather than lose the attachment.
+            lines.append(fallback.strip())
         if lines:
             parts.append("\n".join(lines))
     return "\n".join(parts)
