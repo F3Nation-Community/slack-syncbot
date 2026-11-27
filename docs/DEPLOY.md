@@ -321,6 +321,8 @@ sam deploy \
 
 Because the build no longer runs in a Lambda container, the Makefile asks pip for the runtime's wheels explicitly (CPython 3.12, `manylinux` x86_64) instead of the build host's. That is what keeps a macOS or arm64 laptop from producing an artifact that imports fine locally and then fails on every invocation in Lambda.
 
+The Makefile also compiles the package to Python 3.12 bytecode with `python3.12` (or `python3` when that is 3.12). Lambda cannot write bytecode next to the code, so without it every new Lambda instance compiles each module from source before it can answer, which adds many seconds to each cold start. GitHub Actions builds with Python 3.12. If your machine has no Python 3.12, the build still works and prints a warning, but cold starts stay slow until you deploy from a machine (or CI) that has it.
+
 Use **`sam deploy --guided`** the first time if you prefer prompts. Set `Stage` to `test` or `prod` (the [`samconfig.toml`](../samconfig.toml) profiles already do that). For **mysql** or **postgresql** set `DatabaseBackend`, `DatabaseHost`, `DatabaseUser`, `DatabasePassword`, and optional `DatabasePort` (empty uses the engine default; TiDB Cloud often uses **4000**). For **sqlite** set `DatabaseBackend=sqlite` (no host, user, or password). An empty `DatabaseHost` does **not** create RDS.
 
 **`DatabaseSchema` naming:** A non-empty value wins. Empty reuses the live stack name, or `syncbot_test` / `syncbot_prod` on a new install. The app uses this name exactly; it does **not** append the stage. Match grants for your app user.

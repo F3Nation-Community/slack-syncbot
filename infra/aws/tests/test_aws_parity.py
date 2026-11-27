@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import importlib
+import importlib.abc
+import importlib.machinery
 import inspect
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import db as db_mod
@@ -13,7 +18,6 @@ REPO_ROOT = INFRA_AWS.parent.parent
 TEMPLATE = (INFRA_AWS / "template.yaml").read_text(encoding="utf-8")
 BOOTSTRAP = (INFRA_AWS / "template.bootstrap.yaml").read_text(encoding="utf-8")
 MAKEFILE = (INFRA_AWS / "lambda" / "Makefile").read_text(encoding="utf-8")
-HANDLER = (INFRA_AWS / "lambda" / "handler.py").read_text(encoding="utf-8")
 LITESTREAM_YML = (INFRA_AWS / "lambda" / "litestream.yml").read_text(encoding="utf-8")
 DEPLOY_SH = (INFRA_AWS / "scripts" / "deploy.sh").read_text(encoding="utf-8")
 ENSURE = (INFRA_AWS / "scripts" / "ensure_bootstrap.sh").read_text(encoding="utf-8")
@@ -53,7 +57,8 @@ def test_template_sqlite_and_keep_warm() -> None:
     assert "ExistingDatabaseHost:" not in TEMPLATE
     assert "ExistingDatabasePort:" not in TEMPLATE
     assert "DatabaseEngine:" not in TEMPLATE
-    assert "MemorySize: 256" in TEMPLATE
+    assert "MemorySize: 512" in TEMPLATE
+    assert "MemorySize: 256" not in TEMPLATE
     assert "MemorySize: 128" not in TEMPLATE
     assert "Timeout: 120" in TEMPLATE
     assert "EphemeralStorage:" in TEMPLATE
@@ -181,6 +186,49 @@ def test_makefile_installs_wheels_for_lambda_runtime_not_build_host() -> None:
     assert "sed 's/ ;.*$$//'" in MAKEFILE
 
 
+def test_makefile_ships_bytecode_that_ignores_zip_timestamps() -> None:
+    """`sam deploy` zips every file at 1980, so only hash-based .pyc load on Lambda."""
+    assert "--no-compile" in MAKEFILE
+    prune_at = MAKEFILE.find("-name __pycache__ -prune -exec rm -rf {} +")
+    compile_at = MAKEFILE.find("-m compileall -q -j 0 --invalidation-mode unchecked-hash")
+    assert 0 <= prune_at < compile_at
+
+
+def _makefile_pyc_python(tmp_path: Path, interpreters: dict[str, bool]) -> str:
+    """Return the Makefile's PYC_PYTHON when PATH holds only these fake interpreters."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, is_312 in interpreters.items():
+        exe = bin_dir / name
+        exe.write_text(f"#!/bin/sh\nexit {0 if is_312 else 1}\n", encoding="utf-8")
+        exe.chmod(0o755)
+    probe = tmp_path / "probe.mk"
+    probe.write_text(
+        f"include {INFRA_AWS / 'lambda' / 'Makefile'}\n$(info PYC_PYTHON=$(PYC_PYTHON))\nprint-pyc-python: ;\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [shutil.which("make"), "-s", "-f", str(probe), "print-pyc-python"],
+        env={"PATH": str(bin_dir)},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip().removeprefix("PYC_PYTHON=")
+
+
+def test_makefile_compiles_with_python_312(tmp_path: Path) -> None:
+    assert _makefile_pyc_python(tmp_path, {"python3.12": True, "python3": False}) == "python3.12"
+
+
+def test_makefile_compiles_with_python3_when_it_is_312(tmp_path: Path) -> None:
+    assert _makefile_pyc_python(tmp_path, {"python3": True}) == "python3"
+
+
+def test_makefile_skips_bytecode_without_python_312(tmp_path: Path) -> None:
+    assert _makefile_pyc_python(tmp_path, {"python3": False}) == ""
+
+
 def test_aws_build_is_in_source_not_containerised() -> None:
     """syncbot/ lives above CodeUri; a container build never mounts it."""
     samconfig = (REPO_ROOT / "samconfig.toml").read_text(encoding="utf-8")
@@ -195,13 +243,53 @@ def test_aws_build_is_in_source_not_containerised() -> None:
     assert 'prereqs_print_cli_status_matrix "AWS" aws sam python3 curl' in DEPLOY_SH
 
 
-def test_wrapper_restore_then_init_then_replicate() -> None:
-    body = HANDLER[HANDLER.find("def _bootstrap_sqlite") :]
-    restore_at = body.find('"restore"')
-    init_at = body.find("initialize_database")
-    replicate_at = body.find('"replicate"')
-    assert 0 <= restore_at < init_at < replicate_at
-    assert "-if-replica-exists" in body
+class _RecordAppImport(importlib.abc.MetaPathFinder, importlib.abc.Loader):
+    """Stand in for ``app`` and record when the wrapper imports it."""
+
+    def __init__(self, calls: list) -> None:
+        self.calls = calls
+
+    def find_spec(self, fullname, path, target=None):
+        if fullname != "app":
+            return None
+        return importlib.machinery.ModuleSpec(fullname, self)
+
+    def create_module(self, spec):
+        return None
+
+    def exec_module(self, module) -> None:
+        self.calls.append("import app")
+        module.handler = lambda event, context: "app.handler"
+
+
+def _load_wrapper(monkeypatch, calls: list):
+    """Import infra/aws/lambda/handler.py fresh, as Lambda's init phase does."""
+    monkeypatch.delitem(sys.modules, "app", raising=False)
+    monkeypatch.delitem(sys.modules, "handler", raising=False)
+    monkeypatch.setattr(sys, "meta_path", [_RecordAppImport(calls), *sys.meta_path])
+    return importlib.import_module("handler")
+
+
+def test_wrapper_imports_app_at_module_load(monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.delenv("LITESTREAM_S3_BUCKET", raising=False)
+    wrapper = _load_wrapper(monkeypatch, calls)
+    assert calls == ["import app"]
+    assert wrapper.handler({}, None) == "app.handler"
+
+
+def test_wrapper_restores_migrates_and_replicates_before_app_import(monkeypatch) -> None:
+    calls: list = []
+    monkeypatch.setenv("LITESTREAM_S3_BUCKET", "syncbot-test-litestream")
+    monkeypatch.setattr(Path, "exists", lambda self: False)
+    monkeypatch.setattr(subprocess, "run", lambda args, check: calls.append(tuple(args[1:3])))
+    monkeypatch.setattr(subprocess, "Popen", lambda args, start_new_session: calls.append(args[1]))
+    monkeypatch.setattr(db_mod, "initialize_database", lambda: calls.append("initialize_database"))
+    _load_wrapper(monkeypatch, calls)
+    assert calls == [("restore", "-if-replica-exists"), "initialize_database", "replicate", "import app"]
+
+
+def test_litestream_replicates_to_s3() -> None:
     assert "type: s3" in LITESTREAM_YML
     assert "sync-interval: 1s" in LITESTREAM_YML
     assert "region: ${AWS_REGION}" in LITESTREAM_YML
@@ -333,55 +421,6 @@ def test_initialize_database_does_not_emit_create_database() -> None:
     assert "CREATE DATABASE IF NOT EXISTS" not in source
     init_src = inspect.getsource(db_mod.initialize_database)
     assert "_run_alembic_upgrade" in init_src
-
-
-def test_bootstrap_sqlite_restore_then_migrate_then_replicate(monkeypatch, tmp_path) -> None:
-    import sys
-    from unittest.mock import MagicMock
-
-    import handler as h
-
-    monkeypatch.setattr(h, "_DB_PATH", tmp_path / "syncbot.db")
-    monkeypatch.setattr(h, "_sqlite_ready", False)
-    commands: list[tuple[str, list[str]]] = []
-
-    def fake_run(cmd, check=True, **kwargs):  # noqa: ARG001
-        commands.append(("run", list(cmd)))
-
-    def fake_popen(cmd, **kwargs):  # noqa: ARG001
-        commands.append(("popen", list(cmd)))
-        return MagicMock()
-
-    monkeypatch.setattr(h.subprocess, "run", fake_run)
-    monkeypatch.setattr(h.subprocess, "Popen", fake_popen)
-    fake_db = MagicMock()
-    inits: list[int] = []
-    fake_db.initialize_database = lambda: inits.append(1)
-    monkeypatch.setitem(sys.modules, "db", fake_db)
-
-    h._bootstrap_sqlite()
-
-    assert commands[0][0] == "run"
-    assert "restore" in commands[0][1]
-    assert "-if-replica-exists" in commands[0][1]
-    assert inits == [1]
-    assert commands[1][0] == "popen"
-    assert "replicate" in commands[1][1]
-    assert h._sqlite_ready is True
-
-
-def test_handler_without_litestream_bucket_skips_bootstrap(monkeypatch) -> None:
-    import sys
-    from types import SimpleNamespace
-
-    import handler as h
-
-    monkeypatch.delenv("LITESTREAM_S3_BUCKET", raising=False)
-    boot: list[str] = []
-    monkeypatch.setattr(h, "_bootstrap_sqlite", lambda: boot.append("yes"))
-    monkeypatch.setitem(sys.modules, "app", SimpleNamespace(handler=lambda event, context: {"ok": True}))
-    assert h.handler({"action": "ping"}, None) == {"ok": True}
-    assert boot == []
 
 
 def test_update_stack_params_use_previous_when_empty() -> None:
