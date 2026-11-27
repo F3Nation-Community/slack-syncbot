@@ -514,31 +514,38 @@ def slack_write_create(
             )
         return None, None, code
 
-    try:
-        return _with_error(_write(write_token, use_customize, posted_as))
-    except SlackApiError as exc:
-        code = slack_error_code(exc)
-        # Slack refuses the whole message for one block or attachment it will not take.
-        # Post the text, which already carries those words.
-        if code in _BLOCK_ERRORS and (target_blocks or adapted_attachments):
+    def _write_or_text(token: str, customize: bool, as_user: str | None) -> tuple[str | None, str | None, str | None]:
+        """The whole message, then its words as text when Slack refuses a block or attachment.
+
+        Slack refuses the whole message for one block or attachment it will not take,
+        and the text already carries those words. Raises what Slack raised otherwise.
+        """
+        try:
+            return _with_error(_write(token, customize, as_user))
+        except SlackApiError as exc:
+            code = slack_error_code(exc)
+            if code not in _BLOCK_ERRORS or not (target_blocks or adapted_attachments):
+                raise
             log_warning(
                 "slack_write_blocks_refused",
                 channel_id=sync_channel.channel_id,
                 error=code,
                 block_types=sorted({b.get("type") for b in target_blocks if isinstance(b, dict) and b.get("type")}),
             )
-            try:
-                ts, as_user = _write(
-                    write_token, use_customize, posted_as, blocks=[], use_attachments=False, text=refused_text
-                )
-            except Exception as retry_exc:
-                return _fail_create(retry_exc)
+            ts, posted = _write(token, customize, as_user, blocks=[], use_attachments=False, text=refused_text)
             # Posted, in a reduced form: the code tells the pipeline so the author hears about it.
-            return ts, as_user, (code if ts else None)
+            return ts, posted, (code if ts else None)
+
+    try:
+        return _write_or_text(write_token, use_customize, posted_as)
+    except SlackApiError as exc:
+        code = slack_error_code(exc)
+        # The person's token was refused, on the whole message or on its text: the bot posts it.
+        # Only the bot's refusal reaches apply_target, which pauses on it.
         if posted_as and code in _USER_WRITE_ERRORS:
             log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
             try:
-                return _with_error(_write(bot_token, True, None))
+                return _write_or_text(bot_token, True, None)
             except Exception as retry_exc:
                 return _fail_create(retry_exc)
         return _fail_create(exc)
@@ -641,31 +648,32 @@ def slack_write_edit(
             _remember_message_echo(workspace.team_id, as_user, sync_channel.channel_id, update_ts)
         return True
 
-    try:
-        return _update(token, posted_as if used_user_token else None), None
-    except SlackApiError as exc:
-        code = slack_error_code(exc)
-        if code in _BLOCK_ERRORS and (target_blocks or adapted_attachments):
+    def _update_or_text(write_token: str, as_user: str | None) -> tuple[bool, str | None]:
+        """The whole edit, then its words as text when Slack refuses a block or attachment."""
+        try:
+            return _update(write_token, as_user), None
+        except SlackApiError as exc:
+            code = slack_error_code(exc)
+            if code not in _BLOCK_ERRORS or not (target_blocks or adapted_attachments):
+                raise
             log_warning(
                 "slack_write_blocks_refused",
                 channel_id=sync_channel.channel_id,
                 error=code,
                 block_types=sorted({b.get("type") for b in target_blocks if isinstance(b, dict) and b.get("type")}),
             )
-            try:
-                return _update(token, posted_as if used_user_token else None, text_only=True), code
-            except Exception as retry_exc:
-                retry_code = slack_error_code(retry_exc)
-                log_warning(
-                    "slack_write_edit_failed",
-                    channel_id=sync_channel.channel_id,
-                    error=retry_code or str(retry_exc),
-                )
-                return False, retry_code or type(retry_exc).__name__
+            return _update(write_token, as_user, text_only=True), code
+
+    try:
+        return _update_or_text(token, posted_as if used_user_token else None)
+    except SlackApiError as exc:
+        code = slack_error_code(exc)
+        # The person's token was refused, on the whole edit or on its text: try the bot, whose
+        # refusal is the one apply_target pauses on.
         if used_user_token and code in _USER_WRITE_ERRORS | {"cant_update_message"}:
             log_info("slack_write_user_fallback_bot", channel_id=sync_channel.channel_id, error=code)
             try:
-                return _update(bot_token, None), None
+                return _update_or_text(bot_token, None)
             except SlackApiError as retry_exc:
                 retry_code = slack_error_code(retry_exc)
                 log_warning(

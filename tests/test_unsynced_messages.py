@@ -19,7 +19,7 @@ from slack_sdk.errors import SlackApiError  # noqa: E402
 from federation.deliver import deliver_remote  # noqa: E402
 from handlers.message import _handle_thread_reply, _notify_author  # noqa: E402
 from helpers.message_blocks import NOTE_COPY_DIFFERS, add_copy_note  # noqa: E402
-from helpers.slack_write import slack_write_create, slack_write_delete  # noqa: E402
+from helpers.slack_write import slack_write_create, slack_write_delete, slack_write_edit  # noqa: E402
 from helpers.sync_apply import ApplyOutcome, apply_target  # noqa: E402
 from helpers.sync_participation import is_before_sync  # noqa: E402
 from helpers.sync_pipeline import run_sync_pipeline  # noqa: E402
@@ -219,6 +219,65 @@ class TestBrokenTargetPauses:
         for code, ts in (("msg_too_long", None), ("invalid_attachments", "1.0")):
             _outcome, pause, _row_out = self._apply(code, ts=ts)
             pause.assert_not_called()
+
+    def _write_as_person(self, side_effect, *, action="create"):
+        """A copy posted as a mapped person, with blocks, against scripted ``post_message`` answers."""
+        envelope = _envelope(
+            action=action,
+            mapped_user_id="U_TARGET",
+            user_name="Ada Lovelace",
+            blocks=[{"type": "section", "text": {"type": "mrkdwn", "text": "hello"}}],
+        )
+        with (
+            patch("helpers.slack_write.get_bot_token", return_value="xoxb-bot"),
+            patch("helpers.slack_write.get_user_token", return_value="xoxp-user"),
+            patch("helpers.slack_write.WebClient"),
+            patch("helpers.workspace.get_workspace_by_id", return_value=None),
+            patch("helpers.slack_write.remember_pending_event"),
+            patch("helpers.slack_write.post_message", side_effect=side_effect) as post,
+        ):
+            if action == "edit":
+                result = slack_write_edit(
+                    envelope=envelope,
+                    sync_channel=_row("C0GENERAL", row_id=1),
+                    workspace=_workspace(10, "Workspace B"),
+                    target_post_meta=SimpleNamespace(ts="5.000000", posted_as_user_id="U_TARGET"),
+                )
+            else:
+                result = slack_write_create(
+                    envelope=envelope, sync_channel=_row("C0GENERAL", row_id=1), workspace=_workspace(10, "Workspace B")
+                )
+        return result, [(c.kwargs["bot_token"], bool(c.kwargs.get("blocks"))) for c in post.call_args_list]
+
+    def test_a_persons_text_retry_refused_tries_the_bot(self):
+        """Blocks refused, then the person's text refused: the bot posts, so nothing pauses."""
+        blocks = SlackApiError("no", {"ok": False, "error": "invalid_blocks"})
+        gone = SlackApiError("no", {"ok": False, "error": "not_in_channel"})
+
+        result, calls = self._write_as_person([blocks, gone, {"ts": "3.0"}])
+
+        assert result == ("3.0", None, None)
+        assert calls == [("xoxp-user", True), ("xoxp-user", False), ("xoxb-bot", True)]
+
+    def test_a_bot_fallback_refused_as_blocks_posts_the_text(self):
+        blocks = SlackApiError("no", {"ok": False, "error": "invalid_blocks"})
+        gone = SlackApiError("no", {"ok": False, "error": "not_in_channel"})
+
+        result, calls = self._write_as_person([gone, blocks, {"ts": "4.0"}])
+
+        assert result == ("4.0", None, "invalid_blocks")
+        assert calls == [("xoxp-user", True), ("xoxb-bot", True), ("xoxb-bot", False)]
+
+    def test_an_edit_whose_person_text_retry_is_refused_tries_the_bot(self):
+        blocks = SlackApiError("no", {"ok": False, "error": "invalid_blocks"})
+        gone = SlackApiError("no", {"ok": False, "error": "channel_not_found"})
+        cannot = SlackApiError("no", {"ok": False, "error": "cant_update_message"})
+
+        result, calls = self._write_as_person([blocks, gone, cannot], action="edit")
+
+        # The bot cannot edit the person's message: that is not a code that pauses.
+        assert result == (False, "cant_update_message")
+        assert calls == [("xoxp-user", True), ("xoxp-user", False), ("xoxb-bot", True)]
 
     def test_restricted_action_on_a_user_token_tries_the_bot(self):
         refused = SlackApiError("no", {"ok": False, "error": "restricted_action"})
